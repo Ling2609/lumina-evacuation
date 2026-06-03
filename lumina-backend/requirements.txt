@@ -1,0 +1,44 @@
+# =============================================================================
+# LUMINA SMART EVACUATION SYSTEM — Python Dependencies
+# Requires Python 3.10+ (ultralytics>=8.2 dropped support for 3.8/3.9)
+# Check your version: python --version
+#
+# HOW TO USE:
+#   pip install -r requirements.txt
+#
+# HOW TO VERIFY YOUR OWN VERSIONS:
+#   pip freeze | grep -iE "ultralytics|flask|paho|opencv|numpy|scipy|sounddevice"
+#   Then update the versions below to match your working environment.
+#
+# Only direct dependencies are listed here — transitive deps install automatically.
+# Pinned to prevent breaking changes on demo day reinstalls.
+# =============================================================================
+
+# ── AI / Computer Vision ──────────────────────────────────────────────────────
+ultralytics>=8.2.0,<9.0.0      # YOLOv8 + ByteTrack — minor versions may break API
+opencv-python>=4.9.0,<5.0.0    # camera capture + frame processing
+numpy>=1.26.0,<2.0.0           # array ops — ultralytics pins this tightly
+
+# ── Web Server ────────────────────────────────────────────────────────────────
+flask>=3.0.0,<4.0.0            # REST API + MJPEG streaming
+flask-cors>=4.0.0,<5.0.0       # CORS headers for React dev server
+
+# ── IoT / Messaging ──────────────────────────────────────────────────────────
+paho-mqtt>=2.0.0,<3.0.0        # MQTT client — v2 has breaking changes vs v1
+
+# ── Audio / Signal Processing ────────────────────────────────────────────────
+scipy>=1.12.0,<2.0.0           # FFT, signal processing (fft_classifier.py)
+sounddevice>=0.4.6,<1.0.0      # live microphone input (optional — demo uses simulation)
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+Pillow>=10.0.0,<12.0.0         # image handling (ultralytics dependency)
+
+# =============================================================================
+# NOT INCLUDED (install separately if needed):
+#   deep-sort-realtime  — removed in favour of YOLO native ByteTrack
+#   torch / torchvision — only needed for DeepSORT re-ID (not used)
+#   rknn-toolkit2       — production RK3588 NPU conversion (not for laptop demo)
+#
+# INSTALL COMMAND:
+#   pip install -r requirements.txt --break-system-packages
+# =============================================================================

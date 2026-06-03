@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pth
+*.onnx
+venv/
+.env
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Models — too large for GitHub (100MB limit)
+models/
+*.pt
+*.rknn
+
+# Sensitive
+*.env
+FLASK_IP
