@@ -78,6 +78,40 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
+## Demo Day Checklist
+
+Run through this before every presentation session.
+
+- [ ] Change `FLASK_IP` in `App.jsx` to laptop Wi-Fi IP
+- [ ] Run `python test_integration.py` — all 5 must pass
+- [ ] Verify camera feed visible in browser at `localhost:5173`
+- [ ] Confirm amber DEV MODE banner is gone on the dashboard
+- [ ] iPad connected to same Wi-Fi hotspot as laptop
+- [ ] Dashboard loads on iPad at `http://<FLASK_IP>:5173`
+- [ ] Test scenario: play 520Hz tone near microphone → FFT confirms → route changes
+- [ ] Export CSV works and opens cleanly in Excel
+
+---
+
+## Verbal Answers for Judges
+
+**"How accurate is your fall detection from the ceiling?"**
+YOLOv8-pose was trained on front-facing COCO data, not top-down. The bbox aspect ratio fallback compensates — a fallen person is always wider than tall regardless of camera angle. Production would fine-tune on synthetic top-down data from BIM models.
+
+**"Why is it always 178 seconds for the FACP countdown?"**
+178s is the default starting point within the NFPA 72 legal window of 60-180s. The Incident Commander can issue a manual override before it reaches zero.
+
+**"Does this actually use the RK3588 NPU?"**
+This prototype runs PyTorch on a laptop CPU. The ONNX export is step one of the production pipeline — step two is RKNN conversion via rknn-toolkit2.
+
+**"What happens if the mesh network fails?"**
+Each node runs DYN-A\* locally and routes independently. The mesh only shares hazard penalties — if it drops, each node routes conservatively using its own sensor data.
+
+**"Can this scale to 200 nodes?"**
+DYN-A\* on 6 nodes runs in under 0.5ms. At 200 nodes approximately 5-15ms. For 1000+ nodes the architecture transitions to D\* Lite which only recalculates locally affected edges.
+
+---
+
 ## Configuration
 
 ### Connecting the iPad / second device to the dashboard
@@ -85,14 +119,14 @@ Open `http://localhost:5173` in your browser.
 By default `FLASK_IP` is set to `127.0.0.1` (localhost only). To access the dashboard from another device on the same Wi-Fi network:
 
 1. Find your laptop's Wi-Fi IP:
-
    - **Mac/Linux:** `ifconfig | grep "inet " | grep -v 127`
    - **Windows:** `ipconfig` → look for IPv4 Address
-2. Open `frontend/src/App.jsx` and change line 8:
 
+2. Open `frontend/src/App.jsx` and change line 8:
    ```js
    const FLASK_IP = "192.168.x.x";  // your actual Wi-Fi IP
    ```
+
 3. The amber DEV MODE banner at the top disappears when set correctly.
 
 ### USB webcam (external camera)
@@ -117,7 +151,6 @@ python test_integration.py
 ```
 
 This runs 5 assertions in ~10 seconds:
-
 1. Flask online with YOLO loaded and camera open
 2. System in NORMAL state at startup
 3. Trigger produces HAZARD state
@@ -163,28 +196,13 @@ All 5 must pass before presenting.
 
 All manual override controls are in the **Digital Twin expanded view** (click the floor plan to expand):
 
-| Control                       | What it does                                                     |
-| ----------------------------- | ---------------------------------------------------------------- |
+| Control | What it does |
+|---|---|
 | Select node → REROUTE AROUND | BOMBA manually quarantines a node and forces DYN-A\* to re-route |
-| Route A / B / C               | Quick preset routes for common evacuation scenarios              |
-| RESET                         | Releases manual override and returns system to AUTO mode         |
+| Route A / B / C | Quick preset routes for common evacuation scenarios |
+| RESET | Releases manual override and returns system to AUTO mode |
 
 Manual override locks all hazard state — the backend poll cannot overwrite BOMBA commands until RESET is pressed.
-
----
-
-## Commercial ROI Model (200-Node Projection)
-
-| Revenue Stream                                 | Monthly Value       |
-| ---------------------------------------------- | ------------------- |
-| DOOH Ad Premiums (5 zones × RM 1,600)         | RM 8,000            |
-| Kiosk & Pop-Up Retail (10 locations × RM 500) | RM 5,000            |
-| ESG HVAC Savings (35% efficiency gain)         | RM 2,500            |
-| **Total Value Generated**                | **RM 15,500** |
-| HaaS Subscription (200 nodes × RM 65)         | (RM 13,000)         |
-| **Net Monthly Cash Flow**                | **RM 2,500**  |
-
-CapEx avoided: RM 168,000 (200 nodes × RM 840 manufacturing cost, bypassed via HaaS model).
 
 ---
 
@@ -210,32 +228,4 @@ Run `python export_onnx.py` once to generate the ONNX model. RKNN conversion req
 
 ---
 
-## Verbal Answers for Judges
-
-**"How accurate is your fall detection from the ceiling?"**
-YOLOv8-pose was trained on front-facing COCO data, not top-down. The bbox aspect ratio fallback compensates — a fallen person is always wider than tall regardless of camera angle. Production would fine-tune on synthetic top-down data from BIM models.
-
-**"Why is it always 178 seconds for the FACP countdown?"**
-178s is the default starting point within the NFPA 72 legal window of 60-180s. The Incident Commander can issue a manual override before it reaches zero.
-
-**"Does this actually use the RK3588 NPU?"**
-This prototype runs PyTorch on a laptop CPU. The ONNX export is step one of the production pipeline — step two is RKNN conversion via rknn-toolkit2.
-
-**"What happens if the mesh network fails?"**
-Each node runs DYN-A\* locally and routes independently. The mesh only shares hazard penalties — if it drops, each node routes conservatively using its own sensor data.
-
-**"Can this scale to 200 nodes?"**
-DYN-A\* on 6 nodes runs in under 0.5ms. At 200 nodes approximately 5-15ms. For 1000+ nodes the architecture transitions to D\* Lite which only recalculates locally affected edges.
-
----
-
-## Demo Day Checklist
-
-- [ ] Change `FLASK_IP` in `App.jsx` to laptop Wi-Fi IP
-- [ ] Run `python test_integration.py` — all 5 must pass
-- [ ] Verify camera feed visible in browser at `localhost:5173`
-- [ ] Confirm amber DEV MODE banner is gone on the dashboard
-- [ ] iPad connected to same Wi-Fi hotspot as laptop
-- [ ] Dashboard loads on iPad at `http://<FLASK_IP>:5173`
-- [ ] Test SIM scenario: play 520Hz tone near microphone → FFT confirms → route changes
-- [ ] Export CSV works and opens cleanly in Excel
+## Production Deployment Notes
