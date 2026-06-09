@@ -1127,6 +1127,21 @@ def api_health():
 
 
 if __name__ == "__main__":
+    # Force clean NORMAL state on every startup — no stale hazard from previous session
+    with state_lock:
+        system_state         = "NORMAL"
+        facp_confirmed       = False
+        manual_override      = False
+        current_route        = ["N-011", "N-042", "N-043", "N-089"]
+        current_pull_signals = {}
+        current_rset         = {}
+        for _nid, _d in live_node_status.items():
+            _d["status"]      = "normal"
+            _d["hazard"]      = None
+            _d["pull_signal"] = "GREEN"
+    if hasattr(thermal_clf, 'reset'): thermal_clf.reset()
+    if hasattr(fft_clf,    'reset'): fft_clf.reset()
+    print("[LUMINA] State reset to NORMAL on startup")
     print("[LUMINA] All subsystems initialised. Starting Flask on :5001")
     print("[LUMINA] Endpoints:")
     print("  /video_feed               — MJPEG camera stream with HUD overlay")

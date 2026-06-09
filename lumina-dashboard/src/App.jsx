@@ -119,16 +119,13 @@ function ChartSlider({cards, idx, setIdx, title}) {
 export default function App() {
   const [tab, setTab] = useState("command");
 
-  const _s = (() => {
-    try { return JSON.parse(localStorage.getItem("lumina_state")??"{}"); }
-    catch { return {}; }
-  })();
-
-  const [isHazard,      setIsHazard]      = useState(_s.isHazard     ?? false);
-  const [hazardType,    setHazardType]    = useState(_s.hazardType   ?? "HAZARD DETECTED");
-  const [fftConfirmed,  setFftConfirmed]  = useState(_s.fftConfirmed ?? false);
-  const [activeRoute,   setActiveRoute]   = useState(_s.activeRoute  ?? ["N-011","N-042","N-043","N-089"]);
-  const [pasCountdown,  setPasCountdown]  = useState(_s.pasCountdown ?? 178);
+  // Always start clean — backend is source of truth, poll syncs within 1.5s
+  // Only restore non-hazard UI prefs (none currently needed)
+  const [isHazard,      setIsHazard]      = useState(false);
+  const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
+  const [fftConfirmed,  setFftConfirmed]  = useState(false);
+  const [activeRoute,   setActiveRoute]   = useState(["N-011","N-042","N-043","N-089"]);
+  const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);
   const [thermalState,  setThermalState]  = useState("NORMAL");
   const [fftState,      setFftState]      = useState("SILENT");
@@ -162,12 +159,6 @@ export default function App() {
   const lastVelRef        = useRef(false);
   const manualOverrideRef = useRef(false);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
-
-  useEffect(() => {
-    localStorage.setItem("lumina_state", JSON.stringify(
-      {isHazard,hazardType,activeRoute,pasCountdown,fftConfirmed}
-    ));
-  }, [isHazard,hazardType,activeRoute,pasCountdown,fftConfirmed]);
 
   const pushEvent = (msg, level="info") => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
@@ -316,8 +307,9 @@ export default function App() {
   const overridePath=async()=>{
     if(!isHazard){ alert("Cannot override during normal operations."); return; }
     const target=selectedNode?.id??"N-031";
-    if(selectedNode?.status==="alert"||selectedNode?.status==="quarantine"){
-      alert(`${target} is already blocked. Select a different node.`); return;
+    // Only reject if THIS node was already manually blocked by BOMBA
+    if(target===manualBlockedNode){
+      alert(`${target} is already manually blocked. Press RESET to release it.`); return;
     }
     setManualOverride(true);
     try{
@@ -326,10 +318,13 @@ export default function App() {
         body:JSON.stringify({node_id:target})});
       const d=await r.json();
       if(d.new_route){
-        setActiveRoute(d.new_route);
         setManualBlockedNode(target);
+        setActiveRoute(d.new_route);
         setNodes(prev=>prev.map(n=>n.id===target?{...n,status:"quarantine",hazard:"crowd"}:n));
+        setSelectedNode(null); // clear selection so stale status doesn't confuse next action
         pushEvent(`BOMBA override: ${target} quarantined — route locked. Auto-routing PAUSED.`,"warning");
+      } else {
+        pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
       }
     } catch{ pushEvent("Override failed — backend offline","danger"); }
   };
@@ -590,10 +585,11 @@ export default function App() {
                     nodes.find(x=>x.id===c.to)?.status==="quarantine"
                   );
                   const f=rc(c.from),t=rc(c.to);
+                  // Skip static line on active route — animated polyline handles it
+                  if (isOnRoute) return null;
                   return <line key={i} x1={f.x} y1={f.y} x2={t.x} y2={t.y}
-                    stroke={isOnRoute?palette.success:offRouteBlocked||(!isOnRoute&&sig?.signal==="RED")?palette.danger:"#CBD5E1"}
-                    strokeWidth={isOnRoute?"3":"1.5"} strokeDasharray="5 3"
-                    opacity={isOnRoute?0.9:0.7}/>;
+                    stroke={offRouteBlocked||sig?.signal==="RED"?palette.danger:"#CBD5E1"}
+                    strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7"/>;
                 })}
                 {safeRouteSegments.map((seg,si)=>{
                   const pts=seg.map(id=>{const c=rc(id);return`${c.x},${c.y}`;}).join(" ");
@@ -695,25 +691,31 @@ export default function App() {
                   </div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5}}>
                     {nodes.map(n=>{
-                      const isSel=selectedNode?.id===n.id;
-                      const sc=statusColor(n.status);
+                      const isSel   = selectedNode?.id===n.id;
+                      const isBomba = n.id===manualBlockedNode;
                       return(
-                        <button key={n.id} onClick={()=>setSelectedNode(n)} style={{
-                          background:isSel?statusBg(n.status):"transparent",
-                          border:`1px solid ${isSel?sc:palette.border}`,
-                          borderRadius:4,padding:"2px 7px",fontSize:9,fontWeight:600,
-                          color:isSel?sc:palette.textMuted,cursor:"pointer",
-                        }}>{n.id}</button>
+                        <button key={n.id}
+                          onClick={()=>!isBomba&&setSelectedNode(p=>p?.id===n.id?null:n)}
+                          style={{
+                            background:isBomba?palette.purpleLight:isSel?palette.warningLight:"transparent",
+                            border:`1px solid ${isBomba?palette.purple:isSel?palette.warning:palette.border}`,
+                            borderRadius:4,padding:"2px 7px",fontSize:9,fontWeight:600,
+                            color:isBomba?palette.purple:isSel?palette.warningDark:palette.textMuted,
+                            cursor:isBomba?"not-allowed":"pointer",
+                            opacity:isBomba?0.6:1,
+                          }}>{n.id}{isBomba?" ✕":""}</button>
                       );
                     })}
                   </div>
                   <button onClick={overridePath} style={{width:"100%",
-                    background:isHazard?palette.warningLight:"transparent",
-                    border:`1px solid ${isHazard?palette.warning:palette.border}`,
+                    background:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warningLight:"transparent",
+                    border:`1px solid ${isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warning:palette.border}`,
                     borderRadius:5,padding:"5px",fontSize:10,fontWeight:700,
-                    color:isHazard?palette.warningDark:palette.textMuted,
-                    cursor:isHazard?"pointer":"not-allowed"}}>
-                    {selectedNode&&isHazard?`② REROUTE AROUND ${selectedNode.id}`:"② BLOCK + REROUTE"}
+                    color:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warningDark:palette.textMuted,
+                    cursor:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?"pointer":"not-allowed"}}>
+                    {selectedNode&&isHazard&&selectedNode.id!==manualBlockedNode
+                      ?`② REROUTE AROUND ${selectedNode.id}`
+                      :"② BLOCK + REROUTE"}
                   </button>
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
@@ -979,10 +981,10 @@ export default function App() {
                       nodes.find(x=>x.id===c.to)?.status==="quarantine"
                     );
                     const f=rc(c.from),t=rc(c.to);
+                    if (isOnRoute) return null;
                     return <line key={i} x1={f.x} y1={f.y} x2={t.x} y2={t.y}
-                      stroke={isOnRoute?palette.success:offRouteBlocked||(!isOnRoute&&sig?.signal==="RED")?palette.danger:"#CBD5E1"}
-                      strokeWidth={isOnRoute?"2.5":"1.5"} strokeDasharray="5 3"
-                      opacity={isOnRoute?0.9:0.6}/>;
+                      stroke={offRouteBlocked||sig?.signal==="RED"?palette.danger:"#CBD5E1"}
+                      strokeWidth="1.5" strokeDasharray="5 3" opacity="0.6"/>;
                   })}
                   {safeRouteSegments.map((seg,si)=>{
                     const pts=seg.map(id=>{const c=rc(id);return`${c.x},${c.y}`;}).join(" ");
