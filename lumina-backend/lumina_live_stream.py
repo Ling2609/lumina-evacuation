@@ -22,6 +22,7 @@
 
 import csv
 import os
+import atexit
 import math
 import json
 import time
@@ -136,9 +137,10 @@ import os as _os
 _cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)   # request 1280×720 — dashboard shows full frame
+cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT,  720)
-cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)         # enable autofocus if supported
+cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # always read latest frame, no stale queue
 
 # =============================================================================
 # 3. THERMAL CLASSIFIER — background thread
@@ -360,7 +362,7 @@ def generate_frames():
 
         if _run_inference:
             if cur_mode == "DIORAMA":
-                results = model_diorama.track(frame, persist=True, conf=0.25,
+                results = model_diorama.track(frame, persist=True, conf=0.45,
                                               classes=[0], verbose=False)
             else:  # ENTERPRISE
                 results = model_enterprise.track(frame, persist=True, conf=0.60,
@@ -955,154 +957,6 @@ def download_log():
         headers={"Content-Disposition": "attachment;filename=Lumina_Management_Report.csv"}
     )
 
-    output = io.StringIO()
-    output.write('\ufeff')  # UTF-8 BOM for Excel
-    writer = csv.writer(output)
-
-    # --- REPORT HEADER ---
-    writer.writerow(["LUMINA SMART EVACUATION SYSTEM"])
-    writer.writerow(["Operations Report"])
-    writer.writerow(["Generated",          time.strftime('%Y-%m-%d %H:%M:%S')])
-    writer.writerow(["Session Duration (s)", round(time.time() - _startup_time, 1)])
-    writer.writerow(["System Status",       system_state])
-    writer.writerow(["Site Nodes Online",   f"{NODES_ONLINE}/{NODES_TOTAL}"])
-    writer.writerow([])
-
-    # --- SECTION 1: FOOTFALL & OCCUPANCY SUMMARY ---
-    writer.writerow(["FOOTFALL AND OCCUPANCY SUMMARY"])
-    with state_lock:
-        snap = {nid: dict(d) for nid, d in live_node_status.items()}
-    total_footfall = sum(d["crowd"] for d in snap.values())
-    peak_entry     = max(snap.items(), key=lambda x: x[1]["crowd"]) if snap else ("N/A", {"crowd": 0})
-    avg_occ        = round(total_footfall / max(len(snap), 1), 1)
-    writer.writerow(["metric",                "value"])
-    writer.writerow(["Total Footfall (pax)",  total_footfall])
-    writer.writerow(["Peak Location",         peak_entry[0]])
-    writer.writerow(["Peak Occupancy (pax)",  peak_entry[1]["crowd"]])
-    writer.writerow(["Average Occupancy (pax)", avg_occ])
-    try:
-        writer.writerow(["Active Tracked Persons", len(current_track_ids)])
-    except Exception:
-        pass
-    writer.writerow(["Tracking Method",       "Anonymous - no facial data stored"])
-    writer.writerow([])
-
-    # --- SECTION 2: LIVE OCCUPANCY BY ZONE ---
-    writer.writerow(["LIVE OCCUPANCY BY ZONE"])
-    writer.writerow(["zone", "node_id", "status", "occupancy_pax",
-                     "crowd_velocity_rdg", "temperature_c", "pull_signal"])
-    for nid, d in snap.items():
-        writer.writerow([
-            d.get("zone", nid),
-            nid,
-            d["status"].upper(),
-            d["crowd"],
-            round(get_crowd_velocity(nid), 2),
-            round(_latest_temps.get(nid, 27.0), 1),
-            d["pull_signal"],
-        ])
-    writer.writerow([])
-
-    # --- SECTION 3: EVACUATION ROUTE STATUS ---
-    writer.writerow(["EVACUATION ROUTE STATUS"])
-    rset_data = estimate_rset(current_route)
-    dynamic_rset  = rset_data.get("RSET_s", 142)
-    baseline_rset = 342
-    try:
-        reduction_pct = round((1 - float(dynamic_rset) / baseline_rset) * 100, 1)
-    except Exception:
-        reduction_pct = "N/A"
-    writer.writerow(["metric",                  "value"])
-    writer.writerow(["Active Route",            " > ".join(current_route)])
-    writer.writerow(["Route Safe",              "YES" if rset_data.get("safe", True) else "NO"])
-    writer.writerow(["Estimated Evacuation Time (s)", dynamic_rset])
-    writer.writerow(["Available Safe Egress Time (s)", rset_data.get("ASET_s", 600)])
-    writer.writerow(["Safety Margin (s)",       rset_data.get("margin_s", "N/A")])
-    writer.writerow(["Time Reduction vs Baseline", f"{reduction_pct}%"])
-    writer.writerow([])
-
-    # --- SECTION 4: ZONE CONGESTION SIGNALS ---
-    writer.writerow(["ZONE CONGESTION SIGNALS"])
-    writer.writerow(["zone", "signal", "detail"])
-    for nid, info in current_pull_signals.items():
-        reason = info.get("reason", "N/A").replace("\u2014", "-").replace("\u2013", "-")
-        writer.writerow([nid, info.get("signal", "N/A"), reason])
-    if not current_pull_signals:
-        writer.writerow(["All zones clear", "GREEN", "No congestion detected"])
-    writer.writerow([])
-
-    # --- SECTION 5: SYSTEM PERFORMANCE ---
-    writer.writerow(["SYSTEM PERFORMANCE"])
-    writer.writerow(["metric",                    "value",   "target",  "status"])
-    writer.writerow(["Thermal Detection Latency (ms)",
-                     round(_thermal_latency_ms, 1), "< 500ms",
-                     "PASS" if _thermal_latency_ms < 500 else "REVIEW"])
-    writer.writerow(["Acoustic Detection Latency (ms)",
-                     round(_fft_latency_ms, 1),    "< 500ms",
-                     "PASS" if _fft_latency_ms < 500 else "REVIEW"])
-    writer.writerow([])
-
-    # --- SECTION 6: NODE MAINTENANCE STATUS ---
-    writer.writerow(["NODE MAINTENANCE STATUS"])
-    writer.writerow(["node_id", "zone", "battery_pct", "battery_status", "next_service"])
-    BATT = {"N-011": 94, "N-031": 87, "N-042": 72, "N-043": 81, "N-067": 96, "N-089": 63}
-    NEXT = {"N-011": "Aug 10", "N-031": "Aug 01", "N-042": "Jul 15",
-            "N-043": "Aug 05", "N-067": "Aug 12", "N-089": "Jul 01"}
-    for nid, d in snap.items():
-        bat = BATT.get(nid, 85)
-        writer.writerow([
-            nid,
-            d.get("zone", nid),
-            bat,
-            "OK" if bat >= 75 else ("LOW - MONITOR" if bat >= 60 else "CRITICAL - REPLACE"),
-            NEXT.get(nid, "N/A"),
-        ])
-    writer.writerow([])
-
-    # --- SECTION 7: PRIVACY AND COMPLIANCE ---
-    writer.writerow(["PRIVACY AND COMPLIANCE"])
-    writer.writerow(["item",                      "status"])
-    writer.writerow(["Raw video transmitted",      "0 bytes"])
-    writer.writerow(["Facial data stored",         "None"])
-    writer.writerow(["PDPA compliant",             "Yes"])
-    writer.writerow(["Tracking method",            "Anonymous crowd vectors only"])
-    writer.writerow(["Data retention policy",      "Sensor telemetry only - no biometrics"])
-    writer.writerow([])
-
-    # --- SECTION 8: THERMAL AND ACOUSTIC EVENTS ---
-    writer.writerow(["THERMAL ANOMALY EVENTS"])
-    writer.writerow(["timestamp", "zone", "temperature_c", "anomaly_score", "outcome"])
-    try:
-        for ev in thermal_clf.get_events():
-            writer.writerow([
-                ev.get("timestamp", "N/A"),
-                ev.get("node_id", "N/A"),
-                ev.get("temp_c", "N/A"),
-                ev.get("z_score", "N/A"),
-                ev.get("event", "N/A"),
-            ])
-        if not thermal_clf.get_events():
-            writer.writerow(["No anomalies detected this session", "", "", "", ""])
-    except Exception:
-        writer.writerow(["Event log unavailable", "", "", "", ""])
-    writer.writerow([])
-
-    writer.writerow(["ACOUSTIC ALARM EVENTS"])
-    writer.writerow(["timestamp", "zone", "event", "signal_to_noise_db", "outcome"])
-    try:
-        for ev in fft_clf.get_events():
-            writer.writerow([
-                ev.get("timestamp", "N/A"),
-                ev.get("node_id", "N/A"),
-                ev.get("event", "N/A"),
-                ev.get("snr_db", "N/A"),
-                "ALARM CONFIRMED" if "CONFIRMED" in str(ev.get("event", "")) else "MONITORING",
-            ])
-        if not fft_clf.get_events():
-            writer.writerow(["No alarm events this session", "", "", "", ""])
-    except Exception:
-        writer.writerow(["Event log unavailable", "", "", "", ""])
-
 @app.route("/api/health")
 def api_health():
     """
@@ -1124,6 +978,17 @@ def api_health():
         "fft_latency_ms":     round(_fft_latency_ms,     3),
         "system_state":       _sys_state,
     })
+
+
+def _shutdown():
+    print("[LUMINA] Shutting down — releasing camera and MQTT...")
+    try: cap.release()
+    except: pass
+    try: mqtt_client.loop_stop(); mqtt_client.disconnect()
+    except: pass
+    print("[LUMINA] Clean shutdown complete.")
+
+atexit.register(_shutdown)
 
 
 if __name__ == "__main__":
