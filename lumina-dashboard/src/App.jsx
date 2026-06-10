@@ -35,12 +35,6 @@ const CORRIDORS = [
 ];
 const rc = id => { const r=ROOM_DEFS[id]; return r?{x:r.x+r.w/2,y:r.y+r.h/2}:{x:0,y:0}; };
 
-const MAINT = {
-  "N-011":{bat:94,next:"Aug 10"},"N-031":{bat:87,next:"Aug 01"},
-  "N-042":{bat:72,next:"Jul 15"},"N-043":{bat:81,next:"Aug 05"},
-  "N-067":{bat:96,next:"Aug 12"},"N-089":{bat:63,next:"Jul 01"},
-};
-
 // ─── STATUS COLOURS ───────────────────────────────────────────────────────────
 const statusColor = s => ({
   alert:"#DC2626", quarantine:"#D97706", warning:"#CA8A04", normal:"#059669"
@@ -152,6 +146,14 @@ export default function App() {
     uptime_s:0, yolo_loaded:false, mqtt_connected:false,
     camera_open:false, nodes_online:198, nodes_total:200,
     thermal_latency_ms:0, fft_latency_ms:0,
+    battery:{
+      "N-011":{pct:94,next_service:"Aug 10"},
+      "N-031":{pct:87,next_service:"Aug 01"},
+      "N-042":{pct:72,next_service:"Jul 15"},
+      "N-043":{pct:81,next_service:"Aug 05"},
+      "N-067":{pct:96,next_service:"Aug 12"},
+      "N-089":{pct:63,next_service:"Jul 01"},
+    },
   });
 
   const lastThermalRef    = useRef("NORMAL");
@@ -160,9 +162,9 @@ export default function App() {
   const manualOverrideRef = useRef(false);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
 
-  const pushEvent = (msg, level="info") => {
+  const pushEvent = (msg, level="info", tag=null) => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
-    setLiveEvents(p => [{time:`${ts}`,msg,level},...p].slice(0,15));
+    setLiveEvents(p => [{time:`${ts}`,msg,level,tag},...p].slice(0,15));
   };
 
   // ── POLL /api/status ──────────────────────────────────────────────────────
@@ -222,15 +224,28 @@ export default function App() {
           });
         }
         if (d.thermal_state==="ALERT"&&d.thermal_state!==lastThermalRef.current){
-          pushEvent("Thermal anomaly at N-042 — quarantine projected","danger");
+          // Find which node has thermal hazard
+          const thermalNode = d.nodes ? Object.entries(d.nodes).find(([,v])=>v.hazard==="thermal")?.[0] : "N-042";
+          pushEvent(`Thermal anomaly at ${thermalNode||"N-042"} — quarantine projected`,"danger","REACTIVE");
           lastThermalRef.current=d.thermal_state;
         } else if(d.thermal_state!=="ALERT"&&lastThermalRef.current==="ALERT") lastThermalRef.current=d.thermal_state;
+        // FFT confirms acoustic alarm — only relevant for fire, not fall
         if (d.fft_state==="CONFIRMED"&&d.fft_state!==lastFftRef.current){
-          pushEvent("FFT: 520Hz FACP alarm confirmed — global routing active","warning");
+          pushEvent("FFT: 520Hz FACP alarm confirmed — global routing active","warning","REACTIVE");
           lastFftRef.current=d.fft_state;
         } else if(d.fft_state!=="CONFIRMED"&&lastFftRef.current==="CONFIRMED") lastFftRef.current=d.fft_state;
+        // Fall detection — check if any node has fall hazard
+        if (d.nodes) {
+          const fallNode = Object.entries(d.nodes).find(([,v])=>v.hazard==="fall")?.[0];
+          if (fallNode && !lastFftRef._fallLogged) {
+            pushEvent(`Fall detected at ${fallNode} — buffer zone active, trampling risk`,"danger","REACTIVE");
+            lastFftRef._fallLogged = true;
+          } else if (!fallNode) {
+            lastFftRef._fallLogged = false;
+          }
+        }
         if ((d.crowd_velocity??0)>5&&!lastVelRef.current){
-          pushEvent(`Velocity spike ${d.crowd_velocity?.toFixed(1)}/rdg — pre-emptive reroute`,"warning");
+          pushEvent(`Velocity spike ${d.crowd_velocity?.toFixed(1)}/rdg — pre-emptive reroute`,"warning","PRE-EMPTIVE");
           lastVelRef.current=true;
         } else if((d.crowd_velocity??0)<=5) lastVelRef.current=false;
       } catch { setBackendOnline(false); }
@@ -264,17 +279,17 @@ export default function App() {
         if(p.status==="CRITICAL"){
           setIsHazard(true); setHazardType(p.hazard_type??"HAZARD");
           setPasCountdown(178);
-          pushEvent(`CRITICAL: ${p.hazard_type}`,"danger");
+          pushEvent(`CRITICAL: ${p.hazard_type}`,"danger","REACTIVE");
         }
         if(p.status==="FACP_CONFIRMED"){
           setFftConfirmed(true);
-          pushEvent("FACP confirmed — 520Hz alarm","warning");
+          pushEvent("FACP confirmed — 520Hz alarm","warning","REACTIVE");
           pushEvent("RAMO 520Hz directional beacon activated — ADA / NFPA 72 compliant guidance","info");
-          pushEvent("Mesh coordination active — N-042 penalty propagated to N-043 and N-067","info");
+          pushEvent("Mesh coordination active — N-042 penalty propagated to N-043 and N-067","info","PRE-EMPTIVE");
         }
         if(p.status==="RESOLVED"){
           setIsHazard(false); setPasCountdown(178); setFftConfirmed(false);
-          pushEvent("System RESOLVED — back to NORMAL","success");
+          pushEvent("System RESOLVED — back to NORMAL","success","REACTIVE");
         }
       } catch{ /* malformed MQTT payload — ignore */ }
     });
@@ -322,7 +337,7 @@ export default function App() {
         setActiveRoute(d.new_route);
         setNodes(prev=>prev.map(n=>n.id===target?{...n,status:"quarantine",hazard:"crowd"}:n));
         setSelectedNode(null); // clear selection so stale status doesn't confuse next action
-        pushEvent(`BOMBA override: ${target} quarantined — route locked. Auto-routing PAUSED.`,"warning");
+        pushEvent(`BOMBA override: ${target} quarantined — route locked. Auto-routing PAUSED.`,"warning","REACTIVE");
       } else {
         pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
       }
@@ -463,8 +478,8 @@ export default function App() {
                   {nodes.map(n=>{
                     const c=statusColor(n.status);
                     const isSel=selectedNode?.id===n.id;
-                    const m=MAINT[n.id]??{bat:85};
-                    const bc=m.bat<60?palette.danger:m.bat<75?palette.warning:palette.success;
+                    const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                    const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
                     return(
                       <g key={n.id} style={{cursor:"pointer"}}
                         onClick={()=>setSelectedNode(p=>p?.id===n.id?null:n)}>
@@ -502,8 +517,8 @@ export default function App() {
                   </thead>
                   <tbody>
                     {nodes.map((n,i)=>{
-                      const m=MAINT[n.id]??{bat:85,next:"—"};
-                      const bc=m.bat<60?palette.danger:m.bat<75?palette.warning:palette.success;
+                      const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                      const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
                       const sc=statusColor(n.status);
                       const isSel=selectedNode?.id===n.id;
                       return(
@@ -528,13 +543,13 @@ export default function App() {
                           <td style={{padding:"9px 10px"}}>
                             <div style={{display:"flex",alignItems:"center",gap:5}}>
                               <div style={{width:40,height:5,background:palette.grayLight,borderRadius:2,flexShrink:0}}>
-                                <div style={{height:"100%",width:`${m.bat}%`,background:bc,borderRadius:2}}/>
+                                <div style={{height:"100%",width:`${m.pct}%`,background:bc,borderRadius:2}}/>
                               </div>
-                              <span style={{fontSize:10,color:bc,fontWeight:600,whiteSpace:"nowrap"}}>{m.bat}%</span>
-                              {m.bat<60&&<span style={{fontSize:9,color:palette.danger,fontWeight:700}}>!</span>}
+                              <span style={{fontSize:10,color:bc,fontWeight:600,whiteSpace:"nowrap"}}>{m.pct}%</span>
+                              {m.pct<60&&<span style={{fontSize:9,color:palette.danger,fontWeight:700}}>!</span>}
                             </div>
                           </td>
-                          <td style={{padding:"9px 10px",fontSize:10,color:palette.textMuted,whiteSpace:"nowrap"}}>{m.next}</td>
+                          <td style={{padding:"9px 10px",fontSize:10,color:palette.textMuted,whiteSpace:"nowrap"}}>{m.next_service}</td>
                           <td style={{padding:"9px 10px",fontSize:10,
                             color:n.hazard?palette.danger:palette.success,whiteSpace:"nowrap"}}>
                             {n.hazard?n.hazard.toUpperCase():"NONE"}</td>
@@ -731,10 +746,11 @@ export default function App() {
                     const isActive=JSON.stringify(activeRoute)===JSON.stringify(opt.path);
                     return(
                       <button key={opt.label} onClick={()=>{
-                        setManualOverride(true);
-                        setManualBlockedNode(null);
+                        // Quick routes only suggest a path — system stays in AUTO mode
+                        // so real sensor triggers still work after BOMBA selects a route
                         setActiveRoute(opt.path);
-                        pushEvent(`BOMBA: ${opt.label} activated — ${opt.path.join(" → ")}. System locked.`,"warning");
+                        setManualBlockedNode(null);
+                        pushEvent(`BOMBA: ${opt.label} suggested — ${opt.path.join(" → ")}. AUTO mode active.`,"info","PRE-EMPTIVE");
                       }} style={{width:"100%",marginBottom:4,
                         background:isActive?palette.purpleLight:opt.safe?palette.successLight:palette.warningLight,
                         border:`1px solid ${isActive?palette.purple:opt.safe?palette.success:palette.warning}`,
@@ -1033,13 +1049,11 @@ export default function App() {
                         ))}
                         {isHazard&&n?.status==="alert"&&(
                           <text x={r.x+r.w/2} y={r.y+9} textAnchor="middle"
-                            style={{fontSize:7,fontWeight:700,fill:palette.danger,
-                              fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>RED ZONE</text>
-                        )}
-                        {isHazard&&(n?.crowd??0)>40&&n?.status!=="alert"&&n?.status!=="quarantine"&&(
-                          <text x={r.x+r.w/2} y={r.y+r.h-7} textAnchor="middle"
-                            style={{fontSize:7,fontWeight:700,fill:palette.info,
-                              fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>BLUE CLUSTER</text>
+                            style={{fontSize:7,fontWeight:700,
+                              fill:n?.hazard==="fall"?palette.warning:palette.danger,
+                              fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>
+                            {n?.hazard==="thermal"?"🔥 FIRE":n?.hazard==="fall"?"🚨 FALL":n?.hazard==="smoke"?"💨 SMOKE":"⚠ ALERT"}
+                          </text>
                         )}
                         {routeIdx>=0&&!isBlocked&&(()=>{
                           const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
@@ -1166,7 +1180,18 @@ export default function App() {
                           success:palette.success,info:palette.info}[e.level]??palette.gray}}/>
                       <span style={{fontSize:9,color:palette.textMuted,
                         fontVariantNumeric:"tabular-nums",whiteSpace:"nowrap",paddingTop:1}}>{e.time}</span>
-                      <span style={{fontSize:10,color:palette.text,lineHeight:1.4}}>{e.msg}</span>
+                      <span style={{fontSize:10,color:palette.text,lineHeight:1.4}}>
+                        {e.tag&&(
+                          <span style={{
+                            fontSize:7,fontWeight:700,padding:"1px 4px",borderRadius:3,
+                            marginRight:5,
+                            background:e.tag==="PRE-EMPTIVE"?"#EFF6FF":"#FEF2F2",
+                            color:e.tag==="PRE-EMPTIVE"?palette.info:palette.danger,
+                            border:`1px solid ${e.tag==="PRE-EMPTIVE"?palette.info+"44":palette.danger+"44"}`,
+                          }}>{e.tag}</span>
+                        )}
+                        {e.msg}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -1216,8 +1241,8 @@ export default function App() {
                   {nodes.map(n=>{
                     const c=statusColor(n.status);
                     const isSel=selectedNode?.id===n.id;
-                    const m=MAINT[n.id]??{bat:85};
-                    const bc=m.bat<60?palette.danger:m.bat<75?palette.warning:palette.success;
+                    const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                    const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
                     return(
                       <g key={n.id} style={{cursor:"pointer"}}
                         onClick={e=>{e.stopPropagation();setSelectedNode(p=>p?.id===n.id?null:n);}}>
@@ -1271,19 +1296,19 @@ export default function App() {
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)"}}>
                 {nodes.map((n,i)=>{
-                  const m=MAINT[n.id]??{bat:85,next:"—"};
-                  const bc=m.bat<60?palette.danger:m.bat<75?palette.warning:palette.success;
+                  const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                  const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
                   return(
                     <div key={n.id} style={{padding:"8px 10px",borderRight:i<5?`1px solid ${palette.border}`:"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
                         <span style={{fontWeight:700,fontSize:10,color:palette.info}}>{n.id}</span>
-                        {m.bat<60&&<span style={{fontSize:9,color:palette.danger,fontWeight:600}}>LOW</span>}
+                        {m.pct<60&&<span style={{fontSize:9,color:palette.danger,fontWeight:600}}>LOW</span>}
                       </div>
                       <div style={{height:3,background:palette.grayLight,borderRadius:2,marginBottom:3}}>
-                        <div style={{height:"100%",width:`${m.bat}%`,background:bc,borderRadius:2}}/>
+                        <div style={{height:"100%",width:`${m.pct}%`,background:bc,borderRadius:2}}/>
                       </div>
-                      <div style={{fontSize:9,color:bc,fontWeight:600}}>{m.bat}%</div>
-                      <div style={{fontSize:9,color:palette.textMuted,marginTop:2}}>Next: {m.next}</div>
+                      <div style={{fontSize:9,color:bc,fontWeight:600}}>{m.pct}%</div>
+                      <div style={{fontSize:9,color:palette.textMuted,marginTop:2}}>Next: {m.next_service}</div>
                     </div>
                   );
                 })}
@@ -1294,8 +1319,8 @@ export default function App() {
 
         {/* ══ TAB 3 — ANALYTICS ══ */}
         {tab==="analytics"&&(
-          <div style={{flex:1,display:"grid",gridTemplateRows:"auto 1fr auto",gap:10,minHeight:0}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+          <div style={{flex:1,display:"grid",gridTemplateRows:"auto 1fr auto",gap:10,minHeight:0,overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,flexShrink:0}}>
               <MetricCard label="Total Footfall" value={nodes.reduce((s,n)=>s+n.crowd,0)} unit="pax" color={palette.info} icon="👣" sub="live across all nodes"/>
               <MetricCard label="Peak Node"      value={nodes.reduce((a,n)=>n.crowd>a.crowd?n:a,nodes[0])?.id??"—"} unit="" color={palette.warning} icon="📍" sub="highest occupancy"/>
               <MetricCard label="Avg Occupancy"  value={Math.round(nodes.reduce((s,n)=>s+n.crowd,0)/Math.max(nodes.length,1))} unit="pax" color={palette.success} icon="📊" sub="system average"/>
@@ -1309,7 +1334,12 @@ export default function App() {
                 <div style={{display:"flex",flexDirection:"column",gap:8}}>
                   {nodes.map(n=>{
                     const pct=Math.min(100,Math.round((n.crowd/100)*100));
-                    const bc=n.crowd>85?palette.danger:n.crowd>60?palette.warning:palette.success;
+                    // Use same status as digital twin for consistency
+                    const bc=n.status==="alert"?palette.danger:
+                             n.status==="quarantine"?palette.purple:
+                             n.status==="warning"?palette.warning:
+                             n.crowd>85?palette.danger:
+                             n.crowd>60?palette.warning:palette.success;
                     return(
                       <div key={n.id}>
                         <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:2}}>
@@ -1362,10 +1392,10 @@ export default function App() {
                 />
               </div>
             </div>
-            <div style={{...card(),padding:"10px 14px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{...card(),padding:"8px 12px",flexShrink:0}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                 <div style={{fontSize:10,fontWeight:600,color:palette.textMuted}}>
-                  HAAS COMMERCIAL ROI — 200-NODE PROJECTION (estimated)
+                  OCCUPANCY SIGNALS
                 </div>
                 <button onClick={()=>{
                   const a=document.createElement("a");
@@ -1373,25 +1403,20 @@ export default function App() {
                   document.body.appendChild(a); a.click(); document.body.removeChild(a);
                   pushEvent("Report download initiated","info");
                 }} style={{background:palette.purpleLight,border:`1px solid ${palette.purple}`,
-                  borderRadius:6,padding:"4px 10px",color:palette.purple,
-                  fontSize:10,fontWeight:600,cursor:"pointer"}}>Export CSV</button>
+                  borderRadius:6,padding:"3px 8px",color:palette.purple,
+                  fontSize:9,fontWeight:600,cursor:"pointer"}}>Export CSV</button>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
                 {[
-                  {label:"DOOH Ad Premiums", sub:"Digital out-of-home advertising uplift",  color:palette.purple, pct:52, share:"52% of projected revenue"},
-                  {label:"Kiosk & Pop-Up",   sub:"Dynamic retail space utilisation",          color:palette.info,   pct:32, share:"32% of projected revenue"},
-                  {label:"ESG HVAC Savings", sub:"Energy cost reduction from occupancy data", color:palette.success,pct:16, share:"16% of projected revenue"},
-                ].map(({label,sub,color,pct,share})=>(
-                  <div key={label}>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:2}}>
-                      <span style={{color:palette.text,fontWeight:600}}>{label}</span>
-                      <span style={{color,fontWeight:700}}>{pct}%</span>
-                    </div>
-                    <div style={{height:4,background:palette.grayLight,borderRadius:2,marginBottom:3}}>
-                      <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2}}/>
-                    </div>
-                    <div style={{fontSize:9,color:palette.textMuted}}>{sub}</div>
-                    <div style={{fontSize:9,color,fontWeight:500,marginTop:1}}>{share}</div>
+                  {label:"High Traffic",  color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60), sub:"above 60 pax — DOOH / kiosk"},
+                  {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10), sub:"below 10 pax — unoccupied"},
+                  {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70), sub:"above 70 pax — peak load"},
+                ].map(({label,color,nodes:zn,sub})=>(
+                  <div key={label} style={{background:palette.bgCard2,borderRadius:6,
+                    padding:"5px 8px",borderLeft:`2px solid ${color}`}}>
+                    <div style={{fontSize:9,fontWeight:600,color:palette.text}}>{label}</div>
+                    <div style={{fontSize:10,fontWeight:700,color}}>{zn.length>0?zn.map(n=>n.id).join(", "):"None"}</div>
+                    <div style={{fontSize:8,color:palette.textMuted,marginTop:1}}>{sub}</div>
                   </div>
                 ))}
               </div>
