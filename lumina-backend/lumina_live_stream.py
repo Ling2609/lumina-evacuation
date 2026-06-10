@@ -166,8 +166,9 @@ def _read_thermal_sensor_simulated() -> float:
     global _thermal_tick
     _thermal_tick += 1
     with state_lock:
-        in_hazard = (system_state == "HAZARD")
-    if in_hazard:
+        in_fire = (system_state == "HAZARD" and
+                   live_node_status.get("N-011", {}).get("hazard") == "thermal")
+    if in_fire:
         return _gradual_fire(_thermal_tick, onset=0)
     return _normal_ambient(_thermal_tick)
 
@@ -176,15 +177,16 @@ def _thermal_thread():
     while True:
         temp   = _read_thermal_sensor_simulated()
         result = thermal_clf.classify(temp)
-        _thermal_latency_ms = result["latency_ms"]   # GIL-atomic float write
-        # Store latest temp for /api/status — drives the React temperature sparkline
-        _latest_temps["N-011"] = round(result["temp_c"], 1)
-        # Simulate correlated temps for other nodes (fire spreads)
+        _thermal_latency_ms = result["latency_ms"]
         with state_lock:
-            in_hazard = (system_state == "HAZARD")
-        if in_hazard:
-            _latest_temps["N-042"] = round(min(150, result["temp_c"] * 1.8), 1)  # fire epicentre
-            _latest_temps["N-043"] = round(min(80,  result["temp_c"] * 1.1), 1)  # adjacent smoke
+            in_fire = (system_state == "HAZARD" and
+                       live_node_status.get("N-011", {}).get("hazard") == "thermal")
+        # Only update temps with fire simulation during actual fire hazard
+        # During fall hazard, temps remain at ambient — fall is not a fire
+        _latest_temps["N-011"] = round(result["temp_c"], 1)
+        if in_fire:
+            _latest_temps["N-042"] = round(min(150, result["temp_c"] * 1.8), 1)
+            _latest_temps["N-043"] = round(min(80,  result["temp_c"] * 1.1), 1)
         else:
             _latest_temps["N-042"] = round(27.0 + random.uniform(-0.5, 0.5), 1)
             _latest_temps["N-043"] = round(27.0 + random.uniform(-0.3, 0.3), 1)
@@ -222,8 +224,10 @@ fft_clf = FFTAlarmClassifier("N-011")
 
 def _read_audio_frame_simulated() -> np.ndarray:
     with state_lock:
-        in_hazard = (system_state == "HAZARD")
-    if in_hazard:
+        # Only play alarm tone for fire/thermal hazard — fall does not trigger FACP
+        in_fire = (system_state == "HAZARD" and
+                   live_node_status.get("N-011", {}).get("hazard") == "thermal")
+    if in_fire:
         return _generate_alarm_tone(FRAME_SIZE / SAMPLE_RATE)
     else:
         n = FRAME_SIZE
@@ -487,7 +491,7 @@ def generate_frames():
             with state_lock:
                 live_node_status["N-011"]["status"] = "warning"
 
-        # --- FALL ESCALATION -
+        # --- FALL ESCALATION ---
         if current_frame_has_fall:
             recovery_timer_start = 0
             if fall_timer_start == 0:
@@ -496,7 +500,10 @@ def generate_frames():
                 with state_lock:
                     system_state = "HAZARD"
                     live_node_status["N-011"]["hazard"] = "fall"
-                    live_node_status["N-011"]["status"] = "alert"   # NodeMap turns red
+                    live_node_status["N-011"]["status"] = "alert"
+                    # Fall in lobby — quarantine it so DYN-A* routes around it
+                    # Occupants near N-011 directed to N-042 or N-031 instead
+                    live_node_status["N-011"]["pull_signal"] = "RED"
                 mqtt_client.publish(TOPIC, json.dumps({
                     "status":       "CRITICAL",
                     "hazard_type":  "FALL DETECTED",
@@ -520,11 +527,20 @@ def generate_frames():
                         "person_count": person_count,
                     }))
 
-        # --- DYN-A* REROUTE (throttled to 1/sec) -
+        # --- DYN-A* REROUTE (throttled to 1/sec) ---
         if t_now - route_cooldown >= 1.0:
             route_cooldown = t_now
-            path, score    = calculate_safest_route("N-011", "N-089", verbose=False)
+            # If lobby (N-011) has a fallen person, start route from N-042 (Retail A)
+            # so occupants don't have to pass through the fall zone
+            with state_lock:
+                lobby_hazard = live_node_status.get("N-011", {}).get("hazard")
+            start_node = "N-042" if lobby_hazard == "fall" else "N-011"
+            path, score = calculate_safest_route(start_node, "N-089", verbose=False)
             if path:
+                # Prepend N-011 for display context — occupants know where they are
+                # but the route avoids the fall zone as the first active waypoint
+                if start_node == "N-042":
+                    path = ["N-011"] + path
                 signals = run_pull_policy(path)
                 rset    = estimate_rset(path)
                 with state_lock:

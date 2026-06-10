@@ -279,13 +279,18 @@ export default function App() {
         if(p.status==="CRITICAL"){
           setIsHazard(true); setHazardType(p.hazard_type??"HAZARD");
           setPasCountdown(178);
-          pushEvent(`CRITICAL: ${p.hazard_type}`,"danger","REACTIVE");
+          if(p.hazard_type==="FALL DETECTED"){
+            pushEvent(`Fall detected — buffer zone active, evacuees redirected`,"danger","REACTIVE");
+          } else {
+            pushEvent(`CRITICAL: ${p.hazard_type}`,"danger","REACTIVE");
+          }
         }
         if(p.status==="FACP_CONFIRMED"){
+          // FACP only confirms fire — not triggered by fall detection
           setFftConfirmed(true);
           pushEvent("FACP confirmed — 520Hz alarm","warning","REACTIVE");
           pushEvent("RAMO 520Hz directional beacon activated — ADA / NFPA 72 compliant guidance","info");
-          pushEvent("Mesh coordination active — N-042 penalty propagated to N-043 and N-067","info","PRE-EMPTIVE");
+          pushEvent("Mesh coordination active — fire penalty propagated to adjacent nodes","info","PRE-EMPTIVE");
         }
         if(p.status==="RESOLVED"){
           setIsHazard(false); setPasCountdown(178); setFftConfirmed(false);
