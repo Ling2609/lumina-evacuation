@@ -1334,9 +1334,9 @@ export default function App() {
                 <div style={{display:"flex",flexDirection:"column",gap:8}}>
                   {nodes.map(n=>{
                     const pct=Math.min(100,Math.round((n.crowd/100)*100));
-                    // Use same status as digital twin for consistency
+                    // Bar colour reflects crowd density level — consistent with Fruin LOS thresholds
+                    // Alert/quarantine status shown via node label, not bar colour
                     const bc=n.status==="alert"?palette.danger:
-                             n.status==="quarantine"?palette.purple:
                              n.status==="warning"?palette.warning:
                              n.crowd>85?palette.danger:
                              n.crowd>60?palette.warning:palette.success;

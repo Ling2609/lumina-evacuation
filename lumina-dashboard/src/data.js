@@ -8,12 +8,9 @@ export const nodeData = [
 ];
 
 export const eventLog = [
-  { time: "T-00s", msg: "Thermal anomaly detected — Node #042, Sector 4", level: "danger" },
-  { time: "T-01s", msg: "Edge AI processing initiated (<500ms)", level: "info" },
-  { time: "T-02s", msg: "RED local quarantine zone projected — Sector 4 Retail", level: "danger" },
-  { time: "T-04s", msg: "Mesh communication — adjacent nodes rerouting vectors", level: "warning" },
-  { time: "T-06s", msg: "FACP PAS countdown initiated — 178s to global alarm", level: "warning" },
-  { time: "T-08s", msg: "DYN-A* routing activated — safe egress projected GREEN", level: "success" },
-  { time: "T-12s", msg: "Crowd congestion detected — Node #043 PULL policy active", level: "danger" },
-  { time: "T-15s", msg: "BOMBA commlink dispatched — situational awareness relayed", level: "info" },
+  { time: "INIT", msg: "Lumina system online — all subsystems nominal", level: "success" },
+  { time: "INIT", msg: "DYN-A* routing engine loaded — default route active", level: "info" },
+  { time: "INIT", msg: "Thermal classifier ready — Z-score baseline calibrating", level: "info" },
+  { time: "INIT", msg: "FFT classifier ready — listening for 520Hz FACP tone", level: "info" },
+  { time: "INIT", msg: "MQTT broker connected — awaiting sensor telemetry", level: "info" },
 ];
