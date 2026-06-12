@@ -653,6 +653,14 @@ export default function App() {
                       <text x={r.x+r.w-8} y={r.y+18} textAnchor="end"
                         style={{fontSize:11,fill:n?.crowd>70?palette.warning:palette.gray,
                           fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
+                      {isHazard&&n?.status==="alert"&&(
+                        <text x={r.x+r.w/2} y={r.y+13} textAnchor="middle"
+                          style={{fontSize:9,fontWeight:700,
+                            fill:n?.hazard==="fall"?palette.warning:palette.danger,
+                            fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>
+                          {n?.hazard==="thermal"?"🔥 FIRE":n?.hazard==="fall"?"🚨 FALL":n?.hazard==="smoke"?"💨 SMOKE":"⚠ ALERT"}
+                        </text>
+                      )}
                       {crowdDots(id).map((dot,di)=>(
                         <circle key={di} cx={dot.x} cy={dot.y} r="4.5" fill={palette.info} opacity="0.5"/>
                       ))}
