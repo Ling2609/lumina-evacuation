@@ -318,6 +318,14 @@ export default function App() {
     try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
   };
 
+  const triggerFire=async()=>{
+    // No physical thermal sensor in this prototype — fire is triggered manually
+    // for demonstration. Fall detection (camera) works independently and
+    // does not require this trigger.
+    pushEvent("DEMO: Fire simulation triggered at N-042 — thermal classifier active","danger","REACTIVE");
+    try{ await fetch(apiUrl("/trigger")); } catch{ pushEvent("Trigger failed — backend offline","danger"); }
+  };
+
   const toggleAiMode=async()=>{
     const m=aiMode==="DIORAMA"?"ENTERPRISE":"DIORAMA";
     try{ await fetch(apiUrl(`/api/set_mode/${m}`)); } catch{ /* offline */ }
@@ -783,7 +791,16 @@ export default function App() {
                   <div style={{fontSize:9,color:palette.textMuted,marginTop:2}}>
                     {fftConfirmed?"FFT CONFIRMED":"Awaiting acoustic confirmation"}
                   </div>
-                  <div style={{marginTop:8}}>
+                  <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:4}}>
+                    <button onClick={triggerFire} disabled={isHazard} style={{width:"100%",
+                      background:!isHazard?palette.dangerLight:"transparent",
+                      border:`1px solid ${!isHazard?palette.danger:palette.border}`,
+                      borderRadius:5,padding:"5px",fontSize:9,fontWeight:600,
+                      color:!isHazard?palette.danger:palette.textMuted,
+                      cursor:!isHazard?"pointer":"not-allowed",opacity:!isHazard?1:0.4}}
+                      title="No physical thermal sensor in this prototype — triggers fire simulation for demo">
+                      🔥 SIMULATE FIRE (DEMO)
+                    </button>
                     <button onClick={resetSystem} disabled={!isHazard} style={{width:"100%",
                       background:isHazard?palette.grayLight:"transparent",
                       border:`1px solid ${isHazard?palette.gray:palette.border}`,

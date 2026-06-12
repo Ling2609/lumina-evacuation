@@ -76,6 +76,11 @@ system_state = "NORMAL"          # NORMAL | HAZARD
 ai_mode      = "DIORAMA"         # DIORAMA | ENTERPRISE
 facp_confirmed = False           # True once FFT confirms the official alarm
 
+# Fire simulation flag — no physical thermal sensor in this prototype.
+# Set to True by /trigger (BOMBA "Simulate Fire" button) for demo purposes.
+# Cleared by /reset. Camera-based fall detection is independent of this flag.
+fire_sim_active = False
+
 # Shared metrics (written by bg threads, read by Flask)
 current_person_count  = 0
 current_track_ids     = []        # list of active anonymous track IDs
@@ -166,8 +171,7 @@ def _read_thermal_sensor_simulated() -> float:
     global _thermal_tick
     _thermal_tick += 1
     with state_lock:
-        in_fire = (system_state == "HAZARD" and
-                   live_node_status.get("N-011", {}).get("hazard") == "thermal")
+        in_fire = fire_sim_active
     if in_fire:
         return _gradual_fire(_thermal_tick, onset=0)
     return _normal_ambient(_thermal_tick)
@@ -179,10 +183,9 @@ def _thermal_thread():
         result = thermal_clf.classify(temp)
         _thermal_latency_ms = result["latency_ms"]
         with state_lock:
-            in_fire = (system_state == "HAZARD" and
-                       live_node_status.get("N-011", {}).get("hazard") == "thermal")
-        # Only update temps with fire simulation during actual fire hazard
-        # During fall hazard, temps remain at ambient — fall is not a fire
+            in_fire = fire_sim_active
+        # Only update temps with fire simulation during active fire trigger
+        # During fall hazard (fire_sim_active=False), temps remain ambient
         _latest_temps["N-011"] = round(result["temp_c"], 1)
         if in_fire:
             _latest_temps["N-042"] = round(min(150, result["temp_c"] * 1.8), 1)
@@ -224,9 +227,7 @@ fft_clf = FFTAlarmClassifier("N-011")
 
 def _read_audio_frame_simulated() -> np.ndarray:
     with state_lock:
-        # Only play alarm tone for fire/thermal hazard — fall does not trigger FACP
-        in_fire = (system_state == "HAZARD" and
-                   live_node_status.get("N-011", {}).get("hazard") == "thermal")
+        in_fire = fire_sim_active
     if in_fire:
         return _generate_alarm_tone(FRAME_SIZE / SAMPLE_RATE)
     else:
@@ -263,6 +264,29 @@ def _fft_thread():
 
 threading.Thread(target=_fft_thread, daemon=True).start()
 print("[INIT] FFT acoustic classifier thread started")
+
+# =============================================================================
+# 4b. MQTT HEARTBEAT — background thread
+# Keeps the ESP32 synced with live person counts during NORMAL operation.
+# CRITICAL/RESOLVED/FACP_CONFIRMED messages already cover hazard transitions —
+# this heartbeat fills the gap during normal (non-hazard) operation so the
+# ESP32's person count display stays current without flooding it with
+# per-frame video updates (15fps would overwhelm the Wi-Fi chip).
+# =============================================================================
+def _heartbeat_thread():
+    while True:
+        with state_lock:
+            _state = system_state
+            _count = current_person_count
+        if _state == "NORMAL":
+            mqtt_client.publish(TOPIC, json.dumps({
+                "status":       "NORMAL",
+                "person_count": _count,
+            }))
+        time.sleep(2.0)   # 2s heartbeat — light enough for ESP32 Wi-Fi/MQTT stack
+
+threading.Thread(target=_heartbeat_thread, daemon=True).start()
+print("[INIT] MQTT heartbeat thread started")
 
 # =============================================================================
 # 5. VIDEO GENERATOR
@@ -512,7 +536,11 @@ def generate_frames():
                 }))
         else:
             fall_timer_start = 0
-            if cur_state == "HAZARD":
+            with state_lock:
+                _n011_hazard = live_node_status["N-011"]["hazard"]
+            # Only auto-recover if THIS specific hazard was a fall.
+            # Fire (fire_sim_active) requires RESET button — does not self-resolve.
+            if cur_state == "HAZARD" and _n011_hazard == "fall":
                 if recovery_timer_start == 0:
                     recovery_timer_start = t_now
                 if t_now - recovery_timer_start >= 3.0:
@@ -526,6 +554,8 @@ def generate_frames():
                         "status":       "RESOLVED",
                         "person_count": person_count,
                     }))
+            else:
+                recovery_timer_start = 0
 
         # --- DYN-A* REROUTE (throttled to 1/sec) ---
         if t_now - route_cooldown >= 1.0:
@@ -701,14 +731,20 @@ def node_states():
 @app.route("/trigger")
 def trigger_hazard():
     """
-    Simulates a thermal camera detection. Sets manual_override so stochastic
-    drift pauses — BOMBA's command is not overwritten by sensor noise.
-    Does NOT set facp_confirmed — the FFT acoustic thread must confirm independently.
+    BOMBA "Simulate Fire" — there is no physical thermal sensor in this prototype,
+    so fire scenarios are triggered manually for demonstration purposes.
+    Fall detection (via camera) is independent and works without this trigger.
+
+    Sets fire_sim_active=True so the thermal classifier thread begins
+    simulating a gradual fire (_gradual_fire curve) and the FFT thread
+    begins simulating the 520Hz alarm tone for FACP confirmation.
+    Sets manual_override so stochastic drift pauses.
     """
-    global system_state, manual_override
+    global system_state, manual_override, fire_sim_active
     with state_lock:
-        system_state  = "HAZARD"
-        manual_override = True   # pause stochastic drift — BOMBA takes command
+        system_state    = "HAZARD"
+        manual_override = True
+        fire_sim_active = True   # thermal + FFT threads begin fire simulation
         live_node_status["N-042"]["status"] = "alert"
         live_node_status["N-042"]["hazard"] = "thermal"
     mqtt_client.publish(TOPIC, json.dumps({
@@ -716,16 +752,17 @@ def trigger_hazard():
         "hazard_type": "MANUAL OVERRIDE (thermal only — awaiting FFT confirmation)",
         "person_count": 0,
     }))
-    return jsonify({"status": "success", "message": "Thermal hazard triggered at N-042 — acoustic AI still running"})
+    return jsonify({"status": "success", "message": "Fire simulation triggered at N-042 — thermal + acoustic AI now running"})
 
 
 @app.route("/reset")
 def reset_system():
-    global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, manual_override
+    global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, manual_override, fire_sim_active
     with state_lock:
         system_state         = "NORMAL"
         facp_confirmed       = False
         manual_override      = False   # release manual command — restore full AUTO mode
+        fire_sim_active      = False   # stop fire simulation — thermal returns to ambient
         current_route        = ["N-011", "N-042", "N-043", "N-089"]  # restore baseline
         current_pull_signals = {}
         current_rset         = {}
@@ -1063,6 +1100,7 @@ if __name__ == "__main__":
         system_state         = "NORMAL"
         facp_confirmed       = False
         manual_override      = False
+        fire_sim_active      = False
         current_route        = ["N-011", "N-042", "N-043", "N-089"]
         current_pull_signals = {}
         current_rset         = {}
