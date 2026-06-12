@@ -653,14 +653,23 @@ export default function App() {
                       <text x={r.x+r.w-8} y={r.y+18} textAnchor="end"
                         style={{fontSize:11,fill:n?.crowd>70?palette.warning:palette.gray,
                           fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
-                      {isHazard&&n?.status==="alert"&&(
-                        <text x={r.x+r.w/2} y={r.y+13} textAnchor="middle"
-                          style={{fontSize:9,fontWeight:700,
-                            fill:n?.hazard==="fall"?palette.warning:palette.danger,
-                            fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>
-                          {n?.hazard==="thermal"?"🔥 FIRE":n?.hazard==="fall"?"🚨 FALL":n?.hazard==="smoke"?"💨 SMOKE":"⚠ ALERT"}
-                        </text>
-                      )}
+                      {isHazard&&n?.status==="alert"&&(()=>{
+                        const icon = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
+                        const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
+                        const col = n?.hazard==="fall"?palette.warning:palette.danger;
+                        const cx = r.x+r.w/2, cy = r.y+r.h/2;
+                        return(
+                          <g style={{pointerEvents:"none"}}>
+                            <text x={cx} y={cy-4} textAnchor="middle" dominantBaseline="central"
+                              style={{fontSize:60,opacity:0.22}}>{icon}</text>
+                            <text x={cx} y={cy+r.h/2-14} textAnchor="middle"
+                              style={{fontSize:13,fontWeight:800,fill:col,
+                                fontFamily:"Inter,sans-serif",letterSpacing:"0.12em"}}>
+                              {label}
+                            </text>
+                          </g>
+                        );
+                      })()}
                       {crowdDots(id).map((dot,di)=>(
                         <circle key={di} cx={dot.x} cy={dot.y} r="4.5" fill={palette.info} opacity="0.5"/>
                       ))}
@@ -1077,14 +1086,23 @@ export default function App() {
                         {crowdDots(id).map((dot,di)=>(
                           <circle key={di} cx={dot.x} cy={dot.y} r="3.5" fill={palette.info} opacity="0.55"/>
                         ))}
-                        {isHazard&&n?.status==="alert"&&(
-                          <text x={r.x+r.w/2} y={r.y+9} textAnchor="middle"
-                            style={{fontSize:7,fontWeight:700,
-                              fill:n?.hazard==="fall"?palette.warning:palette.danger,
-                              fontFamily:"Inter,sans-serif",letterSpacing:"0.06em"}}>
-                            {n?.hazard==="thermal"?"🔥 FIRE":n?.hazard==="fall"?"🚨 FALL":n?.hazard==="smoke"?"💨 SMOKE":"⚠ ALERT"}
-                          </text>
-                        )}
+                        {isHazard&&n?.status==="alert"&&(()=>{
+                          const icon = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
+                          const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
+                          const col = n?.hazard==="fall"?palette.warning:palette.danger;
+                          const cx = r.x+r.w/2, cy = r.y+r.h/2;
+                          return(
+                            <g style={{pointerEvents:"none"}}>
+                              <text x={cx} y={cy-2} textAnchor="middle" dominantBaseline="central"
+                                style={{fontSize:46,opacity:0.22}}>{icon}</text>
+                              <text x={cx} y={cy+r.h/2-12} textAnchor="middle"
+                                style={{fontSize:11,fontWeight:800,fill:col,
+                                  fontFamily:"Inter,sans-serif",letterSpacing:"0.12em"}}>
+                                {label}
+                              </text>
+                            </g>
+                          );
+                        })()}
                         {routeIdx>=0&&!isBlocked&&(()=>{
                           const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
                           const visibleIdx   = routeVisible.indexOf(id)+1;
