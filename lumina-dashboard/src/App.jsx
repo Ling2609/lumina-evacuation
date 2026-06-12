@@ -406,6 +406,7 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0;}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
         @keyframes dash{to{stroke-dashoffset:-28}}
+        @keyframes hazardBlink{0%,100%{opacity:0.12}50%{opacity:0.32}}
         ::-webkit-scrollbar{width:4px;height:4px}
         ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:2px}
         button{font-family:inherit;}
@@ -642,33 +643,40 @@ export default function App() {
                         style={{animation:"pulse 1.2s infinite"}}/>}
                       <rect x={r.x} y={r.y} width={r.w} height={r.h} rx="7"
                         fill={roomFill(id)} stroke={isSel?palette.info:roomBorder(id)} strokeWidth={isSel?2:1}/>
-                      {(()=>{
-                        const showHazard = isHazard && n?.status==="alert";
-                        const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                        const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                        const col   = n?.hazard==="fall"?palette.warning:palette.danger;
-                        return(
-                          <text x={r.x+r.w/2} y={r.y+28} textAnchor="middle"
-                            style={{fontSize:showHazard?18:13,fontWeight:showHazard?800:600,
-                              fill:showHazard?col:
-                                   (n?.id===manualBlockedNode)?palette.purple:
-                                   n?.status==="quarantine"?palette.warning:palette.text,
-                              fontFamily:"Inter,sans-serif",letterSpacing:showHazard?"0.08em":"normal"}}>
-                            {showHazard?`${icon} ${label}`:r.label}
-                          </text>
-                        );
-                      })()}
+                      <text x={r.x+r.w/2} y={r.y+28} textAnchor="middle"
+                        style={{fontSize:13,fontWeight:600,
+                          fill:n?.status==="alert"?palette.danger:
+                               (n?.id===manualBlockedNode)?palette.purple:
+                               n?.status==="quarantine"?palette.warning:palette.text,
+                          fontFamily:"Inter,sans-serif"}}>{r.label}</text>
                       <text x={r.x+r.w/2} y={r.y+44} textAnchor="middle"
-                        style={{fontSize:10,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>
-                        {(isHazard&&n?.status==="alert")?`${r.label} · ${r.sub}`:r.sub}
-                      </text>
+                        style={{fontSize:10,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>{r.sub}</text>
                       <text x={r.x+r.w-8} y={r.y+18} textAnchor="end"
                         style={{fontSize:11,fill:n?.crowd>70?palette.warning:palette.gray,
                           fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
                       {crowdDots(id).map((dot,di)=>(
                         <circle key={di} cx={dot.x} cy={dot.y} r="4.5" fill={palette.info} opacity="0.5"/>
                       ))}
-                      {/* Route sequence number — PRIORITY, large and centered */}
+                      {/* Hazard icon — large, centered, very transparent, blinking.
+                          Renders BEHIND the route number (drawn first = lower z-order). */}
+                      {isHazard&&n?.status==="alert"&&(()=>{
+                        const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
+                        const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
+                        const col   = n?.hazard==="fall"?palette.warning:palette.danger;
+                        return(
+                          <g style={{pointerEvents:"none"}}>
+                            <text x={centre.x} y={centre.y-6} textAnchor="middle" dominantBaseline="central"
+                              style={{fontSize:70,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>
+                            <text x={centre.x} y={r.y+r.h-12} textAnchor="middle"
+                              style={{fontSize:12,fontWeight:800,fill:col,
+                                fontFamily:"Inter,sans-serif",letterSpacing:"0.10em"}}>
+                              {label}
+                            </text>
+                          </g>
+                        );
+                      })()}
+                      {/* Route sequence number — PRIORITY, large and centered.
+                          Drawn AFTER the hazard icon so it sits on top and stays readable. */}
                       {ridx>=0&&!isBlocked&&(()=>{
                         // Only exclude the BOMBA-blocked node — all other route nodes get a label
                         // (alert nodes on the route are still passable — DYN-A* chose this path)
@@ -679,11 +687,11 @@ export default function App() {
                         return(
                           <g>
                             <circle cx={centre.x} cy={centre.y}
-                              r={visibleIdx===1||visibleIdx===visibleTotal?14:10}
+                              r={visibleIdx===1||visibleIdx===visibleTotal?20:15}
                               fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                              stroke="#fff" strokeWidth="2" opacity="0.95"/>
+                              stroke="#fff" strokeWidth="2.5" opacity="0.97"/>
                             <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                              style={{fontSize:12,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
+                              style={{fontSize:17,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
                               {visibleIdx}
                             </text>
                           </g>
@@ -1061,31 +1069,19 @@ export default function App() {
                         <rect x={r.x} y={r.y} width={r.w} height={r.h} rx="6"
                           fill={roomFill(id)} stroke={isSel?palette.info:roomBorder(id)}
                           strokeWidth={isSel?1.5:0.8}/>
-                        {(()=>{
-                          const showHazard = isHazard && n?.status==="alert";
-                          const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                          const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                          const col   = n?.hazard==="fall"?palette.warning:palette.danger;
-                          return(
-                            <text x={r.x+r.w/2} y={r.y+22} textAnchor="middle"
-                              style={{fontSize:showHazard?15:11,fontWeight:showHazard?800:600,
-                                fill:showHazard?col:
-                                     (n?.id===manualBlockedNode)?palette.purple:
-                                     n?.status==="quarantine"?palette.warning:palette.text,
-                                fontFamily:"Inter,sans-serif",letterSpacing:showHazard?"0.08em":"normal"}}>
-                              {showHazard?`${icon} ${label}`:r.label}
-                            </text>
-                          );
-                        })()}
+                        <text x={r.x+r.w/2} y={r.y+22} textAnchor="middle"
+                          style={{fontSize:11,fontWeight:600,
+                            fill:n?.status==="alert"?palette.danger:
+                                 (n?.id===manualBlockedNode)?palette.purple:
+                                 n?.status==="quarantine"?palette.warning:palette.text,
+                            fontFamily:"Inter,sans-serif"}}>{r.label}</text>
                         <text x={r.x+r.w/2} y={r.y+35} textAnchor="middle"
-                          style={{fontSize:9,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>
-                          {(isHazard&&n?.status==="alert")?`${r.label} · ${r.sub}`:r.sub}
-                        </text>
+                          style={{fontSize:9,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>{r.sub}</text>
                         <text x={r.x+r.w-6} y={r.y+14} textAnchor="end"
                           style={{fontSize:9,fill:n?.crowd>70?palette.warning:palette.gray,
                             fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
                         {(n?.velocity??0)>2&&(
-                          <text x={r.x+6} y={r.y+14} textAnchor="start"
+                          <text x={r.x+r.w-6} y={r.y+26} textAnchor="end"
                             style={{fontSize:8,fill:(n?.velocity??0)>5?palette.danger:palette.warning,
                               fontFamily:"Inter,sans-serif",fontWeight:700}}>
                             +{n.velocity.toFixed(1)}
@@ -1094,7 +1090,26 @@ export default function App() {
                         {crowdDots(id).map((dot,di)=>(
                           <circle key={di} cx={dot.x} cy={dot.y} r="3.5" fill={palette.info} opacity="0.55"/>
                         ))}
-                        {/* Route sequence number — PRIORITY, large and centered */}
+                        {/* Hazard icon — large, centered, very transparent, blinking.
+                            Renders BEHIND the route number (drawn first = lower z-order). */}
+                        {isHazard&&n?.status==="alert"&&(()=>{
+                          const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
+                          const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
+                          const col   = n?.hazard==="fall"?palette.warning:palette.danger;
+                          return(
+                            <g style={{pointerEvents:"none"}}>
+                              <text x={centre.x} y={centre.y-4} textAnchor="middle" dominantBaseline="central"
+                                style={{fontSize:54,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>
+                              <text x={centre.x} y={r.y+r.h-10} textAnchor="middle"
+                                style={{fontSize:10,fontWeight:800,fill:col,
+                                  fontFamily:"Inter,sans-serif",letterSpacing:"0.10em"}}>
+                                {label}
+                              </text>
+                            </g>
+                          );
+                        })()}
+                        {/* Route sequence number — PRIORITY, large and centered.
+                            Drawn AFTER the hazard icon so it sits on top and stays readable. */}
                         {routeIdx>=0&&!isBlocked&&(()=>{
                           const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
                           const visibleIdx   = routeVisible.indexOf(id)+1;
@@ -1103,11 +1118,11 @@ export default function App() {
                           return(
                             <g>
                               <circle cx={centre.x} cy={centre.y}
-                                r={visibleIdx===1||visibleIdx===visibleTotal?12:8}
+                                r={visibleIdx===1||visibleIdx===visibleTotal?16:12}
                                 fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                                stroke="#fff" strokeWidth="1.5" opacity="0.95"/>
+                                stroke="#fff" strokeWidth="2" opacity="0.97"/>
                               <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                                style={{fontSize:10,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
+                                style={{fontSize:14,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
                                 {visibleIdx}
                               </text>
                             </g>
