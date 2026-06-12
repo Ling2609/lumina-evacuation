@@ -653,26 +653,23 @@ export default function App() {
                       <text x={r.x+r.w-8} y={r.y+18} textAnchor="end"
                         style={{fontSize:11,fill:n?.crowd>70?palette.warning:palette.gray,
                           fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
+                      {/* Hazard badge — small, bottom-right corner (secondary to route number) */}
                       {isHazard&&n?.status==="alert"&&(()=>{
                         const icon = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                        const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                        const col = n?.hazard==="fall"?palette.warning:palette.danger;
-                        const cx = r.x+r.w/2, cy = r.y+r.h/2;
+                        const col  = n?.hazard==="fall"?palette.warning:palette.danger;
+                        const bx = r.x+r.w-16, by = r.y+r.h-16;
                         return(
                           <g style={{pointerEvents:"none"}}>
-                            <text x={cx} y={cy-4} textAnchor="middle" dominantBaseline="central"
-                              style={{fontSize:60,opacity:0.22}}>{icon}</text>
-                            <text x={cx} y={cy+r.h/2-14} textAnchor="middle"
-                              style={{fontSize:13,fontWeight:800,fill:col,
-                                fontFamily:"Inter,sans-serif",letterSpacing:"0.12em"}}>
-                              {label}
-                            </text>
+                            <circle cx={bx} cy={by} r="13" fill="#fff" stroke={col} strokeWidth="2"/>
+                            <text x={bx} y={by+1} textAnchor="middle" dominantBaseline="central"
+                              style={{fontSize:15}}>{icon}</text>
                           </g>
                         );
                       })()}
                       {crowdDots(id).map((dot,di)=>(
                         <circle key={di} cx={dot.x} cy={dot.y} r="4.5" fill={palette.info} opacity="0.5"/>
                       ))}
+                      {/* Route sequence number — PRIORITY, large and centered */}
                       {ridx>=0&&!isBlocked&&(()=>{
                         // Only exclude the BOMBA-blocked node — all other route nodes get a label
                         // (alert nodes on the route are still passable — DYN-A* chose this path)
@@ -683,11 +680,11 @@ export default function App() {
                         return(
                           <g>
                             <circle cx={centre.x} cy={centre.y}
-                              r={visibleIdx===1||visibleIdx===visibleTotal?12:8}
+                              r={visibleIdx===1||visibleIdx===visibleTotal?14:10}
                               fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                              opacity="0.9"/>
+                              stroke="#fff" strokeWidth="2" opacity="0.95"/>
                             <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                              style={{fontSize:9,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
+                              style={{fontSize:12,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
                               {visibleIdx}
                             </text>
                           </g>
@@ -1086,23 +1083,20 @@ export default function App() {
                         {crowdDots(id).map((dot,di)=>(
                           <circle key={di} cx={dot.x} cy={dot.y} r="3.5" fill={palette.info} opacity="0.55"/>
                         ))}
+                        {/* Hazard badge — small, bottom-right corner (secondary to route number) */}
                         {isHazard&&n?.status==="alert"&&(()=>{
                           const icon = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                          const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                          const col = n?.hazard==="fall"?palette.warning:palette.danger;
-                          const cx = r.x+r.w/2, cy = r.y+r.h/2;
+                          const col  = n?.hazard==="fall"?palette.warning:palette.danger;
+                          const bx = r.x+r.w-12, by = r.y+r.h-12;
                           return(
                             <g style={{pointerEvents:"none"}}>
-                              <text x={cx} y={cy-2} textAnchor="middle" dominantBaseline="central"
-                                style={{fontSize:46,opacity:0.22}}>{icon}</text>
-                              <text x={cx} y={cy+r.h/2-12} textAnchor="middle"
-                                style={{fontSize:11,fontWeight:800,fill:col,
-                                  fontFamily:"Inter,sans-serif",letterSpacing:"0.12em"}}>
-                                {label}
-                              </text>
+                              <circle cx={bx} cy={by} r="10" fill="#fff" stroke={col} strokeWidth="1.5"/>
+                              <text x={bx} y={by+1} textAnchor="middle" dominantBaseline="central"
+                                style={{fontSize:12}}>{icon}</text>
                             </g>
                           );
                         })()}
+                        {/* Route sequence number — PRIORITY, large and centered */}
                         {routeIdx>=0&&!isBlocked&&(()=>{
                           const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
                           const visibleIdx   = routeVisible.indexOf(id)+1;
@@ -1111,11 +1105,11 @@ export default function App() {
                           return(
                             <g>
                               <circle cx={centre.x} cy={centre.y}
-                                r={visibleIdx===1||visibleIdx===visibleTotal?9:6}
+                                r={visibleIdx===1||visibleIdx===visibleTotal?12:8}
                                 fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                                opacity="0.9"/>
+                                stroke="#fff" strokeWidth="1.5" opacity="0.95"/>
                               <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                                style={{fontSize:8,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
+                                style={{fontSize:10,fontWeight:700,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
                                 {visibleIdx}
                               </text>
                             </g>
