@@ -19,21 +19,128 @@ const FALLBACK_NODES = nodeData.map(n => ({ ...n, velocity: 0, pull: "GREEN" }))
 const apiUrl = path => `http://${FLASK_IP}:${FLASK_PORT}${path}`;
 
 // ─── FLOOR PLAN GEOMETRY ─────────────────────────────────────────────────────
-const ROOM_DEFS = {
-  "N-011": { x:40,  y:210, w:185, h:150, label:"Lobby",      sub:"N-011" },
-  "N-031": { x:250, y:210, w:185, h:150, label:"Office",     sub:"N-031" },
-  "N-042": { x:40,  y:30,  w:185, h:165, label:"Retail A",   sub:"N-042" },
-  "N-043": { x:250, y:30,  w:185, h:165, label:"Corridor B", sub:"N-043" },
-  "N-067": { x:460, y:30,  w:185, h:165, label:"Stairwell",  sub:"N-067" },
-  "N-089": { x:460, y:210, w:185, h:150, label:"Exit East",  sub:"N-089" },
+// SVG viewBox 760×520. Room positions from debug grid analysis.
+// Junctions J1-J20 are WAYPOINTS only — not routing nodes.
+
+// Junction waypoints for drawing corridor lines (invisible, used by route renderer)
+const JUNCTIONS = {
+  J1:{x:120.1,y:331.7}, J2:{x:120.1,y:264.0}, J3:{x:205.7,y:264.0},
+  J4:{x:380.6,y:264.0}, J5:{x:380.6,y:103.4}, J6:{x:282.1,y:103.4},
+  J7:{x:455.8,y:264.0}, J8:{x:582.0,y:264.0}, J9:{x:582.0,y:167.4},
+  J10:{x:582.0,y:86.8}, J11:{x:582.0,y:357.0}, J12:{x:582.0,y:469.0},
+  J13:{x:700.9,y:469.0}, J14:{x:474.8,y:469.0}, J15:{x:380.6,y:469.0},
+  J16:{x:380.6,y:375.4}, J17:{x:380.6,y:576.7}, J18:{x:205.7,y:576.7},
+  J19:{x:205.7,y:510.8}, J20:{x:205.7,y:464.1},
 };
-const CORRIDORS = [
-  {from:"N-011",to:"N-042"},{from:"N-011",to:"N-031"},
-  {from:"N-042",to:"N-043"},{from:"N-043",to:"N-067"},
-  {from:"N-031",to:"N-067"},{from:"N-067",to:"N-089"},
-  {from:"N-043",to:"N-089"},  // direct Corridor B → Exit East (matches FACILITY_GRAPH)
+
+// Exit positions — exact from user pixel coordinates (1234x1126 → SVG 760x693)
+const EXIT_POS = {
+  "EXIT-1":{x: 15.4, y:331.7, label:"Exit 1"},
+  "EXIT-2":{x:282.1, y: 12.3, label:"Exit 2"},
+  "EXIT-3":{x:582.0, y: 12.3, label:"Exit 3"},
+  "EXIT-4":{x:751.4, y:469.0, label:"Exit 4"},
+  "EXIT-5":{x:205.7, y:675.8, label:"Exit 5"},
+};
+
+// Room node positions — exact from user pixel coordinates
+const ROOM_POS = {
+  "R-siewlater": {x:120.1, y:219.1, label:"Siew Later"},
+  "R-bawangtea": {x:205.7, y:219.1, label:"BawangTea"},
+  "R-chillzone": {x:282.1, y:130.5, label:"Chill Zone"},
+  "R-emptyspace":{x:380.6, y:219.1, label:""},
+  "R-thairelax": {x:455.8, y:219.1, label:"Thai Relax"},
+  "R-femalewash":{x:660.2, y: 86.8, label:"Female Washroom"},
+  "R-malewash":  {x:660.2, y:167.4, label:"Male Washroom"},
+  "R-alibarber": {x:640.5, y:357.0, label:"Ali Barber"},
+  "R-publicrec": {x:325.8, y:375.4, label:"Public Recipe"},
+  "R-mamadini":  {x:396.6, y:375.4, label:"Mamadini"},
+  "R-meating":   {x:117.6, y:464.1, label:"Meating Rm"},
+  "R-baskin":    {x:117.6, y:576.7, label:"Baskin Batman"},
+  "R-custsvc":   {x:272.2, y:510.8, label:"Customer Svc"},
+  "R-msdiy":     {x:474.8, y:501.6, label:"MS. DIY"},
+  "R-sofasogood":{x:582.0, y:501.6, label:"SofaSoGood"},
+  "R-readme":    {x:700.9, y:501.6, label:"ReadMe"},
+};
+
+// Door connections: room → which junction(s) it connects to
+const ROOM_JUNCTIONS = {
+  "R-siewlater": ["J2"],
+  "R-bawangtea": ["J3"],
+  "R-chillzone": ["J6"],
+  "R-emptyspace":["J4","J5"],
+  "R-thairelax": ["J7"],
+  "R-femalewash":["J10"],
+  "R-malewash":  ["J9"],
+  "R-alibarber": ["J11"],
+  "R-publicrec": ["J16"],
+  "R-mamadini":  ["J16"],
+  "R-meating":   ["J20"],
+  "R-baskin":    ["J18"],
+  "R-custsvc":   ["J19"],
+  "R-msdiy":     ["J14"],
+  "R-sofasogood":["J12"],
+  "R-readme":    ["J13"],
+};
+
+// Corridor backbone edges (for drawing the grey corridor lines)
+const CORRIDOR_EDGES = [
+  ["J1","J2"],["J2","J3"],["J3","J4"],["J3","J20"],
+  ["J4","J5"],["J4","J7"],["J4","J16"],
+  ["J5","J6"],["J6","EXIT-2"],
+  ["J7","J8"],["J8","J9"],["J8","J11"],
+  ["J9","J10"],["J10","EXIT-3"],
+  ["J11","J12"],["J12","J13"],["J12","J14"],
+  ["J13","EXIT-4"],["J14","J15"],["J15","J16"],
+  ["J15","J17"],["J17","J18"],
+  ["J18","EXIT-5"],["J18","J19"],["J19","J20"],
+  ["J1","EXIT-1"],
 ];
-const rc = id => { const r=ROOM_DEFS[id]; return r?{x:r.x+r.w/2,y:r.y+r.h/2}:{x:0,y:0}; };
+
+// Route waypoint sequences for drawing green animated line
+const ROUTE_WAYPOINTS = {
+  "R-siewlater→EXIT-1":  ["J2","J3","J2","J1"],
+  "R-siewlater→EXIT-2":  ["J2","J3","J4","J5","J6"],
+  "R-bawangtea→EXIT-1":  ["J3","J2","J1"],
+  "R-bawangtea→EXIT-2":  ["J3","J4","J5","J6"],
+  "R-chillzone→EXIT-2":  ["J6"],
+  "R-chillzone→EXIT-1":  ["J6","J5","J4","J3","J2","J1"],
+  "R-emptyspace→EXIT-2": ["J5","J6"],
+  "R-emptyspace→EXIT-1": ["J4","J3","J2","J1"],
+  "R-thairelax→EXIT-3":  ["J7","J8","J9","J10"],
+  "R-thairelax→EXIT-2":  ["J7","J4","J5","J6"],
+  "R-femalewash→EXIT-3": ["J10"],
+  "R-malewash→EXIT-3":   ["J9","J10"],
+  "R-alibarber→EXIT-4":  ["J11","J12","J13"],
+  "R-publicrec→EXIT-2":  ["J16","J4","J5","J6"],
+  "R-publicrec→EXIT-5":  ["J16","J15","J17","J18"],
+  "R-mamadini→EXIT-4":   ["J16","J11","J12","J13"],
+  "R-mamadini→EXIT-5":   ["J16","J15","J17","J18"],
+  "R-meating→EXIT-1":    ["J20","J3","J2","J1"],
+  "R-meating→EXIT-5":    ["J20","J19","J18"],
+  "R-baskin→EXIT-5":     ["J18"],
+  "R-custsvc→EXIT-5":    ["J19","J18"],
+  "R-custsvc→EXIT-1":    ["J20","J3","J2","J1"],
+  "R-msdiy→EXIT-4":      ["J14","J12","J13"],
+  "R-msdiy→EXIT-5":      ["J14","J15","J17","J18"],
+  "R-sofasogood→EXIT-4": ["J12","J13"],
+  "R-readme→EXIT-4":     ["J13"],
+};
+
+// Get waypoint coordinate sequence for a route segment
+const getRoutePoints = (route) => {
+  if (!route || route.length < 2) return [];
+  const startId = route[0];
+  const exitId  = route[route.length - 1];
+  const key     = `${startId}→${exitId}`;
+  const wps     = ROUTE_WAYPOINTS[key] || [];
+  const startPos = ROOM_POS[startId] || EXIT_POS[startId] || {x:0,y:0};
+  const exitPos  = EXIT_POS[exitId]  || {x:0,y:0};
+  const pts = [startPos,
+    ...wps.map(j => JUNCTIONS[j] || EXIT_POS[j] || {x:0,y:0}),
+    exitPos];
+  return pts.map(p => `${p.x},${p.y}`).join(" ");
+};
+
 
 // ─── STATUS COLOURS ───────────────────────────────────────────────────────────
 const statusColor = s => ({
@@ -118,7 +225,7 @@ export default function App() {
   const [isHazard,      setIsHazard]      = useState(false);
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
-  const [activeRoute,   setActiveRoute]   = useState(["N-011","N-042","N-043","N-089"]);
+  const [activeRoute,   setActiveRoute]   = useState(["R-custsvc","EXIT-5"]);
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);
   const [thermalState,  setThermalState]  = useState("NORMAL");
@@ -147,12 +254,11 @@ export default function App() {
     camera_open:false, nodes_online:198, nodes_total:200,
     thermal_latency_ms:0, fft_latency_ms:0,
     battery:{
-      "N-011":{pct:94,next_service:"Aug 10"},
-      "N-031":{pct:87,next_service:"Aug 01"},
-      "N-042":{pct:72,next_service:"Jul 15"},
-      "N-043":{pct:81,next_service:"Aug 05"},
-      "N-067":{pct:96,next_service:"Aug 12"},
-      "N-089":{pct:63,next_service:"Jul 01"},
+      "R-publicrec":{pct:94,next_service:"Aug 10"},
+      "R-thairelax":{pct:87,next_service:"Aug 01"},
+      "R-alibarber":{pct:91,next_service:"Aug 05"},
+      "R-custsvc":{pct:72,next_service:"Jul 15"},
+      "R-baskin":{pct:88,next_service:"Aug 08"},
     },
   });
 
@@ -225,8 +331,8 @@ export default function App() {
         }
         if (d.thermal_state==="ALERT"&&d.thermal_state!==lastThermalRef.current){
           // Find which node has thermal hazard
-          const thermalNode = d.nodes ? Object.entries(d.nodes).find(([,v])=>v.hazard==="thermal")?.[0] : "N-042";
-          pushEvent(`Thermal anomaly at ${thermalNode||"N-042"} — quarantine projected`,"danger","REACTIVE");
+          const thermalNode = d.nodes ? Object.entries(d.nodes).find(([,v])=>v.hazard==="thermal")?.[0] : "R-thairelax";
+          pushEvent(`Thermal anomaly at ${thermalNode||"R-thairelax"} — quarantine projected`,"danger","REACTIVE");
           lastThermalRef.current=d.thermal_state;
         } else if(d.thermal_state!=="ALERT"&&lastThermalRef.current==="ALERT") lastThermalRef.current=d.thermal_state;
         // FFT confirms acoustic alarm — only relevant for fire, not fall
@@ -313,7 +419,7 @@ export default function App() {
     setManualOverride(false);
     setManualBlockedNode(null);
     setIsHazard(false); setPasCountdown(178); setFftConfirmed(false); setPullSignals({});
-    setActiveRoute(["N-011","N-042","N-043","N-089"]);
+    setActiveRoute(["R-custsvc","EXIT-5"]);
     pushEvent("RESET — manual override released, returning to AUTO mode","info");
     try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
   };
@@ -322,7 +428,7 @@ export default function App() {
     // No physical thermal sensor in this prototype — fire is triggered manually
     // for demonstration. Fall detection (camera) works independently and
     // does not require this trigger.
-    pushEvent("DEMO: Fire simulation triggered at N-042 — thermal classifier active","danger","REACTIVE");
+    pushEvent("DEMO: Fire simulation triggered at R-thairelax (Thai Relax) — thermal classifier active","danger","REACTIVE");
     try{ await fetch(apiUrl("/trigger")); } catch{ pushEvent("Trigger failed — backend offline","danger"); }
   };
 
@@ -334,7 +440,7 @@ export default function App() {
 
   const overridePath=async()=>{
     if(!isHazard){ alert("Cannot override during normal operations."); return; }
-    const target=selectedNode?.id??"N-031";
+    const target=selectedNode?.id??"R-custsvc";
     // Only reject if THIS node was already manually blocked by BOMBA
     if(target===manualBlockedNode){
       alert(`${target} is already manually blocked. Press RESET to release it.`); return;
@@ -360,36 +466,9 @@ export default function App() {
   // ── DERIVED ───────────────────────────────────────────────────────────────
   const rsetTotal   = rset.RSET_s ?? 142;
   const rsetSafe    = rset.safe   ?? true;
-  // Animated route segments — break only at the BOMBA-blocked node.
-  // Uses manualBlockedNode (not node.status) as single source of truth,
-  // so stale backend statuses never affect the animation.
-  const safeRouteSegments = activeRoute.reduce((segs, id) => {
-    if (id === manualBlockedNode) { segs.push([]); }
-    else {
-      if (!segs.length) segs.push([]);
-      segs[segs.length-1].push(id);
-    }
-    return segs;
-  }, []).filter(s=>s.length>1);
 
-  const roomFill=id=>{
-    const n=nodes.find(x=>x.id===id); if(!n) return "#F8FAFC";
-    if(n.id===manualBlockedNode) return palette.purpleLight;
-    return {alert:"#FEF2F2",quarantine:"#FFFBEB",warning:"#FEFCE8",normal:"#F0FDF4"}[n.status]??"#F8FAFC";
-  };
-  const roomBorder=id=>{
-    const n=nodes.find(x=>x.id===id); if(!n) return palette.border;
-    if(n.id===manualBlockedNode) return palette.purple;
-    return {alert:palette.danger,quarantine:palette.warning,warning:"#CA8A04",normal:palette.border}[n.status]??palette.border;
-  };
-  const crowdDots=id=>{
-    const n=nodes.find(x=>x.id===id);
-    const count=Math.min(6,Math.round((n?.crowd??0)/15));
-    const r=ROOM_DEFS[id]; if(!r) return [];
-    return Array.from({length:count},(_,i)=>({
-      x:r.x+22+(i%3)*30, y:r.y+r.h-26-Math.floor(i/3)*22,
-    }));
-  };
+
+
 
   const hazardBorder = isHazard ? `2px solid ${palette.danger}` : `1px solid ${palette.border}`;
 
@@ -482,8 +561,7 @@ export default function App() {
                 <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{width:"100%",height:"100%"}}>
                   {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*10} y1={0} x2={i*10} y2={100} stroke="#E2E8F0" strokeWidth="0.3"/>))}
                   {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*10} x2={100} y2={i*10} stroke="#E2E8F0" strokeWidth="0.3"/>))}
-                  {nodes.length>0&&[["N-011","N-042"],["N-011","N-031"],["N-042","N-043"],
-                    ["N-043","N-067"],["N-031","N-067"],["N-067","N-089"]].map(([a,b],i)=>{
+                  {nodes.length>0&&[CORRIDOR_EDGES].map(([a,b],i)=>{
                     const na=nodes.find(x=>x.id===a),nb=nodes.find(x=>x.id===b);
                     if(!na||!nb) return null;
                     return <line key={i} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
@@ -600,106 +678,182 @@ export default function App() {
               </div>
             </div>
             <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 280px",minHeight:0,overflow:"hidden"}}>
-              <svg viewBox="0 0 700 420" style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
-                {Array.from({length:8},(_,i)=>(<line key={`v${i}`} x1={i*100} y1={0} x2={i*100} y2={420} stroke="#E2E8F0" strokeWidth="0.5"/>))}
-                {Array.from({length:6},(_,i)=>(<line key={`h${i}`} x1={0} y1={i*84} x2={700} y2={i*84} stroke="#E2E8F0" strokeWidth="0.5"/>))}
-                {CORRIDORS.map((c,i)=>{
-                  const isOnRoute = activeRoute.includes(c.from) && activeRoute.includes(c.to) &&
-                    activeRoute.indexOf(c.to) === activeRoute.indexOf(c.from)+1;
-                  const sig = pullSignals[c.from];
-                  const offRouteBlocked = !isOnRoute && (
-                    nodes.find(x=>x.id===c.from)?.status==="alert"||
-                    nodes.find(x=>x.id===c.to)?.status==="alert"||
-                    nodes.find(x=>x.id===c.from)?.status==="quarantine"||
-                    nodes.find(x=>x.id===c.to)?.status==="quarantine"
-                  );
-                  const f=rc(c.from),t=rc(c.to);
-                  // Skip static line on active route — animated polyline handles it
-                  if (isOnRoute) return null;
-                  return <line key={i} x1={f.x} y1={f.y} x2={t.x} y2={t.y}
-                    stroke={offRouteBlocked||sig?.signal==="RED"?palette.danger:"#CBD5E1"}
-                    strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7"/>;
+              <svg viewBox="-30 -30 820 760" style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
+                {/* ── FLOOR PLAN — drawn SVG (no image dependency) ── */}
+
+                {/* Outer wall */}
+                <polygon points="15.4,12.3 751.4,12.3 751.4,675.8 15.4,675.8"
+                  fill="#EEF2F7" stroke="#334155" strokeWidth="3"/>
+
+                {/* Room polygons — exact coordinates from floor plan */}
+                {[
+                  {pts:"15.4,12.3 162.6,12.3 162.6,219.1 15.4,219.1",             l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3"},
+                  {pts:"162.6,12.3 248.2,12.3 248.2,219.1 162.6,219.1",           l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3"},
+                  {pts:"248.2,12.3 410.2,12.3 410.2,219.1 248.2,219.1",           l1:"",             l2:"",           cx:329.2, cy:80.0, fill:"#FEF9C3"},
+                  {pts:"248.2,130.5 359.1,130.5 359.1,219.1 248.2,219.1",         l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3"},
+                  {pts:"410.2,12.3 558.6,12.3 558.6,132.3 487.2,219.1 410.2,219.1", l1:"Thai Relax", l2:"Massage",   cx:484.4, cy:115.7, fill:"#FEF9C3"},
+                  {pts:"660.2,12.3 751.4,12.3 751.4,126.8 660.2,126.8",           l1:"Female Washroom",    l2:"",           cx:705.8, cy:69.6, fill:"#FFE4E6"},
+                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",         l1:"Male Washroom",      l2:"",           cx:705.8, cy:189.0, fill:"#FFE4E6"},
+                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,306.5 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber", l2:"", cx:695.9, cy:315.0, fill:"#FFE4E6"},
+                  {pts:"396.6,305.3 524.1,305.3 524.1,432.0 396.6,432.0",         l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE"},
+                  {pts:"221.7,305.3 325.8,305.3 325.8,432.0 221.7,432.0",         l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5"},
+                  {pts:"221.7,432.0 221.7,483.1",                                   l1:"Customer",     l2:"Service",    cx:280.0, cy:490.0, lines:["221.7,432.0 221.7,483.1","221.7,432.0 325.8,432.0","325.8,432.0 325.8,567.4"], fill:"#FFEDD5"},
+                  {pts:"15.4,396.4 117.6,396.4 117.6,528.7 15.4,528.7",           l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5"},
+                  {pts:"15.4,528.7 117.6,528.7 117.6,675.8 15.4,675.8",           l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5"},
+                  {pts:"392.3,501.6 529.7,501.6 529.7,675.8 392.3,675.8",         l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE"},
+                  {pts:"529.7,501.6 649.1,501.6 649.1,675.8 529.7,675.8",         l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE"},
+                  {pts:"649.1,501.6 751.4,501.6 751.4,675.8 649.1,675.8",         l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE"},
+                ].map((r,i)=>(
+                  <g key={i}>
+                    {r.lines
+                      ? <g>
+                          <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
+                          {r.lines.map((l,li)=><line key={li}
+                            x1={parseFloat(l.split(" ")[0].split(",")[0])}
+                            y1={parseFloat(l.split(" ")[0].split(",")[1])}
+                            x2={parseFloat(l.split(" ")[1].split(",")[0])}
+                            y2={parseFloat(l.split(" ")[1].split(",")[1])}
+                            stroke="#94A3B8" strokeWidth="1.5"/>)}
+                        </g>
+                      : <polygon points={r.pts} fill={r.fill||"white"} stroke="#94A3B8" strokeWidth="1.5"/>
+                    }
+                    <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
+                      dominantBaseline="central"
+                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
+                    {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
+                      dominantBaseline="central"
+                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
+                  </g>
+                ))}
+
+                {/* Corridor backbone lines */}
+                {CORRIDOR_EDGES.map(([a,b],i)=>{
+                  const pa=JUNCTIONS[a]||EXIT_POS[a]||{x:0,y:0};
+                  const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
+                  return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+                    stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7"/>;
                 })}
-                {safeRouteSegments.map((seg,si)=>{
-                  const pts=seg.map(id=>{const c=rc(id);return`${c.x},${c.y}`;}).join(" ");
-                  return(<g key={si}>
+
+                {/* Room → junction door lines */}
+                {Object.entries(ROOM_JUNCTIONS).map(([rid,jids])=>
+                  jids.map((jid,i)=>{
+                    const rp=ROOM_POS[rid]||{x:0,y:0};
+                    const jp=JUNCTIONS[jid]||{x:0,y:0};
+                    return <line key={`${rid}-${i}`}
+                      x1={rp.x} y1={rp.y} x2={jp.x} y2={jp.y}
+                      stroke="#CBD5E1" strokeWidth="1" strokeDasharray="2 3" opacity="0.45"/>;
+                  })
+                )}
+
+                {/* Active route animated line */}
+                {activeRoute.length>=2&&(()=>{
+                  const pts=getRoutePoints(activeRoute);
+                  if(!pts) return null;
+                  return(<g>
                     <polyline points={pts} fill="none" stroke={palette.success}
-                      strokeWidth="3" strokeDasharray="10 5" opacity="0.9"
-                      style={{animation:"dash 1.5s linear infinite"}}/>
-                    <polyline points={pts} fill="none" stroke={palette.success} strokeWidth="8" opacity="0.07"/>
+                      strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray="12 6" opacity="0.95"
+                      style={{animation:"dash 1.2s linear infinite"}}/>
+                    <polyline points={pts} fill="none" stroke={palette.success}
+                      strokeWidth="14" opacity="0.08"
+                      strokeLinecap="round" strokeLinejoin="round"/>
+                  </g>);
+                })()}
+
+                {/* Exit dots */}
+                {Object.entries(EXIT_POS).map(([id,pos])=>{
+                  const isOnRoute=activeRoute.includes(id);
+                  return(<g key={id}>
+                    <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
+                      fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
+                      stroke="#fff" strokeWidth={isOnRoute?2.5:1.5}/>
+                    {isOnRoute&&<circle cx={pos.x} cy={pos.y} r={14}
+                      fill="none" stroke={palette.success} strokeWidth="1.5" opacity="0.5"
+                      style={{animation:"pulse 1.2s infinite"}}/>}
+                    <g>
+                      {(()=>{
+                        // Place badge OUTSIDE the outer wall
+                        const bw=36, bh=14;
+                        const bx = id==="EXIT-1" ? pos.x-bw-8
+                                 : id==="EXIT-4" ? pos.x+10
+                                 : pos.x-bw/2;
+                        const by = id==="EXIT-2"||id==="EXIT-3" ? pos.y-bh-8
+                                 : id==="EXIT-5" ? pos.y+10
+                                 : pos.y-bh/2;
+                        return(<g>
+                          <rect x={bx} y={by} width={bw} height={bh} rx="3"
+                            fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
+                          <text x={bx+bw/2} y={by+bh/2} textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{fontSize:7.5,fontWeight:800,fill:"white",
+                              fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
+                        </g>);
+                      })()}
+                    </g>
                   </g>);
                 })}
-                {Object.entries(ROOM_DEFS).map(([id,r])=>{
+
+                {/* Room node dots */}
+                {Object.entries(ROOM_POS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
-                  const isAlert=n?.status==="alert";
                   const isSel=selectedNode?.id===id;
-                  const centre=rc(id);
-                  const ridx=activeRoute.indexOf(id);
+                  const isOnRoute=activeRoute.includes(id);
+                  const isAlert=n?.status==="alert";
                   const isBlocked=id===manualBlockedNode;
+                  const dotColor=isBlocked?palette.purple:
+                    isAlert?palette.danger:
+                    n?.status==="quarantine"?palette.warning:
+                    n?.status==="warning"?"#CA8A04":
+                    isOnRoute?palette.success:"rgba(249,115,22,0.85)";
+                  const r=isOnRoute||isAlert?8:5;
                   return(
                     <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
-                      {isAlert&&<rect x={r.x-5} y={r.y-5} width={r.w+10} height={r.h+10}
-                        rx="10" fill={palette.danger} opacity="0.08"
+                      {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
+                        fill={palette.danger} opacity="0.15"
                         style={{animation:"pulse 1.2s infinite"}}/>}
-                      <rect x={r.x} y={r.y} width={r.w} height={r.h} rx="7"
-                        fill={roomFill(id)} stroke={isSel?palette.info:roomBorder(id)} strokeWidth={isSel?2:1}/>
-                      <text x={r.x+r.w/2} y={r.y+28} textAnchor="middle"
-                        style={{fontSize:13,fontWeight:600,
-                          fill:n?.status==="alert"?palette.danger:
-                               (n?.id===manualBlockedNode)?palette.purple:
-                               n?.status==="quarantine"?palette.warning:palette.text,
-                          fontFamily:"Inter,sans-serif"}}>{r.label}</text>
-                      <text x={r.x+r.w/2} y={r.y+44} textAnchor="middle"
-                        style={{fontSize:10,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>{r.sub}</text>
-                      <text x={r.x+r.w-8} y={r.y+18} textAnchor="end"
-                        style={{fontSize:11,fill:n?.crowd>70?palette.warning:palette.gray,
-                          fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
-                      {crowdDots(id).map((dot,di)=>(
-                        <circle key={di} cx={dot.x} cy={dot.y} r="4.5" fill={palette.info} opacity="0.5"/>
-                      ))}
-                      {/* Hazard icon — large, centered, very transparent, blinking.
-                          Renders BEHIND the route number (drawn first = lower z-order). */}
-                      {isHazard&&n?.status==="alert"&&(()=>{
-                        const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                        const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                        const col   = n?.hazard==="fall"?palette.warning:palette.danger;
-                        return(
-                          <g style={{pointerEvents:"none"}}>
-                            <text x={centre.x} y={centre.y-6} textAnchor="middle" dominantBaseline="central"
-                              style={{fontSize:70,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>
-                            <text x={centre.x} y={r.y+r.h-12} textAnchor="middle"
-                              style={{fontSize:12,fontWeight:800,fill:col,
-                                fontFamily:"Inter,sans-serif",letterSpacing:"0.10em"}}>
-                              {label}
-                            </text>
-                          </g>
-                        );
+                      <circle cx={pos.x} cy={pos.y} r={r}
+                        fill={dotColor} stroke="#fff" strokeWidth={isSel?2.5:1.5}/>
+                      {(isOnRoute||isAlert)&&<text x={pos.x+r+3} y={pos.y}
+                        textAnchor="start" dominantBaseline="central"
+                        style={{fontSize:7.5,fontWeight:700,
+                          fill:isAlert?palette.danger:"#1e293b",
+                          fontFamily:"Inter,sans-serif"}}>{pos.label}</text>}
+                      {isHazard&&isAlert&&(()=>{
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
+                        return<text x={pos.x} y={pos.y-r-4} textAnchor="middle"
+                          style={{fontSize:13,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
                       })()}
-                      {/* Route sequence number — PRIORITY, large and centered.
-                          Drawn AFTER the hazard icon so it sits on top and stays readable. */}
-                      {ridx>=0&&!isBlocked&&(()=>{
-                        // Only exclude the BOMBA-blocked node — all other route nodes get a label
-                        // (alert nodes on the route are still passable — DYN-A* chose this path)
-                        const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
-                        const visibleIdx   = routeVisible.indexOf(id)+1;
-                        const visibleTotal = routeVisible.length;
-                        if(visibleIdx<=0) return null;
-                        return(
-                          <g>
-                            <circle cx={centre.x} cy={centre.y}
-                              r={visibleIdx===1||visibleIdx===visibleTotal?20:15}
-                              fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                              stroke="#fff" strokeWidth="2.5" opacity="0.97"/>
-                            <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                              style={{fontSize:17,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
-                              {visibleIdx}
-                            </text>
-                          </g>
-                        );
+                      {isOnRoute&&!isBlocked&&(()=>{
+                        const rv=activeRoute.filter(r=>r!==manualBlockedNode);
+                        const vi=rv.indexOf(id)+1;
+                        if(vi<=0) return null;
+                        const isF=vi===1,isL=vi===rv.length;
+                        return(<g>
+                          <circle cx={pos.x-r-8} cy={pos.y} r={7}
+                            fill={isL?palette.success:isF?palette.warning:palette.info}
+                            stroke="#fff" strokeWidth="1.5"/>
+                          <text x={pos.x-r-8} y={pos.y} textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{fontSize:7,fontWeight:800,fill:"#fff",
+                              fontFamily:"Inter,sans-serif"}}>{vi}</text>
+                        </g>);
                       })()}
+                      {(n?.crowd??0)>0&&(
+                        <text x={pos.x} y={pos.y+r+9} textAnchor="middle"
+                          style={{fontSize:7,fill:n.crowd>70?palette.warning:"#94A3B8",
+                            fontFamily:"Inter,sans-serif"}}>{n.crowd}p</text>
+                      )}
                     </g>
                   );
                 })}
+
+                {activeRoute.length<=1&&(
+                  <text x="380" y="340" textAnchor="middle" dominantBaseline="central"
+                    style={{fontSize:13,fontWeight:700,fill:palette.danger,
+                      fontFamily:"Inter,sans-serif"}}>
+                    ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
+                  </text>
+                )}
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
                 flexDirection:"column",overflow:"hidden",minWidth:255,maxWidth:280}}>
@@ -772,10 +926,10 @@ export default function App() {
                     BOMBA — QUICK REROUTE
                   </div>
                   {[
-                    {label:"Route A",desc:"Office → Stairwell",     path:["N-011","N-031","N-067","N-089"],safe:true},
-                    {label:"Route B",desc:"Corridor B → Stairwell", path:["N-011","N-042","N-043","N-067","N-089"],
-                      safe:!nodes.find(n=>n.id==="N-042")?.status?.includes("alert")},
-                    {label:"Route C",desc:"Lobby → Stairwell",      path:["N-011","N-067","N-089"],safe:true},
+                    {label:"Route A",desc:"Left → Exit 1",  path:["R-meating","EXIT-1"],safe:true},
+                    {label:"Route B",desc:"Top → Exit 2",   path:["R-chillzone","EXIT-2"],
+                      safe:!nodes.find(n=>n.id==="R-chillzone")?.status?.includes("alert")},
+                    {label:"Route C",desc:"Right → Exit 4", path:["R-alibarber","EXIT-4"],safe:true},
                   ].map(opt=>{
                     const isActive=JSON.stringify(activeRoute)===JSON.stringify(opt.path);
                     return(
@@ -944,7 +1098,7 @@ export default function App() {
                 {/* CAM-01 hero — large live feed */}
                 <div style={{flex:1,position:"relative",background:"#000",overflow:"hidden",
                   cursor:"pointer",borderBottom:"2px solid #1E293B",minHeight:0}}
-                  onClick={()=>setCamExpanded({id:"CAM-01",label:"Lobby — N-011",sublabel:"Lobby",live:true,node:"N-011"})}>
+                  onClick={()=>setCamExpanded({id:"CAM-01",label:"Center Corridor — C-004",sublabel:"Center Area",live:true,node:"R-custsvc"})}>
                   <img src={apiUrl("/video_feed")} alt="CAM-01"
                     style={{width:"100%",height:"100%",objectFit:"contain",display:"block",
                       filter:isHazard?"sepia(40%) hue-rotate(320deg) saturate(180%)":"none"}}
@@ -953,7 +1107,7 @@ export default function App() {
                     borderRadius:4,padding:"3px 8px",display:"flex",alignItems:"center",gap:6}}>
                     <span style={{fontSize:9,color:"#10B981",fontWeight:700}}>● LIVE</span>
                     <span style={{fontSize:9,color:"#CBD5E1",fontWeight:600}}>CAM-01</span>
-                    <span style={{fontSize:8,color:"#94A3B8"}}>Lobby · N-011</span>
+                    <span style={{fontSize:8,color:"#94A3B8"}}>Center Corridor · C-004</span>
                   </div>
                   <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",
                     borderRadius:4,padding:"2px 7px",fontSize:8,color:"#94A3B8"}}>click to expand</div>
@@ -968,11 +1122,11 @@ export default function App() {
                 <div style={{flexShrink:0,height:72,display:"grid",gridTemplateColumns:"repeat(5,1fr)",
                   gap:2,background:"#0F172A",padding:2}}>
                   {[
-                    {id:"CAM-02",sublabel:"Retail A",   node:"N-042"},
-                    {id:"CAM-03",sublabel:"Corridor B", node:"N-043"},
-                    {id:"CAM-04",sublabel:"Office",     node:"N-031"},
-                    {id:"CAM-05",sublabel:"Stairwell",  node:"N-067"},
-                    {id:"CAM-06",sublabel:"Exit East",  node:"N-089"},
+                    {id:"CAM-02",sublabel:"Thai Relax",      node:"R-thairelax"},
+                    {id:"CAM-03",sublabel:"Public Recipe",   node:"R-publicrec"},
+                    {id:"CAM-04",sublabel:"Siew Later",      node:"R-siewlater"},
+                    {id:"CAM-05",sublabel:"Baskin Batman",   node:"R-baskin"},
+                    {id:"CAM-06",sublabel:"Exit 4",          node:"EXIT-4"},
                   ].map(cam=>{
                     const n=nodes.find(x=>x.id===cam.node);
                     const sc=statusColor(n?.status??"normal");
@@ -1019,124 +1173,184 @@ export default function App() {
                     {manualOverride&&<span style={{color:palette.purple,fontWeight:600}}>● MANUAL LOCK</span>}
                   </div>
                 </div>
-                <svg viewBox="0 0 700 390" onClick={()=>setTwinExpanded(true)}
+                <svg viewBox="-30 -30 820 760" onClick={()=>setTwinExpanded(true)}
                   style={{flex:1,width:"100%",background:"#F8FAFC",cursor:"pointer"}}
                   title="Click to expand full command view">
-                  <g opacity="0.5">
-                    <rect x="670" y="4" width="26" height="18" rx="3" fill="#E0E7FF"/>
-                    <text x="683" y="14" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:9,fill:"#4338CA",fontFamily:"Inter,sans-serif",fontWeight:600}}>⤢</text>
+                {/* ── FLOOR PLAN — drawn SVG (no image dependency) ── */}
+
+                {/* Outer wall */}
+                <polygon points="15.4,12.3 751.4,12.3 751.4,675.8 15.4,675.8"
+                  fill="#EEF2F7" stroke="#334155" strokeWidth="3"/>
+
+                {/* Room polygons — exact coordinates from floor plan */}
+                {[
+                  {pts:"15.4,12.3 162.6,12.3 162.6,219.1 15.4,219.1",             l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3"},
+                  {pts:"162.6,12.3 248.2,12.3 248.2,219.1 162.6,219.1",           l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3"},
+                  {pts:"248.2,12.3 410.2,12.3 410.2,219.1 248.2,219.1",           l1:"",             l2:"",           cx:329.2, cy:80.0, fill:"#FEF9C3"},
+                  {pts:"248.2,130.5 359.1,130.5 359.1,219.1 248.2,219.1",         l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3"},
+                  {pts:"410.2,12.3 558.6,12.3 558.6,132.3 487.2,219.1 410.2,219.1", l1:"Thai Relax", l2:"Massage",   cx:484.4, cy:115.7, fill:"#FEF9C3"},
+                  {pts:"660.2,12.3 751.4,12.3 751.4,126.8 660.2,126.8",           l1:"Female Washroom",    l2:"",           cx:705.8, cy:69.6, fill:"#FFE4E6"},
+                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",         l1:"Male Washroom",      l2:"",           cx:705.8, cy:189.0, fill:"#FFE4E6"},
+                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,306.5 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber", l2:"", cx:695.9, cy:315.0, fill:"#FFE4E6"},
+                  {pts:"396.6,305.3 524.1,305.3 524.1,432.0 396.6,432.0",         l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE"},
+                  {pts:"221.7,305.3 325.8,305.3 325.8,432.0 221.7,432.0",         l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5"},
+                  {pts:"221.7,432.0 221.7,483.1",                                   l1:"Customer",     l2:"Service",    cx:280.0, cy:490.0, lines:["221.7,432.0 221.7,483.1","221.7,432.0 325.8,432.0","325.8,432.0 325.8,567.4"], fill:"#FFEDD5"},
+                  {pts:"15.4,396.4 117.6,396.4 117.6,528.7 15.4,528.7",           l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5"},
+                  {pts:"15.4,528.7 117.6,528.7 117.6,675.8 15.4,675.8",           l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5"},
+                  {pts:"392.3,501.6 529.7,501.6 529.7,675.8 392.3,675.8",         l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE"},
+                  {pts:"529.7,501.6 649.1,501.6 649.1,675.8 529.7,675.8",         l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE"},
+                  {pts:"649.1,501.6 751.4,501.6 751.4,675.8 649.1,675.8",         l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE"},
+                ].map((r,i)=>(
+                  <g key={i}>
+                    {r.lines
+                      ? <g>
+                          <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
+                          {r.lines.map((l,li)=><line key={li}
+                            x1={parseFloat(l.split(" ")[0].split(",")[0])}
+                            y1={parseFloat(l.split(" ")[0].split(",")[1])}
+                            x2={parseFloat(l.split(" ")[1].split(",")[0])}
+                            y2={parseFloat(l.split(" ")[1].split(",")[1])}
+                            stroke="#94A3B8" strokeWidth="1.5"/>)}
+                        </g>
+                      : <polygon points={r.pts} fill={r.fill||"white"} stroke="#94A3B8" strokeWidth="1.5"/>
+                    }
+                    <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
+                      dominantBaseline="central"
+                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
+                    {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
+                      dominantBaseline="central"
+                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
                   </g>
-                  {Array.from({length:8},(_,i)=>(<line key={`v${i}`} x1={i*100} y1={0} x2={i*100} y2={390} stroke="#E2E8F0" strokeWidth="0.5"/>))}
-                  {Array.from({length:5},(_,i)=>(<line key={`h${i}`} x1={0} y1={i*80} x2={700} y2={i*80} stroke="#E2E8F0" strokeWidth="0.5"/>))}
-                  {CORRIDORS.map((c,i)=>{
-                    const isOnRoute = activeRoute.includes(c.from) && activeRoute.includes(c.to) &&
-                      activeRoute.indexOf(c.to) === activeRoute.indexOf(c.from)+1;
-                    const sig = pullSignals[c.from];
-                    const offRouteBlocked = !isOnRoute && (
-                      nodes.find(x=>x.id===c.from)?.status==="alert"||
-                      nodes.find(x=>x.id===c.to)?.status==="alert"||
-                      nodes.find(x=>x.id===c.from)?.status==="quarantine"||
-                      nodes.find(x=>x.id===c.to)?.status==="quarantine"
-                    );
-                    const f=rc(c.from),t=rc(c.to);
-                    if (isOnRoute) return null;
-                    return <line key={i} x1={f.x} y1={f.y} x2={t.x} y2={t.y}
-                      stroke={offRouteBlocked||sig?.signal==="RED"?palette.danger:"#CBD5E1"}
-                      strokeWidth="1.5" strokeDasharray="5 3" opacity="0.6"/>;
-                  })}
-                  {safeRouteSegments.map((seg,si)=>{
-                    const pts=seg.map(id=>{const c=rc(id);return`${c.x},${c.y}`;}).join(" ");
-                    return(<g key={si}>
-                      <polyline points={pts} fill="none" stroke={palette.success}
-                        strokeWidth="2.5" strokeDasharray="10 5" opacity="0.85"
-                        style={{animation:"dash 1.5s linear infinite"}}/>
-                      <polyline points={pts} fill="none" stroke={palette.success} strokeWidth="6" opacity="0.08"/>
-                    </g>);
-                  })}
-                  {Object.entries(ROOM_DEFS).map(([id,r])=>{
-                    const n=nodes.find(x=>x.id===id);
-                    const isAlert=n?.status==="alert";
-                    const isSel=selectedNode?.id===id;
-                    const centre=rc(id);
-                    const routeIdx=activeRoute.indexOf(id);
-                    const isBlocked=id===manualBlockedNode;
-                    return(
-                      <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
-                        {isAlert&&<rect x={r.x-4} y={r.y-4} width={r.w+8} height={r.h+8}
-                          rx="9" fill={palette.danger} opacity="0.08"
-                          style={{animation:"pulse 1.2s infinite"}}/>}
-                        <rect x={r.x} y={r.y} width={r.w} height={r.h} rx="6"
-                          fill={roomFill(id)} stroke={isSel?palette.info:roomBorder(id)}
-                          strokeWidth={isSel?1.5:0.8}/>
-                        <text x={r.x+r.w/2} y={r.y+22} textAnchor="middle"
-                          style={{fontSize:11,fontWeight:600,
-                            fill:n?.status==="alert"?palette.danger:
-                                 (n?.id===manualBlockedNode)?palette.purple:
-                                 n?.status==="quarantine"?palette.warning:palette.text,
-                            fontFamily:"Inter,sans-serif"}}>{r.label}</text>
-                        <text x={r.x+r.w/2} y={r.y+35} textAnchor="middle"
-                          style={{fontSize:9,fill:"#64748B",fontFamily:"Inter,sans-serif"}}>{r.sub}</text>
-                        <text x={r.x+r.w-6} y={r.y+14} textAnchor="end"
-                          style={{fontSize:9,fill:n?.crowd>70?palette.warning:palette.gray,
-                            fontFamily:"Inter,sans-serif"}}>{n?.crowd??0}p</text>
-                        {(n?.velocity??0)>2&&(
-                          <text x={r.x+r.w-6} y={r.y+26} textAnchor="end"
-                            style={{fontSize:8,fill:(n?.velocity??0)>5?palette.danger:palette.warning,
-                              fontFamily:"Inter,sans-serif",fontWeight:700}}>
-                            +{n.velocity.toFixed(1)}
-                          </text>
-                        )}
-                        {crowdDots(id).map((dot,di)=>(
-                          <circle key={di} cx={dot.x} cy={dot.y} r="3.5" fill={palette.info} opacity="0.55"/>
-                        ))}
-                        {/* Hazard icon — large, centered, very transparent, blinking.
-                            Renders BEHIND the route number (drawn first = lower z-order). */}
-                        {isHazard&&n?.status==="alert"&&(()=>{
-                          const icon  = n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":n?.hazard==="smoke"?"💨":"⚠";
-                          const label = n?.hazard==="thermal"?"FIRE":n?.hazard==="fall"?"FALL":n?.hazard==="smoke"?"SMOKE":"ALERT";
-                          const col   = n?.hazard==="fall"?palette.warning:palette.danger;
-                          return(
-                            <g style={{pointerEvents:"none"}}>
-                              <text x={centre.x} y={centre.y-4} textAnchor="middle" dominantBaseline="central"
-                                style={{fontSize:54,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>
-                              <text x={centre.x} y={r.y+r.h-10} textAnchor="middle"
-                                style={{fontSize:10,fontWeight:800,fill:col,
-                                  fontFamily:"Inter,sans-serif",letterSpacing:"0.10em"}}>
-                                {label}
-                              </text>
-                            </g>
-                          );
-                        })()}
-                        {/* Route sequence number — PRIORITY, large and centered.
-                            Drawn AFTER the hazard icon so it sits on top and stays readable. */}
-                        {routeIdx>=0&&!isBlocked&&(()=>{
-                          const routeVisible = activeRoute.filter(rid=>rid!==manualBlockedNode);
-                          const visibleIdx   = routeVisible.indexOf(id)+1;
-                          const visibleTotal = routeVisible.length;
-                          if(visibleIdx<=0) return null;
-                          return(
-                            <g>
-                              <circle cx={centre.x} cy={centre.y}
-                                r={visibleIdx===1||visibleIdx===visibleTotal?16:12}
-                                fill={visibleIdx===visibleTotal?palette.success:visibleIdx===1?palette.warning:palette.info}
-                                stroke="#fff" strokeWidth="2" opacity="0.97"/>
-                              <text x={centre.x} y={centre.y+1} textAnchor="middle" dominantBaseline="central"
-                                style={{fontSize:14,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>
-                                {visibleIdx}
-                              </text>
-                            </g>
-                          );
-                        })()}
-                      </g>
-                    );
-                  })}
-                  {activeRoute.length<=1&&(
-                    <text x="350" y="195" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:13,fontWeight:700,fill:palette.danger,fontFamily:"Inter,sans-serif"}}>
-                      ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
-                    </text>
-                  )}
+                ))}
+
+                {/* Corridor backbone lines */}
+                {CORRIDOR_EDGES.map(([a,b],i)=>{
+                  const pa=JUNCTIONS[a]||EXIT_POS[a]||{x:0,y:0};
+                  const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
+                  return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+                    stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7"/>;
+                })}
+
+                {/* Room → junction door lines */}
+                {Object.entries(ROOM_JUNCTIONS).map(([rid,jids])=>
+                  jids.map((jid,i)=>{
+                    const rp=ROOM_POS[rid]||{x:0,y:0};
+                    const jp=JUNCTIONS[jid]||{x:0,y:0};
+                    return <line key={`${rid}-${i}`}
+                      x1={rp.x} y1={rp.y} x2={jp.x} y2={jp.y}
+                      stroke="#CBD5E1" strokeWidth="1" strokeDasharray="2 3" opacity="0.45"/>;
+                  })
+                )}
+
+                {/* Active route animated line */}
+                {activeRoute.length>=2&&(()=>{
+                  const pts=getRoutePoints(activeRoute);
+                  if(!pts) return null;
+                  return(<g>
+                    <polyline points={pts} fill="none" stroke={palette.success}
+                      strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray="12 6" opacity="0.95"
+                      style={{animation:"dash 1.2s linear infinite"}}/>
+                    <polyline points={pts} fill="none" stroke={palette.success}
+                      strokeWidth="14" opacity="0.08"
+                      strokeLinecap="round" strokeLinejoin="round"/>
+                  </g>);
+                })()}
+
+                {/* Exit dots */}
+                {Object.entries(EXIT_POS).map(([id,pos])=>{
+                  const isOnRoute=activeRoute.includes(id);
+                  return(<g key={id}>
+                    <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
+                      fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
+                      stroke="#fff" strokeWidth={isOnRoute?2.5:1.5}/>
+                    {isOnRoute&&<circle cx={pos.x} cy={pos.y} r={14}
+                      fill="none" stroke={palette.success} strokeWidth="1.5" opacity="0.5"
+                      style={{animation:"pulse 1.2s infinite"}}/>}
+                    <g>
+                      {(()=>{
+                        // Place badge OUTSIDE the outer wall
+                        const bw=36, bh=14;
+                        const bx = id==="EXIT-1" ? pos.x-bw-8
+                                 : id==="EXIT-4" ? pos.x+10
+                                 : pos.x-bw/2;
+                        const by = id==="EXIT-2"||id==="EXIT-3" ? pos.y-bh-8
+                                 : id==="EXIT-5" ? pos.y+10
+                                 : pos.y-bh/2;
+                        return(<g>
+                          <rect x={bx} y={by} width={bw} height={bh} rx="3"
+                            fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
+                          <text x={bx+bw/2} y={by+bh/2} textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{fontSize:7.5,fontWeight:800,fill:"white",
+                              fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
+                        </g>);
+                      })()}
+                    </g>
+                  </g>);
+                })}
+
+                {/* Room node dots */}
+                {Object.entries(ROOM_POS).map(([id,pos])=>{
+                  const n=nodes.find(x=>x.id===id);
+                  const isSel=selectedNode?.id===id;
+                  const isOnRoute=activeRoute.includes(id);
+                  const isAlert=n?.status==="alert";
+                  const isBlocked=id===manualBlockedNode;
+                  const dotColor=isBlocked?palette.purple:
+                    isAlert?palette.danger:
+                    n?.status==="quarantine"?palette.warning:
+                    n?.status==="warning"?"#CA8A04":
+                    isOnRoute?palette.success:"rgba(249,115,22,0.85)";
+                  const r=isOnRoute||isAlert?8:5;
+                  return(
+                    <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
+                      {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
+                        fill={palette.danger} opacity="0.15"
+                        style={{animation:"pulse 1.2s infinite"}}/>}
+                      <circle cx={pos.x} cy={pos.y} r={r}
+                        fill={dotColor} stroke="#fff" strokeWidth={isSel?2.5:1.5}/>
+                      {(isOnRoute||isAlert)&&<text x={pos.x+r+3} y={pos.y}
+                        textAnchor="start" dominantBaseline="central"
+                        style={{fontSize:7.5,fontWeight:700,
+                          fill:isAlert?palette.danger:"#1e293b",
+                          fontFamily:"Inter,sans-serif"}}>{pos.label}</text>}
+                      {isHazard&&isAlert&&(()=>{
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
+                        return<text x={pos.x} y={pos.y-r-4} textAnchor="middle"
+                          style={{fontSize:13,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
+                      })()}
+                      {isOnRoute&&!isBlocked&&(()=>{
+                        const rv=activeRoute.filter(r=>r!==manualBlockedNode);
+                        const vi=rv.indexOf(id)+1;
+                        if(vi<=0) return null;
+                        const isF=vi===1,isL=vi===rv.length;
+                        return(<g>
+                          <circle cx={pos.x-r-8} cy={pos.y} r={7}
+                            fill={isL?palette.success:isF?palette.warning:palette.info}
+                            stroke="#fff" strokeWidth="1.5"/>
+                          <text x={pos.x-r-8} y={pos.y} textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{fontSize:7,fontWeight:800,fill:"#fff",
+                              fontFamily:"Inter,sans-serif"}}>{vi}</text>
+                        </g>);
+                      })()}
+                      {(n?.crowd??0)>0&&(
+                        <text x={pos.x} y={pos.y+r+9} textAnchor="middle"
+                          style={{fontSize:7,fill:n.crowd>70?palette.warning:"#94A3B8",
+                            fontFamily:"Inter,sans-serif"}}>{n.crowd}p</text>
+                      )}
+                    </g>
+                  );
+                })}
+
+                {activeRoute.length<=1&&(
+                  <text x="380" y="340" textAnchor="middle" dominantBaseline="central"
+                    style={{fontSize:13,fontWeight:700,fill:palette.danger,
+                      fontFamily:"Inter,sans-serif"}}>
+                    ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
+                  </text>
+                )}
                 </svg>
                 {selectedNode&&(
                   <div style={{padding:"7px 12px",borderTop:`1px solid ${palette.border}`,flexShrink:0,
@@ -1286,8 +1500,11 @@ export default function App() {
                   style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
                   {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*10} y1={0} x2={i*10} y2={100} stroke="#E2E8F0" strokeWidth="0.3"/>))}
                   {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*10} x2={100} y2={i*10} stroke="#E2E8F0" strokeWidth="0.3"/>))}
-                  {nodes.length>0&&[["N-011","N-042"],["N-011","N-031"],["N-042","N-043"],
-                    ["N-043","N-067"],["N-031","N-067"],["N-067","N-089"]].map(([a,b],i)=>{
+                  {nodes.length>0&&[["J1","J2"],["J2","J3"],["J3","J4"],["J3","J20"],["J4","J5"],["J4","J7"],["J4","J16"],
+                    ["J5","J6"],["J6","EXIT-2"],["J7","J8"],["J8","J9"],["J8","J11"],["J9","J10"],
+                    ["J10","EXIT-3"],["J11","J12"],["J12","J13"],["J12","J14"],["J13","EXIT-4"],
+                    ["J14","J15"],["J15","J16"],["J15","J17"],["J17","J18"],
+                    ["J18","EXIT-5"],["J18","J19"],["J19","J20"],["J1","EXIT-1"]].map(([a,b],i)=>{
                     const na=nodes.find(x=>x.id===a),nb=nodes.find(x=>x.id===b);
                     if(!na||!nb) return null;
                     return <line key={i} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
