@@ -22,9 +22,9 @@ const ZONE_COLORS = {yellow:"#FEF9C3",orange:"#FFEDD5",purple:"#EDE9FE",pink:"#F
 
 // Store door positions for route drawing (door → junction → exit)
 const DOOR_POS = {
-  B1:{x:120.1,y:219.1,label:"Siew Later"},     B2:{x:205.7,y:219.1,label:"BawangTea"},
+  B1:{x:120.1,y:219.1,label:"Siew Later Restaurant"}, B2:{x:205.7,y:219.1,label:"BawangTea"},
   B3:{x:282.1,y:130.5,label:"Chill Zone"},     B4:{x:380.6,y:219.1,label:"Empty Space"},
-  B5:{x:455.8,y:219.1,label:"Thai Relax"},     B6:{x:660.2,y:86.8, label:"Female Washroom"},
+  B5:{x:455.8,y:219.1,label:"Thai Relax Massage"}, B6:{x:660.2,y:86.8, label:"Female Washroom"},
   B7:{x:660.2,y:167.4,label:"Male Washroom"},  B8:{x:640.5,y:357.0,label:"Ali Barber"},
   B9:{x:396.6,y:375.4,label:"Mamadini"},       B10:{x:325.8,y:375.4,label:"Public Recipe"},
   B11:{x:117.6,y:464.1,label:"Meating Room"},  B12:{x:117.6,y:576.7,label:"Baskin Batman"},
@@ -152,13 +152,25 @@ const initTempHistoryPN = () => Object.fromEntries(nodeData.map(n=>[n.id, Array(
 function ChartSlider({cards, idx, setIdx, title}) {
   const entry = cards[idx] ?? cards[0];
   if (!entry) return null;
-  const d = entry.data, max = Math.max(...d, 1), w = 100, h = 50;
-  const pts  = d.map((v,i) => `${(i/(d.length-1))*w},${h-(v/max)*h}`).join(" ");
+  const d = entry.data, w = 100, h = 50;
+  // Scale against the actual min/max of THIS series, not a fixed 0 floor.
+  // A flat dataset (e.g. thermal idling at a constant 27°C baseline) has
+  // min===max, which previously made every point evaluate to y=0 (since
+  // value/max = 1 when max IS the value) — collapsing the whole line to
+  // the very top edge of the SVG instead of sitting visibly mid-card like
+  // a flat-zero series coincidentally does. Padding the range keeps a
+  // flat line vertically centered regardless of its absolute value.
+  const rawMin = Math.min(...d), rawMax = Math.max(...d);
+  const pad    = (rawMax - rawMin) * 0.15 || 1;  // 15% breathing room, min ±1
+  const domMin = rawMin - pad, domMax = rawMax + pad;
+  const range  = domMax - domMin || 1;
+  const yOf    = v => h - ((v - domMin) / range) * h;
+  const pts  = d.map((v,i) => `${(i/(d.length-1))*w},${yOf(v)}`).join(" ");
   const area = `${pts} ${w},${h} 0,${h}`;
   const gid  = `sg${entry.nodeId}${title.replace(/\s/g,"")}`;
   return (
     <div style={{background:palette.bgCard,border:`1px solid ${palette.border}`,borderRadius:10,
-      padding:"12px 14px",flex:1,display:"flex",flexDirection:"column",gap:4}}>
+      padding:"12px 14px",flex:1,minHeight:128,display:"flex",flexDirection:"column",gap:4}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
         <div style={{fontSize:10,fontWeight:600,color:palette.textMuted}}>{title}</div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
@@ -192,7 +204,7 @@ function ChartSlider({cards, idx, setIdx, title}) {
         <polyline points={pts} fill="none" stroke={entry.color} strokeWidth="1.5"/>
         {/* Latest value dot — offset by radius to stay within viewBox */}
         {d.length>1&&(()=>{
-          const lx=w-2.5, ly=Math.max(2.5, Math.min(h-2.5, h-(d[d.length-1]/max)*h));
+          const lx=w-2.5, ly=Math.max(2.5, Math.min(h-2.5, yOf(d[d.length-1])));
           return <circle cx={lx} cy={ly} r="2.5" fill={entry.color}/>;
         })()}
       </svg>
@@ -239,6 +251,7 @@ export default function App() {
   const [twinExpanded,    setTwinExpanded]    = useState(false);
   const [camExpanded,     setCamExpanded]     = useState(false);
   const [nodeMapExpanded, setNodeMapExpanded] = useState(false);
+  const [occupancyExpandedCat, setOccupancyExpandedCat] = useState(null); // null | "High Traffic" | "HVAC Reduce" | "HVAC Increase"
   const [manualOverride,  setManualOverride]  = useState(false);
   const [manualBlockedNode, setManualBlockedNode] = useState(null);
   const [nodeHealthPage, setNodeHealthPage] = useState(0);
@@ -297,7 +310,11 @@ export default function App() {
           if (d.nodes) {
             const pm = Object.fromEntries(FALLBACK_NODES.map(n=>[n.id,{x:n.x,y:n.y,zone:n.zone}]));
             const merged = Object.entries(d.nodes).map(([id,v])=>({
-              id, zone:pm[id]?.zone??id, x:pm[id]?.x??50, y:pm[id]?.y??50,
+              // Junctions/exits get their zone from FALLBACK_NODES; store
+              // doors (B1-B16) aren't in that list, so fall back to their
+              // DOOR_POS label ("Siew Later") instead of the raw door ID —
+              // otherwise the UI rendered "B1  B1" (id + id) side by side.
+              id, zone:pm[id]?.zone??DOOR_POS[id]?.label??id, x:pm[id]?.x??DOOR_POS[id]?.x??50, y:pm[id]?.y??DOOR_POS[id]?.y??50,
               temp:v.temp??27, status:v.status, hazard:v.hazard,
               crowd:v.crowd, velocity:v.velocity, pull:v.pull,
             }));
@@ -1805,11 +1822,11 @@ export default function App() {
             <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:10,flex:1,minHeight:0,overflow:"hidden"}}>
               <div style={{...card(),padding:"12px 14px",display:"flex",flexDirection:"column",minHeight:0,overflow:"hidden"}}>
                 <div style={{fontSize:10,fontWeight:600,color:palette.textMuted,marginBottom:10}}>
-                  LIVE OCCUPANCY — ALL NODES
+                  OCCUPANCY BY LOCATION — RANKED
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:6,
-                  maxHeight:280,overflowY:"auto",paddingRight:4}}>
-                  {nodes.filter(n=>!n.id.startsWith("EXIT")).map(n=>{
+                  flex:1,overflowY:"auto",paddingRight:4,minHeight:0}}>
+                  {[...nodes].filter(n=>!n.id.startsWith("EXIT")).sort((a,b)=>b.crowd-a.crowd).map(n=>{
                     const pct=Math.min(100,Math.round((n.crowd/100)*100));
                     // Bar colour reflects crowd density level — consistent with Fruin LOS thresholds
                     // Alert/quarantine status shown via node label, not bar colour
@@ -1840,7 +1857,7 @@ export default function App() {
                   })}
                 </div>
               </div>
-              <div style={{display:"flex",flexDirection:"column",gap:10,minHeight:0,overflow:"hidden"}}>
+              <div style={{display:"flex",flexDirection:"column",gap:10,minHeight:0,overflowY:"auto"}}>
                 <ChartSlider
                   title="CROWD VELOCITY"
                   idx={velCardIdx}
@@ -1869,7 +1886,7 @@ export default function App() {
                 />
               </div>
             </div>
-            <div style={{...card(),padding:"8px 12px",flexShrink:0,maxHeight:160,overflowY:"auto"}}>
+            <div style={{...card(),padding:"8px 12px",flexShrink:0}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                 <div style={{fontSize:10,fontWeight:600,color:palette.textMuted}}>
                   OCCUPANCY SIGNALS
@@ -1885,21 +1902,32 @@ export default function App() {
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
                 {[
-                  {label:"High Traffic",  color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60&&n.id.startsWith("J")), sub:"above 60 pax — DOOH / kiosk"},
-                  {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10&&n.id.startsWith("J")), sub:"below 10 pax — unoccupied"},
-                  {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70&&n.id.startsWith("J")), sub:"above 70 pax — peak load"},
-                ].map(({label,color,nodes:zn,sub})=>(
+                  {label:"High Traffic",  color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60&&n.id.startsWith("J")), sub:"above 60 pax — DOOH / kiosk", dir:-1},
+                  {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10&&n.id.startsWith("J")), sub:"below 10 pax — unoccupied", dir:1},
+                  {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70&&n.id.startsWith("J")), sub:"above 70 pax — peak load", dir:-1},
+                ].map(({label,color,nodes:zn,sub,dir})=>(
                   <div key={label} style={{background:palette.bgCard2,borderRadius:6,
                     padding:"5px 8px",borderLeft:`2px solid ${color}`}}>
                     <div style={{fontSize:9,fontWeight:600,color:palette.text}}>{label}</div>
                     {zn.length>0
                       ? <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:3}}>
-                          {zn.slice(0,6).map(n=>(
+                          {/* Most relevant 3 shown inline — fixed height, no scroll.
+                              High Traffic / HVAC Increase: busiest first (highest crowd).
+                              HVAC Reduce: emptiest first (lowest crowd) — those are the
+                              strongest candidates for actually cutting HVAC output.
+                              Full list available via "View all". */}
+                          {[...zn].sort((a,b)=>dir*(b.crowd-a.crowd)).slice(0,3).map(n=>(
                             <span key={n.id} style={{fontSize:8,fontWeight:600,padding:"1px 5px",
                               borderRadius:3,background:`${color}15`,color,
                               border:`1px solid ${color}33`}}>{n.id} — {n.zone?.split("(")[0]?.trim()||n.id}</span>
                           ))}
-                          {zn.length>6&&<span style={{fontSize:8,color:palette.textMuted}}>+{zn.length-6} more</span>}
+                          {zn.length>3&&
+                            <button onClick={()=>setOccupancyExpandedCat(label)}
+                              style={{fontSize:8,color:palette.info,fontWeight:600,
+                                background:"transparent",border:"none",cursor:"pointer",padding:"1px 3px"}}>
+                              +{zn.length-3} more — View all
+                            </button>
+                          }
                         </div>
                       : <div style={{fontSize:10,fontWeight:700,color,marginTop:2}}>None</div>
                     }
@@ -1910,6 +1938,52 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ── OCCUPANCY SIGNALS — FULL LIST MODAL ── */}
+        {occupancyExpandedCat&&(()=>{
+          const catDef = {
+            "High Traffic":  {color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60&&n.id.startsWith("J")), sub:"above 60 pax — DOOH / kiosk", dir:-1},
+            "HVAC Reduce":   {color:palette.success, nodes:nodes.filter(n=>n.crowd<10&&n.id.startsWith("J")), sub:"below 10 pax — unoccupied", dir:1},
+            "HVAC Increase": {color:palette.warning, nodes:nodes.filter(n=>n.crowd>70&&n.id.startsWith("J")), sub:"above 70 pax — peak load", dir:-1},
+          }[occupancyExpandedCat];
+          if (!catDef) return null;
+          const sorted = [...catDef.nodes].sort((a,b)=>catDef.dir*(b.crowd-a.crowd));
+          return(
+            <div style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.45)",
+              display:"flex",alignItems:"center",justifyContent:"center"}}
+              onClick={()=>setOccupancyExpandedCat(null)}>
+              <div style={{background:"#fff",borderRadius:12,width:"90vw",maxWidth:560,
+                maxHeight:"80vh",display:"flex",flexDirection:"column",overflow:"hidden"}}
+                onClick={e=>e.stopPropagation()}>
+                <div style={{padding:"10px 16px",borderBottom:`1px solid ${palette.border}`,
+                  display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0,
+                  borderLeft:`3px solid ${catDef.color}`}}>
+                  <div>
+                    <span style={{fontWeight:700,fontSize:13,color:palette.text}}>{occupancyExpandedCat}</span>
+                    <span style={{marginLeft:10,fontSize:10,color:palette.textMuted}}>{catDef.sub}</span>
+                    <span style={{marginLeft:10,fontSize:10,fontWeight:600,color:catDef.color}}>{sorted.length} nodes</span>
+                  </div>
+                  <button onClick={()=>setOccupancyExpandedCat(null)} style={{background:"transparent",
+                    border:`1px solid ${palette.border}`,borderRadius:6,padding:"4px 10px",
+                    fontSize:11,cursor:"pointer",color:palette.text}}>Close</button>
+                </div>
+                <div style={{flex:1,overflowY:"auto",padding:"10px 16px",
+                  display:"flex",flexDirection:"column",gap:6}}>
+                  {sorted.map(n=>(
+                    <div key={n.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                      padding:"6px 10px",background:palette.bgCard2,borderRadius:6,
+                      borderLeft:`2px solid ${catDef.color}`}}>
+                      <span style={{fontSize:11,fontWeight:600,color:palette.text}}>
+                        {n.id} — {n.zone?.split("(")[0]?.trim()||n.id}
+                      </span>
+                      <span style={{fontSize:11,fontWeight:700,color:catDef.color}}>{n.crowd}p</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
