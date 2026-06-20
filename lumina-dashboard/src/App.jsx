@@ -42,14 +42,18 @@ const DOOR_TO_J = {
 
 // 6 physical Lumina nodes — coverage areas
 const LUMINA_NODE_DEFS = {
-  // cx/cy = centroid of each node's covered junction cluster (true ceiling
-  // mount position), NOT copied from any single junction's coordinates.
+  // cx/cy = representative open-corridor mounting position for each node's
+  // covered junction cluster. Pure centroid-of-junctions placed NODE-B,
+  // NODE-C, and NODE-F within ~12-15 units of a room wall (mathematically
+  // "outside" the polygon but not realistic ceiling-mount clearance) —
+  // nudged into clear corridor space while staying representative of the
+  // cluster's actual junction layout.
   "NODE-A":{label:"West Corridor",    color:"#3B82F6", cx:148.6,cy:286.6},
-  "NODE-B":{label:"Central Crossroad",color:"#8B5CF6", cx:374.8,cy:183.7},
-  "NODE-C":{label:"East Corridor",    color:"#EF4444", cx:582.0,cy:218.8},
-  "NODE-D":{label:"South-Central",    color:"#10B981", cx:380.6,cy:422.2},
+  "NODE-B":{label:"Central Crossroad",color:"#8B5CF6", cx:380.6,cy:264.0},
+  "NODE-C":{label:"East Corridor",    color:"#EF4444", cx:560.0,cy:264.0},
+  "NODE-D":{label:"South-Central",    color:"#10B981", cx:380.6,cy:466.8},
   "NODE-E":{label:"South-West",       color:"#F59E0B", cx:205.7,cy:517.2},
-  "NODE-F":{label:"East-South",       color:"#EC4899", cx:534.6,cy:495.9},
+  "NODE-F":{label:"East-South",       color:"#EC4899", cx:582.0,cy:469.0},
 };
 
 // Junction to Lumina node mapping
@@ -61,6 +65,28 @@ const J_TO_NODE = {
   J18:"NODE-E",J19:"NODE-E",J20:"NODE-E",
   J12:"NODE-F",J13:"NODE-F",J14:"NODE-F",J17:"NODE-F",
 };
+
+// Room polygon shapes for the Digital Twin floor plan — also reused as a
+// faint background layer on the Node Map so Lumina hardware positions can
+// be seen relative to actual store locations, not just on a blank grid.
+const ROOM_POLYGONS = [
+  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
+  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
+  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
+  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
+  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
+  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
+  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
+  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
+  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
+  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
+  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
+  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
+  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
+  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
+  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
+];
+
 const JUNCTIONS = {
   J1:{x:120.1,y:331.7}, J2:{x:120.1,y:264.0}, J3:{x:205.7,y:264.0},
   J4:{x:380.6,y:264.0}, J5:{x:380.6,y:103.4}, J6:{x:282.1,y:103.4},
@@ -606,6 +632,18 @@ export default function App() {
                 <svg viewBox="-20 -20 800 740" preserveAspectRatio="xMidYMid meet" style={{width:"100%",height:"100%"}}>
                   {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*76} y1={0} x2={i*76} y2={700} stroke="#E2E8F0" strokeWidth="1"/>))}
                   {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*70} x2={760} y2={i*70} stroke="#E2E8F0" strokeWidth="1"/>))}
+                  {/* Faint floor-plan room outlines — same as preview map */}
+                  <g opacity="0.35">
+                    {ROOM_POLYGONS.map((r,i)=>(
+                      <g key={`room${i}`}>
+                        <polygon points={r.pts} fill={r.fill} stroke="#94A3B8" strokeWidth="1"/>
+                        {r.l1&&<text x={r.cx} y={r.l2?r.cy-4:r.cy} textAnchor="middle" dominantBaseline="central"
+                          style={{fontSize:6,fill:"#64748B",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>}
+                        {r.l2&&<text x={r.cx} y={r.cy+5} textAnchor="middle" dominantBaseline="central"
+                          style={{fontSize:6,fill:"#64748B",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
+                      </g>
+                    ))}
+                  </g>
                   {/* Faint corridor backbone for spatial context only — not interactive */}
                   {CORRIDOR_EDGES.map(([a,b],i)=>{
                     const pa=JUNCTIONS[a]||EXIT_POS[a]; const pb=JUNCTIONS[b]||EXIT_POS[b];
@@ -633,8 +671,12 @@ export default function App() {
                           style={worst?.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
                         <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?14:11} fill="none" stroke={c} strokeWidth="2.5"/>
                         <g>
-                          <rect x={nodeDef.cx+13} y={nodeDef.cy-19} width={14} height={7} rx="1.5" fill={bc} opacity="0.9"/>
-                          <rect x={nodeDef.cx+14.5} y={nodeDef.cy-12} width={2.5} height={2.5} rx="0.5" fill={bc} opacity="0.9"/>
+                          {/* Battery icon: outline body + terminal nub flush on
+                              the right + inner fill bar scaled to pct. */}
+                          <rect x={nodeDef.cx+13} y={nodeDef.cy-18.9} width={12.6} height={7} rx="1.5"
+                            fill="none" stroke={bc} strokeWidth="1"/>
+                          <rect x={nodeDef.cx+25.6} y={nodeDef.cy-16.9} width={1.6} height={3} rx="0.5" fill={bc}/>
+                          <rect x={nodeDef.cx+14.3} y={nodeDef.cy-17.6} width={Math.max(0.6,10*(m.pct/100))} height={4.6} rx="0.7" fill={bc}/>
                         </g>
                         <text x={nodeDef.cx} y={nodeDef.cy+16} textAnchor="middle"
                           style={{fontSize:"9px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:700}}>
@@ -736,23 +778,7 @@ export default function App() {
                   fill="#EEF2F7" stroke="#334155" strokeWidth="2.5"/>
 
                 {/* ── Room polygons with zone colors ── */}
-                {[
-                  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
-                  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
-                  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
-                  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
-                  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
-                  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
-                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
-                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
-                  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
-                  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
-                  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
-                  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
-                  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
-                  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
-                  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
-                ].map((r,i)=>{
+                {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
                   const hazardFill = n?.status==="alert"?"#FEE2E2":
                                      n?.id===manualBlockedNode?"#E9D5FF":
@@ -1285,23 +1311,7 @@ export default function App() {
                   fill="#EEF2F7" stroke="#334155" strokeWidth="2.5"/>
 
                 {/* ── Room polygons with zone colors ── */}
-                {[
-                  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
-                  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
-                  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
-                  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
-                  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
-                  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
-                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
-                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
-                  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
-                  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
-                  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
-                  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
-                  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
-                  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
-                  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
-                ].map((r,i)=>{
+                {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
                   const hazardFill = n?.status==="alert"?"#FEE2E2":
                                      n?.id===manualBlockedNode?"#E9D5FF":
@@ -1640,6 +1650,21 @@ export default function App() {
                   style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
                   {Array.from({length:9},(_,i)=>(<line key={`gv${i}`} x1={i*95} y1={-20} x2={i*95} y2={720} stroke="#E2E8F0" strokeWidth="1"/>))}
                   {Array.from({length:9},(_,i)=>(<line key={`gh${i}`} x1={-20} y1={i*90} x2={780} y2={i*90} stroke="#E2E8F0" strokeWidth="1"/>))}
+                  {/* Faint floor-plan room outlines — spatial context so Lumina
+                      node positions can be read against actual store layout,
+                      not a blank grid. Very low opacity to stay subordinate
+                      to the node dots, which remain the primary focus. */}
+                  <g opacity="0.35">
+                    {ROOM_POLYGONS.map((r,i)=>(
+                      <g key={`room${i}`}>
+                        <polygon points={r.pts} fill={r.fill} stroke="#94A3B8" strokeWidth="1"/>
+                        {r.l1&&<text x={r.cx} y={r.l2?r.cy-4:r.cy} textAnchor="middle" dominantBaseline="central"
+                          style={{fontSize:6,fill:"#64748B",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>}
+                        {r.l2&&<text x={r.cx} y={r.cy+5} textAnchor="middle" dominantBaseline="central"
+                          style={{fontSize:6,fill:"#64748B",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
+                      </g>
+                    ))}
+                  </g>
                   {/* Corridor backbone — spatial context only, not interactive */}
                   {CORRIDOR_EDGES.map(([a,b],i)=>{
                     const pa=JUNCTIONS[a]||EXIT_POS[a]; const pb=JUNCTIONS[b]||EXIT_POS[b];
@@ -1673,8 +1698,16 @@ export default function App() {
                           style={worst?.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
                         <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?10:8} fill="none" stroke={c} strokeWidth="2"/>
                         <g>
-                          <rect x={nodeDef.cx+9} y={nodeDef.cy-13} width={10} height={5} rx="1" fill={bc} opacity="0.9"/>
-                          <rect x={nodeDef.cx+10} y={nodeDef.cy-8.5} width={1.5} height={1.5} rx="0.5" fill={bc} opacity="0.9"/>
+                          {/* Battery icon: outline body + terminal nub flush on
+                              the right + inner fill bar scaled to pct. Previous
+                              version drew two disconnected solid rects with the
+                              nub floating above-right of the body instead of
+                              attached to it, rendering as an unrecognizable
+                              colored flag rather than a battery. */}
+                          <rect x={nodeDef.cx+9} y={nodeDef.cy-13.5} width={9} height={5} rx="1"
+                            fill="none" stroke={bc} strokeWidth="0.8"/>
+                          <rect x={nodeDef.cx+18} y={nodeDef.cy-12.1} width={1.2} height={2.2} rx="0.4" fill={bc}/>
+                          <rect x={nodeDef.cx+9.8} y={nodeDef.cy-12.7} width={Math.max(0.5,7.4*(m.pct/100))} height={3.4} rx="0.5" fill={bc}/>
                         </g>
                         <text x={nodeDef.cx} y={nodeDef.cy+15} textAnchor="middle"
                           style={{fontSize:"8px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:700}}>{nid}</text>
