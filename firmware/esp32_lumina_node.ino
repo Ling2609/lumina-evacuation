@@ -83,6 +83,9 @@ bool onRoute[5] = {false, false, false, false, false};
 int chaseTick = 0;
 unsigned long lastAnimMs = 0;
 unsigned long lastBuzzToggle = 0;
+unsigned long lastMqttRetry = 0;  // throttles reconnectMqtt() so a dropped
+                                   // connection can't block the loop with
+                                   // back-to-back TCP connect() attempts
 bool buzzOn = false;
 
 // ── Objects ───────────────────────────────────────────────────────────────────
@@ -232,16 +235,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     msg += (char)payload[i];
   }
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, msg);
   if (err) {
     Serial.println("[MQTT] JSON parse error: " + String(err.c_str()));
     return;
   }
 
-  // Update system state
-  String sysState = doc["system_state"] | "NORMAL";
-  systemHazard  = (sysState == "HAZARD");
+  // Update system state.
+  // IMPORTANT: gate on "status", not "system_state" — the backend
+  // legitimately sends different system_state values per hazard tier
+  // ("HAZARD" for thermal/manual fire, "CRITICAL" for fall/crush events),
+  // but always sets status="CRITICAL" for any active emergency. Gating on
+  // system_state=="HAZARD" meant fall-detection events (system_state=
+  // "CRITICAL") never set systemHazard=true, so the buzzer silently never
+  // sounded for a detected fall even though the dashboard showed the alert.
+  String status   = doc["status"] | "NORMAL";
+  systemHazard  = (status == "CRITICAL");
   fftConfirmed  = doc["facp_confirmed"] | false;
 
   // Update corridor states + per-corridor chase direction.
@@ -265,7 +275,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
   }
 
-  Serial.print("[MQTT] State: " + sysState + " | Corridors: ");
+  Serial.print("[MQTT] State: " + status + " | Corridors: ");
   for (int c = 0; c < 5; c++) {
     Serial.print(String(corridorKeys[c]) + "=" + corridorState[c] + " ");
   }
@@ -350,11 +360,18 @@ void setup() {
 // LOOP
 // =============================================================================
 void loop() {
-  // MQTT keep-alive
+  // Non-blocking MQTT reconnect — only attempt once every 5 seconds so a
+  // dropped connection can't monopolize the loop with back-to-back blocking
+  // connect() calls (each with its own multi-second TCP timeout), which
+  // would freeze LED animation/buzzer updates and risk tripping the WDT.
   if (!mqttClient.connected()) {
-    reconnectMqtt();
+    if (millis() - lastMqttRetry > 5000) {
+      lastMqttRetry = millis();
+      reconnectMqtt();
+    }
+  } else {
+    mqttClient.loop();
   }
-  mqttClient.loop();
 
   // Animate at ~12 FPS
   if (millis() - lastAnimMs > 80) {
