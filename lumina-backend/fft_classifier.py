@@ -119,11 +119,15 @@ class FFTAlarmClassifier:
 
         frame_positive = snr >= ALARM_SNR_DB
 
-        # Multi-frame confirmation state machine
+        # Multi-frame confirmation state machine.
+        # Degrade gracefully (decrement) instead of hard-resetting to 0 —
+        # a single dropped frame (mic clip, momentary buzzer power dip,
+        # background noise spike) shouldn't snap CONFIRMED back to SILENT
+        # and cause the dashboard to flicker mid-alarm.
         if frame_positive:
             self.consecutive += 1
         else:
-            self.consecutive = 0
+            self.consecutive = max(0, self.consecutive - 1)
 
         prev_state = self.state
         if self.consecutive >= MIN_FRAMES_ACTIVE:

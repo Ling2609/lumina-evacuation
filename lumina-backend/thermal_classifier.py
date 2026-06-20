@@ -47,9 +47,12 @@ class ThermalClassifier:
         self._seed_baseline()
 
     def _seed_baseline(self):
-        """Pre-fill rolling window with realistic ambient readings."""
-        for _ in range(ROLLING_WINDOW):
-            self.history.append(NORMAL_TEMP_BASELINE + random.uniform(-0.5, 0.5))
+        """
+        Do NOT pre-seed with hardcoded 27C baseline.
+        First 30 real readings build the actual localized baseline.
+        Classification suppressed during warmup to prevent false alerts.
+        """
+        self._warmup_remaining = ROLLING_WINDOW
 
     # ------------------------------------------------------------------
     def _rolling_mean(self) -> float:
@@ -81,6 +84,15 @@ class ThermalClassifier:
 
         # Record reading
         self.history.append(temp_celsius)
+
+        # Warmup: suppress classification until real baseline is established
+        if hasattr(self, '_warmup_remaining') and self._warmup_remaining > 0:
+            self._warmup_remaining -= 1
+            return {"node_id":self.node_id,"state":"WARMUP","temp_c":round(temp_celsius,2),
+                    "baseline_c":temp_celsius,"z_score":0.0,"roc":0.0,
+                    "latency_ms":round((time.perf_counter()-t_start)*1000,4),
+                    "reason":f"Calibrating — {self._warmup_remaining} readings remaining"}
+
         mean    = self._rolling_mean()
         std     = self._rolling_std()
         z_score = (temp_celsius - mean) / std

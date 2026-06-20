@@ -15,14 +15,52 @@ const HEALTH_MS   = 5000;
 if (FLASK_IP === "127.0.0.1")
   console.warn("[LUMINA] FLASK_IP is 127.0.0.1 — iPad dashboard will not load.");
 
-const FALLBACK_NODES = nodeData.map(n => ({ ...n, velocity: 0, pull: "GREEN" }));
+const FALLBACK_NODES = nodeData.map(n => ({...n, status:"normal", hazard:null, crowd:0, temp:27}));
 const apiUrl = path => `http://${FLASK_IP}:${FLASK_PORT}${path}`;
 
-// ─── FLOOR PLAN GEOMETRY ─────────────────────────────────────────────────────
-// SVG viewBox 760×520. Room positions from debug grid analysis.
-// Junctions J1-J20 are WAYPOINTS only — not routing nodes.
+const ZONE_COLORS = {yellow:"#FEF9C3",orange:"#FFEDD5",purple:"#EDE9FE",pink:"#FFE4E6"};
 
-// Junction waypoints for drawing corridor lines (invisible, used by route renderer)
+// Store door positions for route drawing (door → junction → exit)
+const DOOR_POS = {
+  B1:{x:120.1,y:219.1,label:"Siew Later"},     B2:{x:205.7,y:219.1,label:"BawangTea"},
+  B3:{x:282.1,y:130.5,label:"Chill Zone"},     B4:{x:380.6,y:219.1,label:"Empty Space"},
+  B5:{x:455.8,y:219.1,label:"Thai Relax"},     B6:{x:660.2,y:86.8, label:"Female Washroom"},
+  B7:{x:660.2,y:167.4,label:"Male Washroom"},  B8:{x:640.5,y:357.0,label:"Ali Barber"},
+  B9:{x:396.6,y:375.4,label:"Mamadini"},       B10:{x:325.8,y:375.4,label:"Public Recipe"},
+  B11:{x:117.6,y:464.1,label:"Meating Room"},  B12:{x:117.6,y:576.7,label:"Baskin Batman"},
+  B13:{x:221.7,y:510.8,label:"Customer Service"},
+  B14:{x:474.8,y:501.6,label:"MS. DIY"},       B15:{x:582.0,y:501.6,label:"SofaSoGood"},
+  B16:{x:700.9,y:501.6,label:"ReadMe Bookstore"},
+};
+
+// Store door → nearest corridor junction (matches routing_engine.py DOOR_TO_JUNCTION)
+const DOOR_TO_J = {
+  B1:"J2", B2:"J3", B3:"J6", B4:"J4", B5:"J7", B6:"J10",
+  B7:"J9", B8:"J11", B9:"J16", B10:"J16", B11:"J20", B12:"J18",
+  B13:"J19", B14:"J14", B15:"J12", B16:"J13",
+};
+
+// 6 physical Lumina nodes — coverage areas
+const LUMINA_NODE_DEFS = {
+  // cx/cy = centroid of each node's covered junction cluster (true ceiling
+  // mount position), NOT copied from any single junction's coordinates.
+  "NODE-A":{label:"West Corridor",    color:"#3B82F6", cx:148.6,cy:286.6},
+  "NODE-B":{label:"Central Crossroad",color:"#8B5CF6", cx:374.8,cy:183.7},
+  "NODE-C":{label:"East Corridor",    color:"#EF4444", cx:582.0,cy:218.8},
+  "NODE-D":{label:"South-Central",    color:"#10B981", cx:380.6,cy:422.2},
+  "NODE-E":{label:"South-West",       color:"#F59E0B", cx:205.7,cy:517.2},
+  "NODE-F":{label:"East-South",       color:"#EC4899", cx:534.6,cy:495.9},
+};
+
+// Junction to Lumina node mapping
+const J_TO_NODE = {
+  J1:"NODE-A",J2:"NODE-A",J3:"NODE-A",
+  J4:"NODE-B",J5:"NODE-B",J6:"NODE-B",J7:"NODE-B",
+  J8:"NODE-C",J9:"NODE-C",J10:"NODE-C",J11:"NODE-C",
+  J15:"NODE-D",J16:"NODE-D",
+  J18:"NODE-E",J19:"NODE-E",J20:"NODE-E",
+  J12:"NODE-F",J13:"NODE-F",J14:"NODE-F",J17:"NODE-F",
+};
 const JUNCTIONS = {
   J1:{x:120.1,y:331.7}, J2:{x:120.1,y:264.0}, J3:{x:205.7,y:264.0},
   J4:{x:380.6,y:264.0}, J5:{x:380.6,y:103.4}, J6:{x:282.1,y:103.4},
@@ -32,114 +70,67 @@ const JUNCTIONS = {
   J16:{x:380.6,y:375.4}, J17:{x:380.6,y:576.7}, J18:{x:205.7,y:576.7},
   J19:{x:205.7,y:510.8}, J20:{x:205.7,y:464.1},
 };
-
-// Exit positions — exact from user pixel coordinates (1234x1126 → SVG 760x693)
 const EXIT_POS = {
-  "EXIT-1":{x: 15.4, y:331.7, label:"Exit 1"},
-  "EXIT-2":{x:282.1, y: 12.3, label:"Exit 2"},
-  "EXIT-3":{x:582.0, y: 12.3, label:"Exit 3"},
+  "EXIT-1":{x:15.4, y:331.7, label:"Exit 1"},
+  "EXIT-2":{x:282.1, y:12.3, label:"Exit 2"},
+  "EXIT-3":{x:582.0, y:12.3, label:"Exit 3"},
   "EXIT-4":{x:751.4, y:469.0, label:"Exit 4"},
   "EXIT-5":{x:205.7, y:675.8, label:"Exit 5"},
 };
+const STORE_DOTS = [
+  {x:120.2,y:219.3,label:"Siew Later",    zone:"yellow"},
+  {x:205.9,y:219.3,label:"BawangTea",     zone:"yellow"},
+  {x:282.0,y:130.5,label:"Chill Zone",    zone:"yellow"},
+  {x:381.2,y:219.3,label:"Empty Space",   zone:"yellow"},
+  {x:456.3,y:219.3,label:"Thai Relax",    zone:"yellow"},
+  {x:660.5,y: 86.8,label:"Female WR",     zone:"pink"},
+  {x:660.5,y:167.8,label:"Male WR",       zone:"pink"},
+  {x:640.7,y:357.0,label:"Ali Barber",    zone:"pink"},
+  {x:396.8,y:375.9,label:"Mamadini",      zone:"purple"},
+  {x:325.9,y:375.9,label:"Public Recipe", zone:"orange"},
+  {x:117.6,y:464.7,label:"Meating Rm",    zone:"orange"},
+  {x:117.6,y:576.9,label:"Baskin Batman", zone:"orange"},
+  {x:272.3,y:511.2,label:"Customer Svc",  zone:"orange"},
+  {x:475.1,y:501.8,label:"MS. DIY",       zone:"purple"},
+  {x:582.4,y:501.8,label:"SofaSoGood",    zone:"purple"},
+  {x:701.3,y:501.8,label:"ReadMe",        zone:"purple"},
+];
 
-// Room node positions — exact from user pixel coordinates
-const ROOM_POS = {
-  "R-siewlater": {x:120.1, y:219.1, label:"Siew Later"},
-  "R-bawangtea": {x:205.7, y:219.1, label:"BawangTea"},
-  "R-chillzone": {x:282.1, y:130.5, label:"Chill Zone"},
-  "R-emptyspace":{x:380.6, y:219.1, label:""},
-  "R-thairelax": {x:455.8, y:219.1, label:"Thai Relax"},
-  "R-femalewash":{x:660.2, y: 86.8, label:"Female Washroom"},
-  "R-malewash":  {x:660.2, y:167.4, label:"Male Washroom"},
-  "R-alibarber": {x:640.5, y:357.0, label:"Ali Barber"},
-  "R-publicrec": {x:325.8, y:375.4, label:"Public Recipe"},
-  "R-mamadini":  {x:396.6, y:375.4, label:"Mamadini"},
-  "R-meating":   {x:117.6, y:464.1, label:"Meating Rm"},
-  "R-baskin":    {x:117.6, y:576.7, label:"Baskin Batman"},
-  "R-custsvc":   {x:272.2, y:510.8, label:"Customer Svc"},
-  "R-msdiy":     {x:474.8, y:501.6, label:"MS. DIY"},
-  "R-sofasogood":{x:582.0, y:501.6, label:"SofaSoGood"},
-  "R-readme":    {x:700.9, y:501.6, label:"ReadMe"},
-};
 
-// Door connections: room → which junction(s) it connects to
-const ROOM_JUNCTIONS = {
-  "R-siewlater": ["J2"],
-  "R-bawangtea": ["J3"],
-  "R-chillzone": ["J6"],
-  "R-emptyspace":["J4","J5"],
-  "R-thairelax": ["J7"],
-  "R-femalewash":["J10"],
-  "R-malewash":  ["J9"],
-  "R-alibarber": ["J11"],
-  "R-publicrec": ["J16"],
-  "R-mamadini":  ["J16"],
-  "R-meating":   ["J20"],
-  "R-baskin":    ["J18"],
-  "R-custsvc":   ["J19"],
-  "R-msdiy":     ["J14"],
-  "R-sofasogood":["J12"],
-  "R-readme":    ["J13"],
-};
 
-// Corridor backbone edges (for drawing the grey corridor lines)
+
+// Corridor backbone edges — exact train-map topology, no diagonals, no skipping
 const CORRIDOR_EDGES = [
-  ["J1","J2"],["J2","J3"],["J3","J4"],["J3","J20"],
+  ["J1","EXIT-1"],["J1","J2"],["J2","J3"],
+  ["J3","J4"],["J3","J20"],
   ["J4","J5"],["J4","J7"],["J4","J16"],
   ["J5","J6"],["J6","EXIT-2"],
   ["J7","J8"],["J8","J9"],["J8","J11"],
   ["J9","J10"],["J10","EXIT-3"],
   ["J11","J12"],["J12","J13"],["J12","J14"],
-  ["J13","EXIT-4"],["J14","J15"],["J15","J16"],
-  ["J15","J17"],["J17","J18"],
-  ["J18","EXIT-5"],["J18","J19"],["J19","J20"],
-  ["J1","EXIT-1"],
+  ["J13","EXIT-4"],["J14","J15"],
+  ["J15","J16"],["J15","J17"],
+  ["J16","J4"],
+  ["J17","J18"],["J18","EXIT-5"],["J18","J19"],
+  ["J19","J20"],["J20","J3"],
 ];
 
-// Route waypoint sequences for drawing green animated line
-const ROUTE_WAYPOINTS = {
-  "R-siewlater→EXIT-1":  ["J2","J3","J2","J1"],
-  "R-siewlater→EXIT-2":  ["J2","J3","J4","J5","J6"],
-  "R-bawangtea→EXIT-1":  ["J3","J2","J1"],
-  "R-bawangtea→EXIT-2":  ["J3","J4","J5","J6"],
-  "R-chillzone→EXIT-2":  ["J6"],
-  "R-chillzone→EXIT-1":  ["J6","J5","J4","J3","J2","J1"],
-  "R-emptyspace→EXIT-2": ["J5","J6"],
-  "R-emptyspace→EXIT-1": ["J4","J3","J2","J1"],
-  "R-thairelax→EXIT-3":  ["J7","J8","J9","J10"],
-  "R-thairelax→EXIT-2":  ["J7","J4","J5","J6"],
-  "R-femalewash→EXIT-3": ["J10"],
-  "R-malewash→EXIT-3":   ["J9","J10"],
-  "R-alibarber→EXIT-4":  ["J11","J12","J13"],
-  "R-publicrec→EXIT-2":  ["J16","J4","J5","J6"],
-  "R-publicrec→EXIT-5":  ["J16","J15","J17","J18"],
-  "R-mamadini→EXIT-4":   ["J16","J11","J12","J13"],
-  "R-mamadini→EXIT-5":   ["J16","J15","J17","J18"],
-  "R-meating→EXIT-1":    ["J20","J3","J2","J1"],
-  "R-meating→EXIT-5":    ["J20","J19","J18"],
-  "R-baskin→EXIT-5":     ["J18"],
-  "R-custsvc→EXIT-5":    ["J19","J18"],
-  "R-custsvc→EXIT-1":    ["J20","J3","J2","J1"],
-  "R-msdiy→EXIT-4":      ["J14","J12","J13"],
-  "R-msdiy→EXIT-5":      ["J14","J15","J17","J18"],
-  "R-sofasogood→EXIT-4": ["J12","J13"],
-  "R-readme→EXIT-4":     ["J13"],
+
+
+// Build route points — handles Bx door IDs, junction IDs, and exit IDs
+const getRoutePoints = (route) => {
+  if (!route || route.length < 2) return "";
+  return route.map(id => {
+    if (DOOR_POS[id])  return `${DOOR_POS[id].x},${DOOR_POS[id].y}`;
+    if (JUNCTIONS[id]) return `${JUNCTIONS[id].x},${JUNCTIONS[id].y}`;
+    if (EXIT_POS[id])  return `${EXIT_POS[id].x},${EXIT_POS[id].y}`;
+    return null;
+  }).filter(Boolean).join(" ");
 };
 
+
 // Get waypoint coordinate sequence for a route segment
-const getRoutePoints = (route) => {
-  if (!route || route.length < 2) return [];
-  const startId = route[0];
-  const exitId  = route[route.length - 1];
-  const key     = `${startId}→${exitId}`;
-  const wps     = ROUTE_WAYPOINTS[key] || [];
-  const startPos = ROOM_POS[startId] || EXIT_POS[startId] || {x:0,y:0};
-  const exitPos  = EXIT_POS[exitId]  || {x:0,y:0};
-  const pts = [startPos,
-    ...wps.map(j => JUNCTIONS[j] || EXIT_POS[j] || {x:0,y:0}),
-    exitPos];
-  return pts.map(p => `${p.x},${p.y}`).join(" ");
-};
+
 
 
 // ─── STATUS COLOURS ───────────────────────────────────────────────────────────
@@ -225,7 +216,7 @@ export default function App() {
   const [isHazard,      setIsHazard]      = useState(false);
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
-  const [activeRoute,   setActiveRoute]   = useState(["R-custsvc","EXIT-5"]);
+  const [activeRoute,   setActiveRoute]   = useState(["J19","J18","EXIT-5"]);
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);
   const [thermalState,  setThermalState]  = useState("NORMAL");
@@ -248,22 +239,26 @@ export default function App() {
   const [camExpanded,     setCamExpanded]     = useState(false);
   const [nodeMapExpanded, setNodeMapExpanded] = useState(false);
   const [manualOverride,  setManualOverride]  = useState(false);
-  const [manualBlockedNode, setManualBlockedNode] = useState(null); // only this node gets purple
+  const [manualBlockedNode, setManualBlockedNode] = useState(null);
+  const [nodeHealthPage, setNodeHealthPage] = useState(0);
+  const [quickExitRoutes, setQuickExitRoutes] = useState([]); // sorted best-to-worst from backend
   const [health, setHealth] = useState({
     uptime_s:0, yolo_loaded:false, mqtt_connected:false,
     camera_open:false, nodes_online:198, nodes_total:200,
     thermal_latency_ms:0, fft_latency_ms:0,
     battery:{
-      "R-publicrec":{pct:94,next_service:"Aug 10"},
-      "R-thairelax":{pct:87,next_service:"Aug 01"},
-      "R-alibarber":{pct:91,next_service:"Aug 05"},
-      "R-custsvc":{pct:72,next_service:"Jul 15"},
-      "R-baskin":{pct:88,next_service:"Aug 08"},
+      "NODE-A":{pct:94,next_service:"Aug 10"},
+      "NODE-B":{pct:87,next_service:"Aug 01"},
+      "NODE-C":{pct:91,next_service:"Aug 05"},
+      "NODE-D":{pct:72,next_service:"Jul 15"},
+      "NODE-E":{pct:88,next_service:"Aug 08"},
+      "NODE-F":{pct:85,next_service:"Aug 15"},
     },
   });
 
   const lastThermalRef    = useRef("NORMAL");
   const lastFftRef        = useRef("SILENT");
+  const hazardLockRef     = useRef(0); // timestamp of last CRITICAL event — ignore stale NORMAL polls for 2s
   const lastVelRef        = useRef(false);
   const manualOverrideRef = useRef(false);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
@@ -288,7 +283,12 @@ export default function App() {
           setThermalState(d.thermal_state??"NORMAL");
           setFftState(d.fft_state??"SILENT");
           setFftConfirmed(d.facp_confirmed??false);
-          if (d.current_route?.length) setActiveRoute(d.current_route);
+          // Split-brain fix: ignore stale NORMAL from REST poll if MQTT just said CRITICAL
+          const stalePoll = d.system_state==="NORMAL" && (Date.now()-hazardLockRef.current < 2000);
+          if (!stalePoll) {
+            // Only sync route from backend if not in manual override mode
+            if (d.current_route?.length && !manualOverrideRef.current) setActiveRoute(d.current_route);
+          }
           if (d.pull_signals) setPullSignals(d.pull_signals);
           if (d.rset) setRset(d.rset);
           if (d.cost_score !== undefined) setCostScore(d.cost_score);
@@ -361,6 +361,18 @@ export default function App() {
     return ()=>clearInterval(id);
   },[]);
 
+  // ── Fetch BOMBA quick-exit routes (sorted best→worst by backend) ───────────
+  useEffect(()=>{
+    const origin = activeRoute[0];
+    if (!origin) return;
+    fetch(apiUrl("/api/quick_routes"),{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({start:origin})
+    }).then(r=>r.json()).then(d=>{
+      if (d.routes?.length) setQuickExitRoutes(d.routes);
+    }).catch(()=>{});
+  },[activeRoute[0]]);
+
   // ── POLL /api/health ──────────────────────────────────────────────────────
   useEffect(()=>{
     const h=async()=>{
@@ -418,8 +430,9 @@ export default function App() {
   const resetSystem=async()=>{
     setManualOverride(false);
     setManualBlockedNode(null);
+    setActiveRoute(["J19","J18","EXIT-5"]);
     setIsHazard(false); setPasCountdown(178); setFftConfirmed(false); setPullSignals({});
-    setActiveRoute(["R-custsvc","EXIT-5"]);
+    setActiveRoute(["J19","J18","EXIT-5"]);
     pushEvent("RESET — manual override released, returning to AUTO mode","info");
     try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
   };
@@ -440,7 +453,12 @@ export default function App() {
 
   const overridePath=async()=>{
     if(!isHazard){ alert("Cannot override during normal operations."); return; }
-    const target=selectedNode?.id??"R-custsvc";
+    // Start from current hazard origin (first node of active route)
+    const rawTarget=selectedNode?.id??activeRoute[0]??"J19";
+    // Defensive normalization: if a door ID (B1-B16) is ever selected,
+    // convert to its junction so manualBlockedNode matches room rid keys
+    // and the Digital Twin actually highlights purple on quarantine.
+    const target=DOOR_TO_J[rawTarget]||rawTarget;
     // Only reject if THIS node was already manually blocked by BOMBA
     if(target===manualBlockedNode){
       alert(`${target} is already manually blocked. Press RESET to release it.`); return;
@@ -449,7 +467,7 @@ export default function App() {
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({node_id:target})});
+        body:JSON.stringify({node_id:target, start:activeRoute[0]||"J16"})});
       const d=await r.json();
       if(d.new_route){
         setManualBlockedNode(target);
@@ -466,9 +484,6 @@ export default function App() {
   // ── DERIVED ───────────────────────────────────────────────────────────────
   const rsetTotal   = rset.RSET_s ?? 142;
   const rsetSafe    = rset.safe   ?? true;
-
-
-
 
   const hazardBorder = isHazard ? `2px solid ${palette.danger}` : `1px solid ${palette.border}`;
 
@@ -558,39 +573,48 @@ export default function App() {
             </div>
             <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 1fr",minHeight:0,overflow:"hidden"}}>
               <div style={{borderRight:`1px solid ${palette.border}`,overflow:"hidden",background:"#F8FAFC"}}>
-                <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{width:"100%",height:"100%"}}>
-                  {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*10} y1={0} x2={i*10} y2={100} stroke="#E2E8F0" strokeWidth="0.3"/>))}
-                  {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*10} x2={100} y2={i*10} stroke="#E2E8F0" strokeWidth="0.3"/>))}
-                  {nodes.length>0&&[CORRIDOR_EDGES].map(([a,b],i)=>{
-                    const na=nodes.find(x=>x.id===a),nb=nodes.find(x=>x.id===b);
-                    if(!na||!nb) return null;
-                    return <line key={i} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
-                      stroke="#CBD5E1" strokeWidth="0.8" strokeDasharray="2 1.5"/>;
+                <svg viewBox="-20 -20 800 740" preserveAspectRatio="xMidYMid meet" style={{width:"100%",height:"100%"}}>
+                  {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*76} y1={0} x2={i*76} y2={700} stroke="#E2E8F0" strokeWidth="1"/>))}
+                  {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*70} x2={760} y2={i*70} stroke="#E2E8F0" strokeWidth="1"/>))}
+                  {/* Faint corridor backbone for spatial context only — not interactive */}
+                  {CORRIDOR_EDGES.map(([a,b],i)=>{
+                    const pa=JUNCTIONS[a]||EXIT_POS[a]; const pb=JUNCTIONS[b]||EXIT_POS[b];
+                    if(!pa||!pb) return null;
+                    return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+                      stroke="#E2E8F0" strokeWidth="1" strokeDasharray="4 4"/>;
                   })}
-                  {nodes.map(n=>{
-                    const c=statusColor(n.status);
-                    const isSel=selectedNode?.id===n.id;
-                    const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                  {/* 6 physical Lumina hardware nodes ONLY — not junctions, not store doors */}
+                  {Object.entries(LUMINA_NODE_DEFS).map(([nid,nodeDef])=>{
+                    const m=health.battery[nid]??{pct:85,next_service:"N/A"};
                     const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
+                    const coveredJ=Object.entries(J_TO_NODE).filter(([,n])=>n===nid).map(([j])=>j);
+                    const worst=coveredJ.map(j=>nodes.find(x=>x.id===j)).filter(Boolean)
+                      .sort((a,b)=>(b.status==="alert"?3:b.status==="quarantine"?2:b.status==="warning"?1:0)-
+                                    (a.status==="alert"?3:a.status==="quarantine"?2:a.status==="warning"?1:0))[0];
+                    const c=statusColor(worst?.status??"normal");
+                    const isSel=selectedNode?.id===nid;
+                    const totalCrowd=coveredJ.reduce((s,j)=>s+(nodes.find(x=>x.id===j)?.crowd??0),0);
                     return(
-                      <g key={n.id} style={{cursor:"pointer"}}
-                        onClick={()=>setSelectedNode(p=>p?.id===n.id?null:n)}>
-                        {isSel&&<circle cx={n.x} cy={n.y} r="7" fill={c} opacity="0.15"/>}
-                        <circle cx={n.x} cy={n.y} r={isSel?5.5:4}
-                          fill={c} stroke="#fff" strokeWidth="1"
-                          style={n.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
+                      <g key={nid} style={{cursor:"pointer"}}
+                        onClick={()=>setSelectedNode(p=>p?.id===nid?null:{id:nid,zone:nodeDef.label,status:worst?.status??"normal",crowd:totalCrowd,temp:worst?.temp??27,velocity:worst?.velocity??0,pull:worst?.pull_signal??"GREEN"})}>
+                        {isSel&&<circle cx={nodeDef.cx} cy={nodeDef.cy} r="20" fill={c} opacity="0.15"/>}
+                        <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?14:11}
+                          fill={nodeDef.color} stroke="#fff" strokeWidth="2"
+                          style={worst?.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
+                        <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?14:11} fill="none" stroke={c} strokeWidth="2.5"/>
                         <g>
-                          {/* battery body */}
-                          <rect x={n.x+2.5} y={n.y-6} width={4.5} height={2.8} rx="0.5" fill={bc} opacity="0.9"/>
-                          {/* nub on right */}
-                          <rect x={n.x+7} y={n.y-5.2} width={1} height={1.2} rx="0.3" fill={bc} opacity="0.9"/>
+                          <rect x={nodeDef.cx+13} y={nodeDef.cy-19} width={14} height={7} rx="1.5" fill={bc} opacity="0.9"/>
+                          <rect x={nodeDef.cx+14.5} y={nodeDef.cy-12} width={2.5} height={2.5} rx="0.5" fill={bc} opacity="0.9"/>
                         </g>
-                        <text x={n.x} y={n.y+8} textAnchor="middle"
-                          style={{fontSize:"3.5px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:600}}>
-                          {n.id}</text>
-                        <text x={n.x} y={n.y+12} textAnchor="middle"
-                          style={{fontSize:"3px",fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
-                          {n.crowd}p · {n.temp}°C</text>
+                        <text x={nodeDef.cx} y={nodeDef.cy+16} textAnchor="middle"
+                          style={{fontSize:"9px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:700}}>
+                          {nid}</text>
+                        <text x={nodeDef.cx} y={nodeDef.cy+26} textAnchor="middle"
+                          style={{fontSize:"7.5px",fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                          {nodeDef.label}</text>
+                        <text x={nodeDef.cx} y={nodeDef.cy+36} textAnchor="middle"
+                          style={{fontSize:"7px",fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                          {totalCrowd}p total</text>
                       </g>
                     );
                   })}
@@ -600,7 +624,7 @@ export default function App() {
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:520}}>
                   <thead>
                     <tr style={{background:palette.bgCard2,position:"sticky",top:0,zIndex:1}}>
-                      {["Node","Zone","Status","Crowd","Velocity","Temp","Pull","Battery","Next Svc","Hazard"].map(h=>(
+                      {["Node","Covers","Status","Crowd","Battery","Next Svc","Hazard"].map(h=>(
                         <th key={h} style={{padding:"9px 10px",textAlign:"left",fontSize:10,
                           color:palette.textMuted,fontWeight:600,whiteSpace:"nowrap",
                           borderBottom:`1px solid ${palette.border}`}}>{h}</th>
@@ -608,30 +632,28 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {nodes.map((n,i)=>{
-                      const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                    {Object.entries(LUMINA_NODE_DEFS).map(([nid,nodeDef],i)=>{
+                      const m=health.battery[nid]??{pct:85,next_service:"N/A"};
                       const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
-                      const sc=statusColor(n.status);
-                      const isSel=selectedNode?.id===n.id;
+                      const coveredJ=Object.entries(J_TO_NODE).filter(([,n])=>n===nid).map(([j])=>j);
+                      const worst=coveredJ.map(j=>nodes.find(x=>x.id===j)).filter(Boolean)
+                        .sort((a,b)=>(b.status==="alert"?3:b.status==="quarantine"?2:b.status==="warning"?1:0)-
+                                      (a.status==="alert"?3:a.status==="quarantine"?2:a.status==="warning"?1:0))[0];
+                      const totalCrowd=coveredJ.reduce((s,j)=>s+(nodes.find(x=>x.id===j)?.crowd??0),0);
+                      const sc=statusColor(worst?.status??"normal");
+                      const isSel=selectedNode?.id===nid;
                       return(
-                        <tr key={n.id} onClick={()=>setSelectedNode(p=>p?.id===n.id?null:n)}
+                        <tr key={nid} onClick={()=>setSelectedNode(p=>p?.id===nid?null:{id:nid,zone:nodeDef.label,status:worst?.status??"normal",crowd:totalCrowd})}
                           style={{borderBottom:`1px solid ${palette.border}`,cursor:"pointer",
-                            background:isSel?statusBg(n.status):i%2===0?"transparent":`${palette.bgCard2}55`}}>
-                          <td style={{padding:"9px 10px",fontWeight:700,color:palette.info,whiteSpace:"nowrap"}}>{n.id}</td>
-                          <td style={{padding:"9px 10px",color:palette.textMuted,fontSize:10}}>{n.zone}</td>
+                            background:isSel?statusBg(worst?.status??"normal"):i%2===0?"transparent":`${palette.bgCard2}55`}}>
+                          <td style={{padding:"9px 10px",fontWeight:700,color:nodeDef.color,whiteSpace:"nowrap"}}>{nid}</td>
+                          <td style={{padding:"9px 10px",color:palette.textMuted,fontSize:10}}>{nodeDef.label} ({coveredJ.join(", ")})</td>
                           <td style={{padding:"9px 10px"}}>
                             <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:4,
-                              background:statusBg(n.status),color:sc,
-                              border:`1px solid ${sc}33`,whiteSpace:"nowrap"}}>{n.status.toUpperCase()}</span>
+                              background:statusBg(worst?.status??"normal"),color:sc,
+                              border:`1px solid ${sc}33`,whiteSpace:"nowrap"}}>{(worst?.status??"normal").toUpperCase()}</span>
                           </td>
-                          <td style={{padding:"9px 10px",color:n.crowd>70?palette.warning:palette.text,fontWeight:600}}>{n.crowd}p</td>
-                          <td style={{padding:"9px 10px",color:(n.velocity??0)>2?palette.warning:palette.textMuted,whiteSpace:"nowrap"}}>
-                            {(n.velocity??0)>0?`+${n.velocity}`:n.velocity??0}/rdg</td>
-                          <td style={{padding:"9px 10px",color:n.temp>50?palette.danger:palette.text,whiteSpace:"nowrap"}}>{n.temp}°C</td>
-                          <td style={{padding:"9px 10px"}}>
-                            <span style={{fontSize:10,fontWeight:700,
-                              color:n.pull==="GREEN"?palette.success:palette.danger}}>{n.pull??"—"}</span>
-                          </td>
+                          <td style={{padding:"9px 10px",color:totalCrowd>70?palette.warning:palette.text,fontWeight:600}}>{totalCrowd}p</td>
                           <td style={{padding:"9px 10px"}}>
                             <div style={{display:"flex",alignItems:"center",gap:5}}>
                               <div style={{width:40,height:5,background:palette.grayLight,borderRadius:2,flexShrink:0}}>
@@ -643,8 +665,8 @@ export default function App() {
                           </td>
                           <td style={{padding:"9px 10px",fontSize:10,color:palette.textMuted,whiteSpace:"nowrap"}}>{m.next_service}</td>
                           <td style={{padding:"9px 10px",fontSize:10,
-                            color:n.hazard?palette.danger:palette.success,whiteSpace:"nowrap"}}>
-                            {n.hazard?n.hazard.toUpperCase():"NONE"}</td>
+                            color:worst?.hazard?palette.danger:palette.success,whiteSpace:"nowrap"}}>
+                            {worst?.hazard?worst.hazard.toUpperCase():"NONE"}</td>
                         </tr>
                       );
                     })}
@@ -679,73 +701,85 @@ export default function App() {
             </div>
             <div style={{flex:1,display:"grid",gridTemplateColumns:"1fr 280px",minHeight:0,overflow:"hidden"}}>
               <svg viewBox="-30 -30 820 760" style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
-                {/* ── FLOOR PLAN — drawn SVG (no image dependency) ── */}
+                {/* ── Outer wall ── */}
+                <polygon points="15.4,12.3 751.7,12.3 751.7,675.8 15.4,675.8"
+                  fill="#EEF2F7" stroke="#334155" strokeWidth="2.5"/>
 
-                {/* Outer wall */}
-                <polygon points="15.4,12.3 751.4,12.3 751.4,675.8 15.4,675.8"
-                  fill="#EEF2F7" stroke="#334155" strokeWidth="3"/>
-
-                {/* Room polygons — exact coordinates from floor plan */}
+                {/* ── Room polygons with zone colors ── */}
                 {[
-                  {pts:"15.4,12.3 162.6,12.3 162.6,219.1 15.4,219.1",             l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3"},
-                  {pts:"162.6,12.3 248.2,12.3 248.2,219.1 162.6,219.1",           l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3"},
-                  {pts:"248.2,12.3 410.2,12.3 410.2,219.1 248.2,219.1",           l1:"",             l2:"",           cx:329.2, cy:80.0, fill:"#FEF9C3"},
-                  {pts:"248.2,130.5 359.1,130.5 359.1,219.1 248.2,219.1",         l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3"},
-                  {pts:"410.2,12.3 558.6,12.3 558.6,132.3 487.2,219.1 410.2,219.1", l1:"Thai Relax", l2:"Massage",   cx:484.4, cy:115.7, fill:"#FEF9C3"},
-                  {pts:"660.2,12.3 751.4,12.3 751.4,126.8 660.2,126.8",           l1:"Female Washroom",    l2:"",           cx:705.8, cy:69.6, fill:"#FFE4E6"},
-                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",         l1:"Male Washroom",      l2:"",           cx:705.8, cy:189.0, fill:"#FFE4E6"},
-                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,306.5 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber", l2:"", cx:695.9, cy:315.0, fill:"#FFE4E6"},
-                  {pts:"396.6,305.3 524.1,305.3 524.1,432.0 396.6,432.0",         l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE"},
-                  {pts:"221.7,305.3 325.8,305.3 325.8,432.0 221.7,432.0",         l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5"},
-                  {pts:"221.7,432.0 221.7,483.1",                                   l1:"Customer",     l2:"Service",    cx:280.0, cy:490.0, lines:["221.7,432.0 221.7,483.1","221.7,432.0 325.8,432.0","325.8,432.0 325.8,567.4"], fill:"#FFEDD5"},
-                  {pts:"15.4,396.4 117.6,396.4 117.6,528.7 15.4,528.7",           l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5"},
-                  {pts:"15.4,528.7 117.6,528.7 117.6,675.8 15.4,675.8",           l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5"},
-                  {pts:"392.3,501.6 529.7,501.6 529.7,675.8 392.3,675.8",         l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE"},
-                  {pts:"529.7,501.6 649.1,501.6 649.1,675.8 529.7,675.8",         l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE"},
-                  {pts:"649.1,501.6 751.4,501.6 751.4,675.8 649.1,675.8",         l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE"},
-                ].map((r,i)=>(
-                  <g key={i}>
-                    {r.lines
-                      ? <g>
-                          <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
-                          {r.lines.map((l,li)=><line key={li}
-                            x1={parseFloat(l.split(" ")[0].split(",")[0])}
-                            y1={parseFloat(l.split(" ")[0].split(",")[1])}
-                            x2={parseFloat(l.split(" ")[1].split(",")[0])}
-                            y2={parseFloat(l.split(" ")[1].split(",")[1])}
-                            stroke="#94A3B8" strokeWidth="1.5"/>)}
-                        </g>
-                      : <polygon points={r.pts} fill={r.fill||"white"} stroke="#94A3B8" strokeWidth="1.5"/>
-                    }
-                    <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
-                      dominantBaseline="central"
-                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
-                    {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
-                      dominantBaseline="central"
-                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
-                  </g>
-                ))}
+                  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
+                  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
+                  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
+                  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
+                  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
+                  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
+                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
+                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
+                  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
+                  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
+                  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
+                  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
+                  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
+                  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
+                  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
+                ].map((r,i)=>{
+                  const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
+                  const hazardFill = n?.status==="alert"?"#FEE2E2":
+                                     n?.id===manualBlockedNode?"#E9D5FF":
+                                     n?.status==="quarantine"?"#FEF3C7":null;
+                  const fillColor = hazardFill || r.fill || "white";
+                  const fs = 8;
+                  return(
+                    <g key={i}>
+                      {r.lines
+                        ? <g>
+                            <rect x={221.8} y={432.1} width={104.1} height={135.5}
+                              fill={fillColor} stroke="none"/>
+                            {r.lines.map((l,li)=><line key={li}
+                              x1={parseFloat(l.split(" ")[0].split(",")[0])}
+                              y1={parseFloat(l.split(" ")[0].split(",")[1])}
+                              x2={parseFloat(l.split(" ")[1].split(",")[0])}
+                              y2={parseFloat(l.split(" ")[1].split(",")[1])}
+                              stroke="#94A3B8" strokeWidth="1.5"/>)}
+                          </g>
+                        : <polygon points={r.pts} fill={fillColor}
+                            stroke="#94A3B8" strokeWidth="1.5"/>
+                      }
+                      <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
+                      {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
+                    </g>
+                  );
+                })}
 
-                {/* Corridor backbone lines */}
+                {/* Customer Service — open area, 3 walls only (per corrected coords) */}
+                <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
+                <line x1={221.7} y1={432.0} x2={221.7} y2={483.1} stroke="#94A3B8" strokeWidth="1.5"/>
+                <line x1={221.7} y1={432.0} x2={325.8} y2={432.0} stroke="#94A3B8" strokeWidth="1.5"/>
+                <line x1={325.8} y1={432.0} x2={325.8} y2={567.4} stroke="#94A3B8" strokeWidth="1.5"/>
+                <text x={273.8} y={494.0} textAnchor="middle" dominantBaseline="central"
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Customer</text>
+                <text x={273.8} y={504.0} textAnchor="middle" dominantBaseline="central"
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Service</text>
+
+                {/* ── Corridor backbone — dashed lines ── */}
                 {CORRIDOR_EDGES.map(([a,b],i)=>{
                   const pa=JUNCTIONS[a]||EXIT_POS[a]||{x:0,y:0};
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
+                  const aNode=nodes.find(x=>x.id===a);
+                  const bNode=nodes.find(x=>x.id===b);
+                  const hazard=(aNode?.status==="alert"||bNode?.status==="alert"||
+                    aNode?.status==="quarantine"||bNode?.status==="quarantine");
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
-                    stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7"/>;
+                    stroke={hazard?"#EF4444":"#94A3B8"}
+                    strokeWidth={hazard?2:1.5} strokeDasharray={hazard?"none":"6 4"}
+                    opacity={hazard?0.8:0.5}/>;
                 })}
 
-                {/* Room → junction door lines */}
-                {Object.entries(ROOM_JUNCTIONS).map(([rid,jids])=>
-                  jids.map((jid,i)=>{
-                    const rp=ROOM_POS[rid]||{x:0,y:0};
-                    const jp=JUNCTIONS[jid]||{x:0,y:0};
-                    return <line key={`${rid}-${i}`}
-                      x1={rp.x} y1={rp.y} x2={jp.x} y2={jp.y}
-                      stroke="#CBD5E1" strokeWidth="1" strokeDasharray="2 3" opacity="0.45"/>;
-                  })
-                )}
-
-                {/* Active route animated line */}
+                {/* ── Active route — animated green dashes through junctions ── */}
                 {activeRoute.length>=2&&(()=>{
                   const pts=getRoutePoints(activeRoute);
                   if(!pts) return null;
@@ -755,14 +789,16 @@ export default function App() {
                       strokeDasharray="12 6" opacity="0.95"
                       style={{animation:"dash 1.2s linear infinite"}}/>
                     <polyline points={pts} fill="none" stroke={palette.success}
-                      strokeWidth="14" opacity="0.08"
-                      strokeLinecap="round" strokeLinejoin="round"/>
+                      strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })()}
 
-                {/* Exit dots */}
+                {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
                   const isOnRoute=activeRoute.includes(id);
+                  const bw=36, bh=14;
+                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
+                  const by=id==="EXIT-2"||id==="EXIT-3"?pos.y-bh-8:id==="EXIT-5"?pos.y+10:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
@@ -770,114 +806,134 @@ export default function App() {
                     {isOnRoute&&<circle cx={pos.x} cy={pos.y} r={14}
                       fill="none" stroke={palette.success} strokeWidth="1.5" opacity="0.5"
                       style={{animation:"pulse 1.2s infinite"}}/>}
-                    <g>
-                      {(()=>{
-                        // Place badge OUTSIDE the outer wall
-                        const bw=36, bh=14;
-                        const bx = id==="EXIT-1" ? pos.x-bw-8
-                                 : id==="EXIT-4" ? pos.x+10
-                                 : pos.x-bw/2;
-                        const by = id==="EXIT-2"||id==="EXIT-3" ? pos.y-bh-8
-                                 : id==="EXIT-5" ? pos.y+10
-                                 : pos.y-bh/2;
-                        return(<g>
-                          <rect x={bx} y={by} width={bw} height={bh} rx="3"
-                            fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
-                          <text x={bx+bw/2} y={by+bh/2} textAnchor="middle"
-                            dominantBaseline="central"
-                            style={{fontSize:7.5,fontWeight:800,fill:"white",
-                              fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
-                        </g>);
-                      })()}
-                    </g>
+                    <rect x={bx} y={by} width={bw} height={bh} rx="3"
+                      fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
+                    <text x={bx+bw/2} y={by+bh/2} textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:7.5,fontWeight:800,fill:"white",fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
                   </g>);
                 })}
 
-                {/* Room node dots */}
-                {Object.entries(ROOM_POS).map(([id,pos])=>{
+                {/* ── Store door dots + door→junction connector when on active route ── */}
+                {Object.entries(DOOR_POS).map(([bid,d])=>{
+                  const isStart = activeRoute[0]===bid;
+                  const jid = DOOR_TO_J[bid];
+                  const jpos = jid ? JUNCTIONS[jid] : null;
+                  const storeDot = STORE_DOTS.find(s=>s.label===d.label);
+                  const zoneColor = storeDot ? ZONE_COLORS[storeDot.zone] : "#94A3B8";
+                  return(
+                    <g key={bid}>
+                      {/* Door→junction line (only shown when this store is route start) */}
+                      {isStart && jpos && (
+                        <line x1={d.x} y1={d.y} x2={jpos.x} y2={jpos.y}
+                          stroke={palette.success} strokeWidth="2.5"
+                          strokeDasharray="5 3" opacity="0.7"/>
+                      )}
+                      <circle cx={d.x} cy={d.y} r={isStart?6:3.5}
+                        fill={isStart?palette.success:zoneColor}
+                        stroke={isStart?"#fff":"#94A3B8"}
+                        strokeWidth={isStart?2:0.8} opacity="0.9"/>
+                      {isStart&&<text x={d.x} y={d.y-10} textAnchor="middle"
+                        style={{fontSize:7.5,fontWeight:700,fill:palette.success,
+                          fontFamily:"Inter,sans-serif"}}>{d.label}</text>}
+                    </g>
+                  );
+                })}
+
+                {/* ── Junction nodes — routing decision points ── */}
+                {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
-                  const isSel=selectedNode?.id===id;
                   const isOnRoute=activeRoute.includes(id);
+                  const isPending=manualBlockedNode===id+"_PENDING";
+                  const isBlocked=id===manualBlockedNode||isPending;
                   const isAlert=n?.status==="alert";
-                  const isBlocked=id===manualBlockedNode;
-                  const dotColor=isBlocked?palette.purple:
+                  const isTier2=n?.status==="quarantine"||n?.status==="warning";
+                  const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
+                  const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
                     isAlert?palette.danger:
-                    n?.status==="quarantine"?palette.warning:
-                    n?.status==="warning"?"#CA8A04":
-                    isOnRoute?palette.success:"rgba(249,115,22,0.85)";
-                  const r=isOnRoute||isAlert?8:5;
+                    isTier2?palette.warning:
+                    isOnRoute?palette.success:nodeColor;
+                  const r=isOnRoute||isAlert?7:4;
                   return(
                     <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
-                        fill={palette.danger} opacity="0.15"
+                        fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
                       <circle cx={pos.x} cy={pos.y} r={r}
-                        fill={dotColor} stroke="#fff" strokeWidth={isSel?2.5:1.5}/>
-                      {(isOnRoute||isAlert)&&<text x={pos.x+r+3} y={pos.y}
-                        textAnchor="start" dominantBaseline="central"
-                        style={{fontSize:7.5,fontWeight:700,
-                          fill:isAlert?palette.danger:"#1e293b",
-                          fontFamily:"Inter,sans-serif"}}>{pos.label}</text>}
+                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
+                      {/* Show ID only on route or alert */}
+                      {(isOnRoute||isAlert||isBlocked)&&(
+                        <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
+                          style={{fontSize:7,fontWeight:700,fill:dotColor,fontFamily:"Inter,sans-serif"}}>{id}</text>
+                      )}
+                      {/* Hazard emoji */}
                       {isHazard&&isAlert&&(()=>{
                         const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
-                        return<text x={pos.x} y={pos.y-r-4} textAnchor="middle"
-                          style={{fontSize:13,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
+                        return<text x={pos.x} y={pos.y-r-12} textAnchor="middle"
+                          style={{fontSize:12,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
                       })()}
+                      {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(r=>r!==manualBlockedNode);
+                        const rv=activeRoute.filter(x=>x!==manualBlockedNode);
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
-                        const isF=vi===1,isL=vi===rv.length;
+                        const isL=vi===rv.length;
                         return(<g>
-                          <circle cx={pos.x-r-8} cy={pos.y} r={7}
-                            fill={isL?palette.success:isF?palette.warning:palette.info}
-                            stroke="#fff" strokeWidth="1.5"/>
-                          <text x={pos.x-r-8} y={pos.y} textAnchor="middle"
-                            dominantBaseline="central"
-                            style={{fontSize:7,fontWeight:800,fill:"#fff",
-                              fontFamily:"Inter,sans-serif"}}>{vi}</text>
+                          <circle cx={pos.x+r+6} cy={pos.y-r-2} r={6}
+                            fill={isL?palette.success:palette.info} stroke="#fff" strokeWidth="1.5"/>
+                          <text x={pos.x+r+6} y={pos.y-r-2} textAnchor="middle" dominantBaseline="central"
+                            style={{fontSize:6,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>{vi}</text>
                         </g>);
                       })()}
+                      {/* Crowd count */}
                       {(n?.crowd??0)>0&&(
-                        <text x={pos.x} y={pos.y+r+9} textAnchor="middle"
-                          style={{fontSize:7,fill:n.crowd>70?palette.warning:"#94A3B8",
-                            fontFamily:"Inter,sans-serif"}}>{n.crowd}p</text>
+                        <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                          style={{fontSize:6.5,fill:n.crowd>85?palette.danger:n.crowd>50?palette.warning:"#94A3B8",
+                            fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.crowd}p</text>
                       )}
                     </g>
                   );
                 })}
 
                 {activeRoute.length<=1&&(
-                  <text x="380" y="340" textAnchor="middle" dominantBaseline="central"
-                    style={{fontSize:13,fontWeight:700,fill:palette.danger,
-                      fontFamily:"Inter,sans-serif"}}>
+                  <text x="383" y="340" textAnchor="middle" dominantBaseline="central"
+                    style={{fontSize:12,fontWeight:700,fill:palette.danger,fontFamily:"Inter,sans-serif"}}>
                     ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
                   </text>
                 )}
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
-                flexDirection:"column",overflow:"hidden",minWidth:255,maxWidth:280}}>
+                flexDirection:"column",overflowY:"auto",overflowX:"hidden",minWidth:255,maxWidth:280}}>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:6}}>ACTIVE ROUTE</div>
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
                     {activeRoute.map((id,i)=>{
                       const n=nodes.find(x=>x.id===id);
                       const sc=statusColor(n?.status??"normal");
+                      const isDoor=!!DOOR_POS[id];
+                      const isExit=!!EXIT_POS[id];
+                      const isFirst=i===0;
+                      const isLast=i===activeRoute.length-1;
                       return(
                         <div key={id} style={{display:"flex",alignItems:"center",gap:5}}>
                           <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,
-                            background:i===0?palette.warningLight:i===activeRoute.length-1?palette.successLight:palette.infoLight,
-                            border:`1px solid ${i===0?palette.warning:i===activeRoute.length-1?palette.success:palette.info}`,
+                            background:isFirst?palette.warningLight:isLast?palette.successLight:palette.infoLight,
+                            border:`1px solid ${isFirst?palette.warning:isLast?palette.success:palette.info}`,
                             display:"flex",alignItems:"center",justifyContent:"center",
                             fontSize:7,fontWeight:700,
-                            color:i===0?palette.warning:i===activeRoute.length-1?palette.success:palette.info,
+                            color:isFirst?palette.warning:isLast?palette.success:palette.info,
                           }}>{i+1}</div>
                           <span style={{fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:4,
                             background:statusBg(n?.status??"normal"),color:sc,
-                            border:`1px solid ${sc}33`}}>{id}</span>
+                            border:`1px solid ${sc}33`}}>
+                            {DOOR_POS[id]?.label||EXIT_POS[id]?.label||id}
+                            {isFirst&&isDoor&&<span style={{fontSize:7,marginLeft:3,color:palette.danger}}>🔥</span>}
+                          </span>
                           <span style={{fontSize:9,color:palette.textMuted,flex:1,
                             overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                            {n?.zone?.split("/").pop()?.trim()??id}</span>
+                            {isDoor?`Door → ${DOOR_TO_J[id]||"corridor"}`:
+                             isExit?"Exit point":
+                             n?.zone??"Corridor junction"}
+                          </span>
                         </div>
                       );
                     })}
@@ -892,7 +948,8 @@ export default function App() {
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:5}}>
                     <span style={{color:palette.info}}>① </span>SELECT NODE TO BLOCK
                   </div>
-                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5}}>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5,
+                    maxHeight:72,overflowY:"auto",paddingRight:2}}>
                     {nodes.map(n=>{
                       const isSel   = selectedNode?.id===n.id;
                       const isBomba = n.id===manualBlockedNode;
@@ -906,7 +963,7 @@ export default function App() {
                             color:isBomba?palette.purple:isSel?palette.warningDark:palette.textMuted,
                             cursor:isBomba?"not-allowed":"pointer",
                             opacity:isBomba?0.6:1,
-                          }}>{n.id}{isBomba?" ✕":""}</button>
+                          }}>{(DOOR_POS[n.id]?.label||EXIT_POS[n.id]?.label||n.id)}{isBomba?" ✕":""}</button>
                       );
                     })}
                   </div>
@@ -925,38 +982,55 @@ export default function App() {
                   <div style={{fontSize:9,fontWeight:600,color:palette.purple,marginBottom:5}}>
                     BOMBA — QUICK REROUTE
                   </div>
-                  {[
-                    {label:"Route A",desc:"Left → Exit 1",  path:["R-meating","EXIT-1"],safe:true},
-                    {label:"Route B",desc:"Top → Exit 2",   path:["R-chillzone","EXIT-2"],
-                      safe:!nodes.find(n=>n.id==="R-chillzone")?.status?.includes("alert")},
-                    {label:"Route C",desc:"Right → Exit 4", path:["R-alibarber","EXIT-4"],safe:true},
-                  ].map(opt=>{
-                    const isActive=JSON.stringify(activeRoute)===JSON.stringify(opt.path);
+                  <div style={{maxHeight:130,overflowY:"auto",paddingRight:2}}>
+                  {(quickExitRoutes.length ? quickExitRoutes : [
+                    {exit:"EXIT-1",safe:true},{exit:"EXIT-2",safe:true},
+                    {exit:"EXIT-3",safe:true},{exit:"EXIT-4",safe:true},{exit:"EXIT-5",safe:true},
+                  ]).map((rt,rank)=>{
+                    const exitId    = rt.exit;
+                    const exitLabel = EXIT_POS[exitId]?.label || exitId;
+                    const isActive  = activeRoute[activeRoute.length-1] === exitId;
+                    const exitNode  = nodes.find(n=>n.id===exitId);
+                    const blocked   = exitNode?.status==="quarantine"||exitNode?.status==="alert" || !rt.safe;
+                    const rankLabel = rank===0?"BEST":rank===1?"2nd":rank===2?"3rd":`${rank+1}th`;
                     return(
-                      <button key={opt.label} onClick={()=>{
-                        // Quick routes only suggest a path — system stays in AUTO mode
-                        // so real sensor triggers still work after BOMBA selects a route
-                        setActiveRoute(opt.path);
-                        setManualBlockedNode(null);
-                        pushEvent(`BOMBA: ${opt.label} suggested — ${opt.path.join(" → ")}. AUTO mode active.`,"info","PRE-EMPTIVE");
-                      }} style={{width:"100%",marginBottom:4,
-                        background:isActive?palette.purpleLight:opt.safe?palette.successLight:palette.warningLight,
-                        border:`1px solid ${isActive?palette.purple:opt.safe?palette.success:palette.warning}`,
-                        borderRadius:5,padding:"4px 8px",cursor:"pointer",
+                      <button key={exitId} onClick={()=>{
+                        const origin = activeRoute[0] || "J16";
+                        fetch(apiUrl("/api/force_exit"),{
+                          method:"POST",
+                          headers:{"Content-Type":"application/json"},
+                          body:JSON.stringify({start:origin, exit_id:exitId})
+                        }).then(r=>r.json()).then(d=>{
+                          if(d.route?.length) {
+                            setActiveRoute(d.route);
+                            setManualOverride(true);
+                            setManualBlockedNode(null);
+                          }
+                        });
+                      }} disabled={blocked} style={{width:"100%",marginBottom:3,
+                        background:isActive?palette.purpleLight:blocked?"#FEE2E2":palette.successLight,
+                        border:`1px solid ${isActive?palette.purple:blocked?palette.danger:palette.success}`,
+                        borderRadius:5,padding:"3px 8px",cursor:blocked?"not-allowed":"pointer",
+                        opacity:blocked?0.5:1,
                         display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <div><span style={{fontSize:10,fontWeight:700,
-                          color:isActive?palette.purple:opt.safe?palette.successDark:palette.warningDark}}>
-                          {opt.label} {isActive?"(ACTIVE)":""}
+                        <span style={{display:"flex",alignItems:"center",gap:5}}>
+                          <span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,
+                            background:rank===0?palette.success:"#E2E8F0",
+                            color:rank===0?"#fff":palette.textMuted}}>{rankLabel}</span>
+                          <span style={{fontSize:9,fontWeight:700,
+                            color:isActive?palette.purple:blocked?palette.danger:palette.successDark}}>
+                            → {exitLabel} {isActive?"(ACTIVE)":""}
+                          </span>
                         </span>
-                        <span style={{fontSize:9,color:palette.textMuted,marginLeft:6}}>{opt.desc}</span></div>
-                        <span style={{fontSize:8,fontWeight:700,flexShrink:0,
-                          color:opt.safe?palette.success:palette.warning}}>
-                          {opt.safe?"CLEAR":"CAUTION"}</span>
+                        {blocked
+                          ?<span style={{fontSize:7,color:palette.danger,fontWeight:600}}>BLOCKED</span>
+                          :rt.cost!==undefined&&<span style={{fontSize:7,color:palette.textMuted}}>{rt.cost}m</span>}
                       </button>
                     );
                   })}
+                  </div>
                 </div>
-                <div style={{padding:"8px 12px",flex:1}}>
+                <div style={{padding:"8px 12px",flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:2}}>FACP PAS</div>
                   <div style={{fontSize:18,fontWeight:700,cursor:"help",lineHeight:1,
                     color:isHazard?(pasCountdown<60?palette.danger:palette.warning):palette.textMuted}}
@@ -1176,73 +1250,85 @@ export default function App() {
                 <svg viewBox="-30 -30 820 760" onClick={()=>setTwinExpanded(true)}
                   style={{flex:1,width:"100%",background:"#F8FAFC",cursor:"pointer"}}
                   title="Click to expand full command view">
-                {/* ── FLOOR PLAN — drawn SVG (no image dependency) ── */}
+                {/* ── Outer wall ── */}
+                <polygon points="15.4,12.3 751.7,12.3 751.7,675.8 15.4,675.8"
+                  fill="#EEF2F7" stroke="#334155" strokeWidth="2.5"/>
 
-                {/* Outer wall */}
-                <polygon points="15.4,12.3 751.4,12.3 751.4,675.8 15.4,675.8"
-                  fill="#EEF2F7" stroke="#334155" strokeWidth="3"/>
-
-                {/* Room polygons — exact coordinates from floor plan */}
+                {/* ── Room polygons with zone colors ── */}
                 {[
-                  {pts:"15.4,12.3 162.6,12.3 162.6,219.1 15.4,219.1",             l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3"},
-                  {pts:"162.6,12.3 248.2,12.3 248.2,219.1 162.6,219.1",           l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3"},
-                  {pts:"248.2,12.3 410.2,12.3 410.2,219.1 248.2,219.1",           l1:"",             l2:"",           cx:329.2, cy:80.0, fill:"#FEF9C3"},
-                  {pts:"248.2,130.5 359.1,130.5 359.1,219.1 248.2,219.1",         l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3"},
-                  {pts:"410.2,12.3 558.6,12.3 558.6,132.3 487.2,219.1 410.2,219.1", l1:"Thai Relax", l2:"Massage",   cx:484.4, cy:115.7, fill:"#FEF9C3"},
-                  {pts:"660.2,12.3 751.4,12.3 751.4,126.8 660.2,126.8",           l1:"Female Washroom",    l2:"",           cx:705.8, cy:69.6, fill:"#FFE4E6"},
-                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",         l1:"Male Washroom",      l2:"",           cx:705.8, cy:189.0, fill:"#FFE4E6"},
-                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,306.5 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber", l2:"", cx:695.9, cy:315.0, fill:"#FFE4E6"},
-                  {pts:"396.6,305.3 524.1,305.3 524.1,432.0 396.6,432.0",         l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE"},
-                  {pts:"221.7,305.3 325.8,305.3 325.8,432.0 221.7,432.0",         l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5"},
-                  {pts:"221.7,432.0 221.7,483.1",                                   l1:"Customer",     l2:"Service",    cx:280.0, cy:490.0, lines:["221.7,432.0 221.7,483.1","221.7,432.0 325.8,432.0","325.8,432.0 325.8,567.4"], fill:"#FFEDD5"},
-                  {pts:"15.4,396.4 117.6,396.4 117.6,528.7 15.4,528.7",           l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5"},
-                  {pts:"15.4,528.7 117.6,528.7 117.6,675.8 15.4,675.8",           l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5"},
-                  {pts:"392.3,501.6 529.7,501.6 529.7,675.8 392.3,675.8",         l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE"},
-                  {pts:"529.7,501.6 649.1,501.6 649.1,675.8 529.7,675.8",         l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE"},
-                  {pts:"649.1,501.6 751.4,501.6 751.4,675.8 649.1,675.8",         l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE"},
-                ].map((r,i)=>(
-                  <g key={i}>
-                    {r.lines
-                      ? <g>
-                          <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
-                          {r.lines.map((l,li)=><line key={li}
-                            x1={parseFloat(l.split(" ")[0].split(",")[0])}
-                            y1={parseFloat(l.split(" ")[0].split(",")[1])}
-                            x2={parseFloat(l.split(" ")[1].split(",")[0])}
-                            y2={parseFloat(l.split(" ")[1].split(",")[1])}
-                            stroke="#94A3B8" strokeWidth="1.5"/>)}
-                        </g>
-                      : <polygon points={r.pts} fill={r.fill||"white"} stroke="#94A3B8" strokeWidth="1.5"/>
-                    }
-                    <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
-                      dominantBaseline="central"
-                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
-                    {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
-                      dominantBaseline="central"
-                      style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
-                  </g>
-                ))}
+                  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
+                  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
+                  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
+                  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
+                  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
+                  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
+                  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
+                  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
+                  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
+                  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
+                  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
+                  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
+                  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
+                  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
+                  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
+                ].map((r,i)=>{
+                  const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
+                  const hazardFill = n?.status==="alert"?"#FEE2E2":
+                                     n?.id===manualBlockedNode?"#E9D5FF":
+                                     n?.status==="quarantine"?"#FEF3C7":null;
+                  const fillColor = hazardFill || r.fill || "white";
+                  const fs = 8;
+                  return(
+                    <g key={i}>
+                      {r.lines
+                        ? <g>
+                            <rect x={221.8} y={432.1} width={104.1} height={135.5}
+                              fill={fillColor} stroke="none"/>
+                            {r.lines.map((l,li)=><line key={li}
+                              x1={parseFloat(l.split(" ")[0].split(",")[0])}
+                              y1={parseFloat(l.split(" ")[0].split(",")[1])}
+                              x2={parseFloat(l.split(" ")[1].split(",")[0])}
+                              y2={parseFloat(l.split(" ")[1].split(",")[1])}
+                              stroke="#94A3B8" strokeWidth="1.5"/>)}
+                          </g>
+                        : <polygon points={r.pts} fill={fillColor}
+                            stroke="#94A3B8" strokeWidth="1.5"/>
+                      }
+                      <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
+                      {r.l2&&<text x={r.cx} y={r.cy+7} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l2}</text>}
+                    </g>
+                  );
+                })}
 
-                {/* Corridor backbone lines */}
+                {/* Customer Service — open area, 3 walls only (per corrected coords) */}
+                <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
+                <line x1={221.7} y1={432.0} x2={221.7} y2={483.1} stroke="#94A3B8" strokeWidth="1.5"/>
+                <line x1={221.7} y1={432.0} x2={325.8} y2={432.0} stroke="#94A3B8" strokeWidth="1.5"/>
+                <line x1={325.8} y1={432.0} x2={325.8} y2={567.4} stroke="#94A3B8" strokeWidth="1.5"/>
+                <text x={273.8} y={494.0} textAnchor="middle" dominantBaseline="central"
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Customer</text>
+                <text x={273.8} y={504.0} textAnchor="middle" dominantBaseline="central"
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Service</text>
+
+                {/* ── Corridor backbone — dashed lines ── */}
                 {CORRIDOR_EDGES.map(([a,b],i)=>{
                   const pa=JUNCTIONS[a]||EXIT_POS[a]||{x:0,y:0};
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
+                  const aNode=nodes.find(x=>x.id===a);
+                  const bNode=nodes.find(x=>x.id===b);
+                  const hazard=(aNode?.status==="alert"||bNode?.status==="alert"||
+                    aNode?.status==="quarantine"||bNode?.status==="quarantine");
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
-                    stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.7"/>;
+                    stroke={hazard?"#EF4444":"#94A3B8"}
+                    strokeWidth={hazard?2:1.5} strokeDasharray={hazard?"none":"6 4"}
+                    opacity={hazard?0.8:0.5}/>;
                 })}
 
-                {/* Room → junction door lines */}
-                {Object.entries(ROOM_JUNCTIONS).map(([rid,jids])=>
-                  jids.map((jid,i)=>{
-                    const rp=ROOM_POS[rid]||{x:0,y:0};
-                    const jp=JUNCTIONS[jid]||{x:0,y:0};
-                    return <line key={`${rid}-${i}`}
-                      x1={rp.x} y1={rp.y} x2={jp.x} y2={jp.y}
-                      stroke="#CBD5E1" strokeWidth="1" strokeDasharray="2 3" opacity="0.45"/>;
-                  })
-                )}
-
-                {/* Active route animated line */}
+                {/* ── Active route — animated green dashes through junctions ── */}
                 {activeRoute.length>=2&&(()=>{
                   const pts=getRoutePoints(activeRoute);
                   if(!pts) return null;
@@ -1252,14 +1338,16 @@ export default function App() {
                       strokeDasharray="12 6" opacity="0.95"
                       style={{animation:"dash 1.2s linear infinite"}}/>
                     <polyline points={pts} fill="none" stroke={palette.success}
-                      strokeWidth="14" opacity="0.08"
-                      strokeLinecap="round" strokeLinejoin="round"/>
+                      strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })()}
 
-                {/* Exit dots */}
+                {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
                   const isOnRoute=activeRoute.includes(id);
+                  const bw=36, bh=14;
+                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
+                  const by=id==="EXIT-2"||id==="EXIT-3"?pos.y-bh-8:id==="EXIT-5"?pos.y+10:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
@@ -1267,87 +1355,97 @@ export default function App() {
                     {isOnRoute&&<circle cx={pos.x} cy={pos.y} r={14}
                       fill="none" stroke={palette.success} strokeWidth="1.5" opacity="0.5"
                       style={{animation:"pulse 1.2s infinite"}}/>}
-                    <g>
-                      {(()=>{
-                        // Place badge OUTSIDE the outer wall
-                        const bw=36, bh=14;
-                        const bx = id==="EXIT-1" ? pos.x-bw-8
-                                 : id==="EXIT-4" ? pos.x+10
-                                 : pos.x-bw/2;
-                        const by = id==="EXIT-2"||id==="EXIT-3" ? pos.y-bh-8
-                                 : id==="EXIT-5" ? pos.y+10
-                                 : pos.y-bh/2;
-                        return(<g>
-                          <rect x={bx} y={by} width={bw} height={bh} rx="3"
-                            fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
-                          <text x={bx+bw/2} y={by+bh/2} textAnchor="middle"
-                            dominantBaseline="central"
-                            style={{fontSize:7.5,fontWeight:800,fill:"white",
-                              fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
-                        </g>);
-                      })()}
-                    </g>
+                    <rect x={bx} y={by} width={bw} height={bh} rx="3"
+                      fill={isOnRoute?palette.success:"#2563EB"} opacity="0.92"/>
+                    <text x={bx+bw/2} y={by+bh/2} textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:7.5,fontWeight:800,fill:"white",fontFamily:"Inter,sans-serif"}}>{pos.label}</text>
                   </g>);
                 })}
 
-                {/* Room node dots */}
-                {Object.entries(ROOM_POS).map(([id,pos])=>{
+                {/* ── Store door dots + door→junction connector when on active route ── */}
+                {Object.entries(DOOR_POS).map(([bid,d])=>{
+                  const isStart = activeRoute[0]===bid;
+                  const jid = DOOR_TO_J[bid];
+                  const jpos = jid ? JUNCTIONS[jid] : null;
+                  const storeDot = STORE_DOTS.find(s=>s.label===d.label);
+                  const zoneColor = storeDot ? ZONE_COLORS[storeDot.zone] : "#94A3B8";
+                  return(
+                    <g key={bid}>
+                      {/* Door→junction line (only shown when this store is route start) */}
+                      {isStart && jpos && (
+                        <line x1={d.x} y1={d.y} x2={jpos.x} y2={jpos.y}
+                          stroke={palette.success} strokeWidth="2.5"
+                          strokeDasharray="5 3" opacity="0.7"/>
+                      )}
+                      <circle cx={d.x} cy={d.y} r={isStart?6:3.5}
+                        fill={isStart?palette.success:zoneColor}
+                        stroke={isStart?"#fff":"#94A3B8"}
+                        strokeWidth={isStart?2:0.8} opacity="0.9"/>
+                      {isStart&&<text x={d.x} y={d.y-10} textAnchor="middle"
+                        style={{fontSize:7.5,fontWeight:700,fill:palette.success,
+                          fontFamily:"Inter,sans-serif"}}>{d.label}</text>}
+                    </g>
+                  );
+                })}
+
+                {/* ── Junction nodes — routing decision points ── */}
+                {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
-                  const isSel=selectedNode?.id===id;
                   const isOnRoute=activeRoute.includes(id);
+                  const isPending=manualBlockedNode===id+"_PENDING";
+                  const isBlocked=id===manualBlockedNode||isPending;
                   const isAlert=n?.status==="alert";
-                  const isBlocked=id===manualBlockedNode;
-                  const dotColor=isBlocked?palette.purple:
+                  const isTier2=n?.status==="quarantine"||n?.status==="warning";
+                  const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
+                  const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
                     isAlert?palette.danger:
-                    n?.status==="quarantine"?palette.warning:
-                    n?.status==="warning"?"#CA8A04":
-                    isOnRoute?palette.success:"rgba(249,115,22,0.85)";
-                  const r=isOnRoute||isAlert?8:5;
+                    isTier2?palette.warning:
+                    isOnRoute?palette.success:nodeColor;
+                  const r=isOnRoute||isAlert?7:4;
                   return(
                     <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
-                        fill={palette.danger} opacity="0.15"
+                        fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
                       <circle cx={pos.x} cy={pos.y} r={r}
-                        fill={dotColor} stroke="#fff" strokeWidth={isSel?2.5:1.5}/>
-                      {(isOnRoute||isAlert)&&<text x={pos.x+r+3} y={pos.y}
-                        textAnchor="start" dominantBaseline="central"
-                        style={{fontSize:7.5,fontWeight:700,
-                          fill:isAlert?palette.danger:"#1e293b",
-                          fontFamily:"Inter,sans-serif"}}>{pos.label}</text>}
+                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
+                      {/* Show ID only on route or alert */}
+                      {(isOnRoute||isAlert||isBlocked)&&(
+                        <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
+                          style={{fontSize:7,fontWeight:700,fill:dotColor,fontFamily:"Inter,sans-serif"}}>{id}</text>
+                      )}
+                      {/* Hazard emoji */}
                       {isHazard&&isAlert&&(()=>{
                         const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
-                        return<text x={pos.x} y={pos.y-r-4} textAnchor="middle"
-                          style={{fontSize:13,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
+                        return<text x={pos.x} y={pos.y-r-12} textAnchor="middle"
+                          style={{fontSize:12,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
                       })()}
+                      {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(r=>r!==manualBlockedNode);
+                        const rv=activeRoute.filter(x=>x!==manualBlockedNode);
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
-                        const isF=vi===1,isL=vi===rv.length;
+                        const isL=vi===rv.length;
                         return(<g>
-                          <circle cx={pos.x-r-8} cy={pos.y} r={7}
-                            fill={isL?palette.success:isF?palette.warning:palette.info}
-                            stroke="#fff" strokeWidth="1.5"/>
-                          <text x={pos.x-r-8} y={pos.y} textAnchor="middle"
-                            dominantBaseline="central"
-                            style={{fontSize:7,fontWeight:800,fill:"#fff",
-                              fontFamily:"Inter,sans-serif"}}>{vi}</text>
+                          <circle cx={pos.x+r+6} cy={pos.y-r-2} r={6}
+                            fill={isL?palette.success:palette.info} stroke="#fff" strokeWidth="1.5"/>
+                          <text x={pos.x+r+6} y={pos.y-r-2} textAnchor="middle" dominantBaseline="central"
+                            style={{fontSize:6,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>{vi}</text>
                         </g>);
                       })()}
+                      {/* Crowd count */}
                       {(n?.crowd??0)>0&&(
-                        <text x={pos.x} y={pos.y+r+9} textAnchor="middle"
-                          style={{fontSize:7,fill:n.crowd>70?palette.warning:"#94A3B8",
-                            fontFamily:"Inter,sans-serif"}}>{n.crowd}p</text>
+                        <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                          style={{fontSize:6.5,fill:n.crowd>85?palette.danger:n.crowd>50?palette.warning:"#94A3B8",
+                            fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.crowd}p</text>
                       )}
                     </g>
                   );
                 })}
 
                 {activeRoute.length<=1&&(
-                  <text x="380" y="340" textAnchor="middle" dominantBaseline="central"
-                    style={{fontSize:13,fontWeight:700,fill:palette.danger,
-                      fontFamily:"Inter,sans-serif"}}>
+                  <text x="383" y="340" textAnchor="middle" dominantBaseline="central"
+                    style={{fontSize:12,fontWeight:700,fill:palette.danger,fontFamily:"Inter,sans-serif"}}>
                     ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
                   </text>
                 )}
@@ -1496,10 +1594,10 @@ export default function App() {
                 </div>
               </div>
               <div style={{flex:1,position:"relative",overflow:"hidden"}}>
-                <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"
+                <svg viewBox="-20 -20 800 740" preserveAspectRatio="xMidYMid meet"
                   style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
-                  {Array.from({length:11},(_,i)=>(<line key={`gv${i}`} x1={i*10} y1={0} x2={i*10} y2={100} stroke="#E2E8F0" strokeWidth="0.3"/>))}
-                  {Array.from({length:11},(_,i)=>(<line key={`gh${i}`} x1={0} y1={i*10} x2={100} y2={i*10} stroke="#E2E8F0" strokeWidth="0.3"/>))}
+                  {Array.from({length:9},(_,i)=>(<line key={`gv${i}`} x1={i*95} y1={-20} x2={i*95} y2={720} stroke="#E2E8F0" strokeWidth="1"/>))}
+                  {Array.from({length:9},(_,i)=>(<line key={`gh${i}`} x1={-20} y1={i*90} x2={780} y2={i*90} stroke="#E2E8F0" strokeWidth="1"/>))}
                   {nodes.length>0&&[["J1","J2"],["J2","J3"],["J3","J4"],["J3","J20"],["J4","J5"],["J4","J7"],["J4","J16"],
                     ["J5","J6"],["J6","EXIT-2"],["J7","J8"],["J8","J9"],["J8","J11"],["J9","J10"],
                     ["J10","EXIT-3"],["J11","J12"],["J12","J13"],["J12","J14"],["J13","EXIT-4"],
@@ -1508,7 +1606,7 @@ export default function App() {
                     const na=nodes.find(x=>x.id===a),nb=nodes.find(x=>x.id===b);
                     if(!na||!nb) return null;
                     return <line key={i} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
-                      stroke="#CBD5E1" strokeWidth="0.6" strokeDasharray="2 1.5"/>;
+                      stroke="#CBD5E1" strokeWidth="1.5" strokeDasharray="5 3"/>;
                   })}
                   {nodes.map(n=>{
                     const c=statusColor(n.status);
@@ -1518,17 +1616,17 @@ export default function App() {
                     return(
                       <g key={n.id} style={{cursor:"pointer"}}
                         onClick={e=>{e.stopPropagation();setSelectedNode(p=>p?.id===n.id?null:n);}}>
-                        {isSel&&<circle cx={n.x} cy={n.y} r="5.5" fill={c} opacity="0.2"/>}
-                        <circle cx={n.x} cy={n.y} r={isSel?4:3} fill={c} stroke="#fff" strokeWidth="0.8"
+                        {isSel&&<circle cx={n.x} cy={n.y} r="9" fill={c} opacity="0.2"/>}
+                        <circle cx={n.x} cy={n.y} r={isSel?7:5} fill={c} stroke="#fff" strokeWidth="1"
                           style={n.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
                         <g>
                           {/* battery body */}
-                          <rect x={n.x+2} y={n.y-4.5} width={3.2} height={2} rx="0.4" fill={bc} opacity="0.9"/>
+                          <rect x={n.x+7} y={n.y-11} width={10} height={5} rx="1" fill={bc} opacity="0.9"/>
                           {/* nub on right */}
-                          <rect x={n.x+5.2} y={n.y-4} width={0.8} height={1} rx="0.2" fill={bc} opacity="0.9"/>
+                          <rect x={n.x+8} y={n.y-6.5} width={1.5} height={1.5} rx="0.5" fill={bc} opacity="0.9"/>
                         </g>
-                        <text x={n.x} y={n.y+7} textAnchor="middle"
-                          style={{fontSize:"3.5px",fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>{n.id}</text>
+                        <text x={n.x} y={n.y+14} textAnchor="middle"
+                          style={{fontSize:"8px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.id}</text>
                       </g>
                     );
                   })}
@@ -1553,7 +1651,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div style={{...card(),overflow:"hidden"}}>
+            <div style={{...card(),overflow:"hidden",flexShrink:0}}>
               <div style={{padding:"7px 12px",borderBottom:`1px solid ${palette.border}`,
                 display:"flex",justifyContent:"space-between",alignItems:"center",
                 fontSize:10,fontWeight:600,color:palette.textMuted}}>
@@ -1566,45 +1664,118 @@ export default function App() {
                   RAMO 520Hz: {fftConfirmed?"ACTIVE":"STANDBY"}
                 </span>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)"}}>
-                {nodes.map((n,i)=>{
-                  const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
-                  const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
-                  return(
-                    <div key={n.id} style={{padding:"8px 10px",borderRight:i<5?`1px solid ${palette.border}`:"none"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                        <span style={{fontWeight:700,fontSize:10,color:palette.info}}>{n.id}</span>
-                        {m.pct<60&&<span style={{fontSize:9,color:palette.danger,fontWeight:600}}>LOW</span>}
-                      </div>
-                      <div style={{height:3,background:palette.grayLight,borderRadius:2,marginBottom:3}}>
-                        <div style={{height:"100%",width:`${m.pct}%`,background:bc,borderRadius:2}}/>
-                      </div>
-                      <div style={{fontSize:9,color:bc,fontWeight:600}}>{m.pct}%</div>
-                      <div style={{fontSize:9,color:palette.textMuted,marginTop:2}}>Next: {m.next_service}</div>
+              {(()=>{
+                const PER_PAGE = 3;
+                // Build sorted list — urgent maintenance first
+                const lumiNodes = Object.entries(LUMINA_NODE_DEFS).map(([nid,nodeDef])=>{
+                  const m = health.battery[nid]??{pct:85,next_service:"N/A"};
+                  const coveredJ = Object.entries(J_TO_NODE).filter(([,n])=>n===nid).map(([j])=>j);
+                  const worstStatus = coveredJ
+                    .map(j=>nodes.find(x=>x.id===j))
+                    .filter(Boolean)
+                    .sort((a,b)=>
+                      (b.status==="alert"?3:b.status==="quarantine"?2:b.status==="warning"?1:0)-
+                      (a.status==="alert"?3:a.status==="quarantine"?2:a.status==="warning"?1:0)
+                    )[0]?.status || "normal";
+                  // Priority score — lower = more urgent
+                  const priority = worstStatus==="alert"?0 : m.pct<60?1 :
+                    worstStatus==="quarantine"?2 : worstStatus==="warning"?3 : m.pct<75?4 : 5;
+                  return {nid, nodeDef, m, worstStatus, priority};
+                }).sort((a,b)=>a.priority-b.priority);
+
+                const totalPages = Math.ceil(lumiNodes.length/PER_PAGE);
+                const page = Math.min(nodeHealthPage, totalPages-1);
+                const visible = lumiNodes.slice(page*PER_PAGE, (page+1)*PER_PAGE);
+
+                return(
+                  <div>
+                    <div style={{display:"grid",gridTemplateColumns:`repeat(${PER_PAGE},1fr)`,alignItems:"start"}}>
+                      {visible.map(({nid,nodeDef,m,worstStatus},i)=>{
+                        const bc = m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
+                        const statusCol = worstStatus==="alert"?palette.danger:
+                          worstStatus==="quarantine"?palette.warning:
+                          worstStatus==="warning"?"#CA8A04":palette.success;
+                        const urgent = m.pct<60 || worstStatus==="alert";
+                        return(
+                          <div key={nid} style={{padding:"6px 10px",
+                            borderRight:i<PER_PAGE-1?`1px solid ${palette.border}`:"none",
+                            background:urgent?"#FFF5F5":"transparent",
+                            borderTop:urgent?`2px solid ${palette.danger}`:"2px solid transparent"}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+                              <span style={{fontWeight:700,fontSize:10,color:nodeDef.color}}>{nid}</span>
+                              {urgent
+                                ? <span style={{fontSize:7,color:palette.danger,fontWeight:700,
+                                    padding:"1px 4px",background:"#FEE2E2",borderRadius:3}}>URGENT</span>
+                                : m.pct<75
+                                  ? <span style={{fontSize:7,color:palette.warning,fontWeight:600}}>MONITOR</span>
+                                  : <span style={{fontSize:7,color:palette.success,fontWeight:600}}>OK</span>
+                              }
+                            </div>
+                            <div style={{fontSize:8.5,color:"#475569",marginBottom:3,fontWeight:500}}>{nodeDef.label}</div>
+                            {/* Battery bar */}
+                            <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:2}}>
+                              <div style={{flex:1,height:4,background:"#E2E8F0",borderRadius:2}}>
+                                <div style={{height:"100%",width:`${m.pct}%`,background:bc,borderRadius:2,
+                                  transition:"width 0.5s"}}/>
+                              </div>
+                              <span style={{fontSize:8,color:bc,fontWeight:700,minWidth:24}}>{m.pct}%</span>
+                            </div>
+                            <div style={{fontSize:7.5,color:palette.textMuted,lineHeight:1.5}}>
+                              Next service: <b style={{color:m.pct<60?palette.danger:palette.text}}>{m.next_service}</b>
+                              {" · "}
+                              <span style={{color:statusCol,fontWeight:600}}>● {worstStatus.toUpperCase()}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
-              </div>
+                    {/* Pagination */}
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                      padding:"5px 10px",borderTop:`1px solid ${palette.border}`,
+                      background:"#FAFBFC"}}>
+                      <span style={{fontSize:8,color:palette.textMuted}}>
+                        Sorted by maintenance urgency · {lumiNodes.filter(n=>n.m.pct<60||n.worstStatus==="alert").length} urgent
+                      </span>
+                      <div style={{display:"flex",alignItems:"center",gap:4,userSelect:"none"}}>
+                        <button onClick={()=>setNodeHealthPage(p=>Math.max(0,p-1))}
+                          disabled={page===0}
+                          style={{background:"none",border:`1px solid ${palette.border}`,borderRadius:4,
+                            width:22,height:22,cursor:page===0?"default":"pointer",
+                            color:page===0?"#CBD5E1":palette.info,fontSize:12,lineHeight:1}}>◀</button>
+                        <span style={{fontSize:9,color:palette.textMuted,minWidth:40,textAlign:"center"}}>
+                          {page*PER_PAGE+1}–{Math.min((page+1)*PER_PAGE,lumiNodes.length)} / {lumiNodes.length}
+                        </span>
+                        <button onClick={()=>setNodeHealthPage(p=>Math.min(totalPages-1,p+1))}
+                          disabled={page>=totalPages-1}
+                          style={{background:"none",border:`1px solid ${palette.border}`,borderRadius:4,
+                            width:22,height:22,cursor:page>=totalPages-1?"default":"pointer",
+                            color:page>=totalPages-1?"#CBD5E1":palette.info,fontSize:12,lineHeight:1}}>▶</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
 
         {/* ══ TAB 3 — ANALYTICS ══ */}
         {tab==="analytics"&&(
-          <div style={{flex:1,display:"grid",gridTemplateRows:"auto 1fr auto",gap:10,minHeight:0,overflow:"hidden"}}>
+          <div style={{flex:1,display:"flex",flexDirection:"column",gap:10,minHeight:0,overflow:"hidden"}}>
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,flexShrink:0}}>
               <MetricCard label="Total Footfall" value={nodes.reduce((s,n)=>s+n.crowd,0)} unit="pax" color={palette.info} icon="👣" sub="live across all nodes"/>
               <MetricCard label="Peak Node"      value={nodes.reduce((a,n)=>n.crowd>a.crowd?n:a,nodes[0])?.id??"—"} unit="" color={palette.warning} icon="📍" sub="highest occupancy"/>
               <MetricCard label="Avg Occupancy"  value={Math.round(nodes.reduce((s,n)=>s+n.crowd,0)/Math.max(nodes.length,1))} unit="pax" color={palette.success} icon="📊" sub="system average"/>
               <MetricCard label="Active Alerts"  value={nodes.filter(n=>n.status==="alert").length} unit="" color={nodes.some(n=>n.status==="alert")?palette.danger:palette.success} icon="🔥" sub="thermal anomalies"/>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:10,minHeight:0}}>
-              <div style={{...card(),padding:"12px 14px",overflow:"hidden"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1.5fr 1fr",gap:10,flex:1,minHeight:0,overflow:"hidden"}}>
+              <div style={{...card(),padding:"12px 14px",display:"flex",flexDirection:"column",minHeight:0,overflow:"hidden"}}>
                 <div style={{fontSize:10,fontWeight:600,color:palette.textMuted,marginBottom:10}}>
                   LIVE OCCUPANCY — ALL NODES
                 </div>
-                <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                  {nodes.map(n=>{
+                <div style={{display:"flex",flexDirection:"column",gap:6,
+                  maxHeight:280,overflowY:"auto",paddingRight:4}}>
+                  {nodes.filter(n=>!n.id.startsWith("EXIT")).map(n=>{
                     const pct=Math.min(100,Math.round((n.crowd/100)*100));
                     // Bar colour reflects crowd density level — consistent with Fruin LOS thresholds
                     // Alert/quarantine status shown via node label, not bar colour
@@ -1616,7 +1787,7 @@ export default function App() {
                       <div key={n.id}>
                         <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:2}}>
                           <span style={{fontWeight:600,color:palette.text}}>{n.id}
-                            <span style={{fontWeight:400,color:palette.textMuted,marginLeft:6}}>{n.zone}</span>
+                            <span style={{fontWeight:400,color:palette.textMuted,marginLeft:6}}>{n.zone?.split("(")[0]?.trim()}</span>
                           </span>
                           <span style={{color:bc,fontWeight:700}}>{n.crowd}p
                             {(n.velocity??0)!==0&&(
@@ -1635,7 +1806,7 @@ export default function App() {
                   })}
                 </div>
               </div>
-              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <div style={{display:"flex",flexDirection:"column",gap:10,minHeight:0,overflow:"hidden"}}>
                 <ChartSlider
                   title="CROWD VELOCITY"
                   idx={velCardIdx}
@@ -1664,7 +1835,7 @@ export default function App() {
                 />
               </div>
             </div>
-            <div style={{...card(),padding:"8px 12px",flexShrink:0}}>
+            <div style={{...card(),padding:"8px 12px",flexShrink:0,maxHeight:160,overflowY:"auto"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                 <div style={{fontSize:10,fontWeight:600,color:palette.textMuted}}>
                   OCCUPANCY SIGNALS
@@ -1680,15 +1851,25 @@ export default function App() {
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
                 {[
-                  {label:"High Traffic",  color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60), sub:"above 60 pax — DOOH / kiosk"},
-                  {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10), sub:"below 10 pax — unoccupied"},
-                  {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70), sub:"above 70 pax — peak load"},
+                  {label:"High Traffic",  color:palette.danger,  nodes:nodes.filter(n=>n.crowd>60&&n.id.startsWith("J")), sub:"above 60 pax — DOOH / kiosk"},
+                  {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10&&n.id.startsWith("J")), sub:"below 10 pax — unoccupied"},
+                  {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70&&n.id.startsWith("J")), sub:"above 70 pax — peak load"},
                 ].map(({label,color,nodes:zn,sub})=>(
                   <div key={label} style={{background:palette.bgCard2,borderRadius:6,
                     padding:"5px 8px",borderLeft:`2px solid ${color}`}}>
                     <div style={{fontSize:9,fontWeight:600,color:palette.text}}>{label}</div>
-                    <div style={{fontSize:10,fontWeight:700,color}}>{zn.length>0?zn.map(n=>n.id).join(", "):"None"}</div>
-                    <div style={{fontSize:8,color:palette.textMuted,marginTop:1}}>{sub}</div>
+                    {zn.length>0
+                      ? <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:3}}>
+                          {zn.slice(0,6).map(n=>(
+                            <span key={n.id} style={{fontSize:8,fontWeight:600,padding:"1px 5px",
+                              borderRadius:3,background:`${color}15`,color,
+                              border:`1px solid ${color}33`}}>{n.id} — {n.zone?.split("(")[0]?.trim()||n.id}</span>
+                          ))}
+                          {zn.length>6&&<span style={{fontSize:8,color:palette.textMuted}}>+{zn.length-6} more</span>}
+                        </div>
+                      : <div style={{fontSize:10,fontWeight:700,color,marginTop:2}}>None</div>
+                    }
+                    <div style={{fontSize:8,color:palette.textMuted,marginTop:2}}>{sub}</div>
                   </div>
                 ))}
               </div>

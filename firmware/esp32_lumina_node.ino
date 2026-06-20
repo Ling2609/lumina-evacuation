@@ -1,368 +1,311 @@
 // =============================================================================
 // LUMINA SMART EVACUATION SYSTEM
-// esp32_lumina_node.ino  —  Edge Node Actuation Controller
+// esp32_lumina_node.ino — LED Strip Controller
 //
-// Hardware: ESP32 (any variant — WROOM, S2, S3, C3)
-// Simulator: https://wokwi.com  (paste this file, add ESP32 board)
+// Hardware:
+//   ESP32 Dev Board
+//   WS2812B LED strip (30 LEDs total, single data pin GPIO 5)
+//   Active Buzzer (GPIO 18)
+//   Relay Module (GPIO 19)
 //
-// What this does:
-//   1. Connects to Wi-Fi
-//   2. Subscribes to the Lumina MQTT topic
-//   3. Parses the JSON payload from lumina_live_stream.py
-//   4. On CRITICAL  → RED LED solid (this corridor blocked),
-//                      GREEN LED blinks (DYN-A* actively routing elsewhere)
-//   5. On RESOLVED  → RED LED off, GREEN LED solid (corridor clear)
-//   6. On FACP_CONFIRMED → RED pulses 3x then holds solid (global alarm)
-//   7. Serial monitor prints every event for demo visibility
+// LED Strip Layout (30 LEDs across 5 corridors, 6 LEDs each):
+//   LEDs  0– 5  →  C-001  Top Corridor
+//   LEDs  6–11  →  C-002  Left Corridor
+//   LEDs 12–17  →  C-003  Right Corridor
+//   LEDs 18–23  →  C-004  Center Corridor
+//   LEDs 24–29  →  C-005  Bottom Corridor
 //
-// Pin mapping (matches APU lab hardware):
-//   GPIO 2  — Onboard LED (status heartbeat)
-//   GPIO 18 — GREEN LED   (safe / proceed signal)
-//   GPIO 19 — RED LED     (hazard / stop signal)
+// Each corridor segment shows:
+//   GREEN chase animation = safe, proceed this way
+//   RED solid             = hazard / blocked
+//   RED blinking          = pull policy STOP LINE — hold, do not enter
+//   AMBER pulse           = warning / congestion building
+//   OFF                   = not on active route (normal operation)
 //
-// Flash to real hardware:
-//   Arduino IDE → Board: "ESP32 Dev Module" → Upload
-//   Or: platformio run --target upload
+// Communication:
+//   MQTT over Wi-Fi — subscribes to lumina/vitrox/demo/7a9b2f/alerts
+//   Flask sends corridor states via MQTT every 2s
+//
 // =============================================================================
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Adafruit_NeoPixel.h>
 
-// =============================================================================
-// HARDWARE MODE — pick ONE
-//
-// USE_LED_STRIP = false : two discrete LEDs (Wokwi default, matches breadboard)
-// USE_LED_STRIP = true  : addressable LED strip (WS2812B/NeoPixel) via FastLED
-//
-// For real prototype with LED strip, set to true and wire the strip's DIN
-// to PIN_STRIP_DATA. Half the strip = GREEN segment, half = RED segment
-// (or use two separate strips on two pins — see comments below).
-// =============================================================================
-#define USE_LED_STRIP false
+// ── Pin definitions ───────────────────────────────────────────────────────────
+#define LED_PIN       5     // WS2812B data pin
+#define LED_COUNT     30    // total LEDs on strip
+#define BUZZER_PIN    18    // active buzzer
+#define RELAY_PIN     19    // relay module
 
-#if USE_LED_STRIP
-  #include <FastLED.h>
-#endif
+// ── LED segment definitions (corridor → LED index range) ─────────────────────
+#define SEG_C001_START  0
+#define SEG_C001_END    5
+#define SEG_C002_START  6
+#define SEG_C002_END    11
+#define SEG_C003_START  12
+#define SEG_C003_END    17
+#define SEG_C004_START  18
+#define SEG_C004_END    23
+#define SEG_C005_START  24
+#define SEG_C005_END    29
+#define LEDS_PER_SEG    6
 
-// ── Wi-Fi credentials ─────────────────────────────────────────────────────────
-// ⚠️  NIGHT BEFORE DEMO — UPDATE THESE TO YOUR PHONE HOTSPOT ⚠️
-//
-// Steps:
-//   1. On your phone: Settings → Mobile Hotspot → note the SSID and password
-//   2. Replace the strings below with your hotspot credentials
-//   3. Make sure FLASK_IP in App.jsx matches your laptop's hotspot IP
-//      (check with: ipconfig → look for "Wireless LAN adapter" IPv4)
-//
-// For Wokwi simulator testing: keep "Wokwi-GUEST" / ""
-// For real hardware at booth:  use your phone hotspot credentials
-const char* WIFI_SSID     = "Wokwi-GUEST";   // ← CHANGE TO HOTSPOT NAME
-const char* WIFI_PASSWORD = "";               // ← CHANGE TO HOTSPOT PASSWORD
-
-// ── MQTT broker ───────────────────────────────────────────────────────────────
-// Must match BROKER and TOPIC in lumina_live_stream.py exactly
+// ── Wi-Fi & MQTT ─────────────────────────────────────────────────────────────
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";      // change before demo
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";   // change before demo
 const char* MQTT_BROKER   = "broker.hivemq.com";
 const int   MQTT_PORT     = 1883;
 const char* MQTT_TOPIC    = "lumina/vitrox/demo/7a9b2f/alerts";
-// CLIENT_ID is generated randomly at connect time — prevents HiveMQ rc=5 kicks
+const char* MQTT_TOPIC_ROUTE = "lumina/vitrox/demo/7a9b2f/route";
 
-// ── GPIO pin definitions ──────────────────────────────────────────────────────
-const int PIN_STATUS_LED = 2;   // onboard LED — heartbeat blink
-const int PIN_GREEN_LED  = 18;  // safe / GREEN pull signal  (discrete LED mode)
-const int PIN_RED_LED    = 19;  // hazard / RED stop signal  (discrete LED mode)
+// ── System state ─────────────────────────────────────────────────────────────
+bool systemHazard   = false;
+bool fftConfirmed   = false;
+bool buzzerActive   = false;
 
-#if USE_LED_STRIP
-  // ── LED strip configuration ────────────────────────────────────────────────
-  const int PIN_STRIP_DATA = 5;     // DIN pin for WS2812B strip
-  const int NUM_LEDS        = 30;   // total pixels on the strip
-  // Strip is split into two halves: first half = RED zone, second half = GREEN zone
-  // (representing the stop-line / safe-route projection along the corridor)
-  const int NUM_RED_PIXELS   = NUM_LEDS / 2;
-  const int NUM_GREEN_PIXELS = NUM_LEDS - NUM_RED_PIXELS;
-  CRGB strip[NUM_LEDS];
-  const uint8_t BRIGHTNESS = 80;   // 0-255, keep modest for battery/eye safety
-#endif
+// Per-corridor state — updated by MQTT messages from Flask
+// States: "normal" | "route" | "hazard" | "warning" | "pull_stop"
+String corridorState[5] = {"normal", "normal", "normal", "normal", "normal"};
+// Per-corridor chase direction: 1 = toward higher LED index (default),
+// -1 = reversed. Set from the "dir" field inside each corridor's MQTT
+// payload so the green chase always points evacuees toward the exit,
+// never back into a blocked/hazard segment.
+int corridorDir[5] = {1, 1, 1, 1, 1};
+// Index mapping: 0=C-001, 1=C-002, 2=C-003, 3=C-004, 4=C-005
+
+// Active route — which corridors are on the DYN-A* path
+bool onRoute[5] = {false, false, false, false, false};
+
+// Chase animation tick
+int chaseTick = 0;
+unsigned long lastAnimMs = 0;
+unsigned long lastBuzzToggle = 0;
+bool buzzOn = false;
 
 // ── Objects ───────────────────────────────────────────────────────────────────
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// ── State ─────────────────────────────────────────────────────────────────────
-bool  systemHazard        = false;
-bool  fftConfirmed        = false;
-int   lastPersonCount     = 0;
-bool  greenBlinkState      = false;  // current GREEN LED state during hazard blink
-unsigned long lastGreenToggle = 0;   // non-blocking GREEN blink timer
-unsigned long lastHeartbeat    = 0;
-unsigned long lastWifiRetry    = 0;   // non-blocking wifi reconnect timer
-unsigned long lastMqttRetry    = 0;   // non-blocking mqtt reconnect timer
-const unsigned long WIFI_RETRY_MS = 5000;   // retry every 5s — keeps loop running
-const unsigned long MQTT_RETRY_MS = 3000;
+// ── Colour helpers ────────────────────────────────────────────────────────────
+#define COL_OFF       strip.Color(  0,   0,   0)
+#define COL_GREEN     strip.Color(  0, 180,   0)
+#define COL_GREEN_DIM strip.Color(  0,  40,   0)
+#define COL_RED       strip.Color(180,   0,   0)
+#define COL_RED_DIM   strip.Color( 60,   0,   0)
+#define COL_AMBER     strip.Color(180,  80,   0)
+#define COL_WHITE_DIM strip.Color( 30,  30,  30)
+#define COL_BLUE_DIM  strip.Color(  0,   0,  60)
 
 // =============================================================================
-// HELPERS
+// LED SEGMENT HELPERS
 // =============================================================================
 
-// =============================================================================
-// HELPERS
-//
-// PHYSICAL INTERPRETATION (for demo narration):
-// This single ESP32 node represents ONE corridor junction in the building.
-//
-//   GREEN solid   = this corridor is clear / part of the active safe route
-//   RED solid     = this corridor is the hazard — DO NOT proceed
-//   GREEN blink   = hazard exists ELSEWHERE in the building, DYN-A* has
-//                   already rerouted — this corridor remains usable,
-//                   check dashboard for the lit route
-//
-// In a full multi-node deployment, OTHER physical nodes along the safe
-// route would show solid GREEN while THIS node (at the hazard) shows RED.
-// For a single-node demo, the GREEN BLINK communicates "the system is
-// actively routing elsewhere" without falsely claiming this corridor
-// IS the safe path.
-//
-// LED STRIP MODE: same logic, but GREEN/RED apply to half-strip segments
-// instead of single LEDs — giving a visible "light bar" projection effect
-// closer to the real floor-projection concept.
-// =============================================================================
-
-#if USE_LED_STRIP
-// ── Low-level strip primitives ────────────────────────────────────────────────
-void stripSetGreenSegment(bool on) {
-  CRGB colour = on ? CRGB::Green : CRGB::Black;
-  for (int i = NUM_RED_PIXELS; i < NUM_LEDS; i++) strip[i] = colour;
-  FastLED.show();
-}
-void stripSetRedSegment(bool on) {
-  CRGB colour = on ? CRGB::Red : CRGB::Black;
-  for (int i = 0; i < NUM_RED_PIXELS; i++) strip[i] = colour;
-  FastLED.show();
-}
-void stripClearAll() {
-  fill_solid(strip, NUM_LEDS, CRGB::Black);
-  FastLED.show();
+// Get the start LED index for a corridor (0-4)
+int segStart(int corridor) {
+  return corridor * LEDS_PER_SEG;
 }
 
-// ── Animated GREEN chase — "arrow" effect on the safe-route segment ──────────
-// A 3-pixel bright comet travels from the RED/GREEN boundary toward the exit
-// end of the strip, leaving a dim trail. Repeats continuously while hazard
-// is active — visually communicates DIRECTION, not just "green = good".
-// Called from loop() via pulseGreenDuringHazard(), non-blocking via millis().
-int   greenChasePos = 0;
-const int CHASE_STEP_MS = 80;   // lower = faster chase
-unsigned long lastChaseStep = 0;
-
-void stripGreenChaseStep() {
-  unsigned long now = millis();
-  if (now - lastChaseStep < CHASE_STEP_MS) return;
-  lastChaseStep = now;
-
-  // Fade all green-segment pixels toward black (creates trailing effect)
-  for (int i = NUM_RED_PIXELS; i < NUM_LEDS; i++) {
-    strip[i].fadeToBlackBy(60);
+// Set all LEDs in a corridor to a solid colour
+void segSolid(int corridor, uint32_t colour) {
+  int s = segStart(corridor);
+  for (int i = s; i < s + LEDS_PER_SEG; i++) {
+    strip.setPixelColor(i, colour);
   }
+}
 
-  // Draw the bright comet head + 2-pixel tail
-  for (int t = 0; t < 3; t++) {
-    int pos = NUM_RED_PIXELS + greenChasePos - t;
-    if (pos >= NUM_RED_PIXELS && pos < NUM_LEDS) {
-      uint8_t brightness = 255 - (t * 80);
-      strip[pos] = CRGB(0, brightness, 0);
+// Chase animation — one bright LED chasing along the corridor.
+// dir=1 chases toward higher LED index (default), dir=-1 reverses the
+// chase so evacuees are pointed AWAY from a hazard even if that means
+// walking back the way they came (DYN-A* may route through a corridor
+// in either physical direction depending on where the hazard origin is).
+void segChase(int corridor, uint32_t headColor, uint32_t tailColor, int tick, int dir) {
+  int s       = segStart(corridor);
+  int rawPos  = tick % LEDS_PER_SEG;
+  int pos     = (dir >= 0) ? rawPos : (LEDS_PER_SEG - 1) - rawPos;
+  int tailPos = (dir >= 0) ? (pos - 1 + LEDS_PER_SEG) % LEDS_PER_SEG
+                           : (pos + 1) % LEDS_PER_SEG;
+  for (int i = 0; i < LEDS_PER_SEG; i++) {
+    int idx = s + i;
+    if (i == pos) {
+      strip.setPixelColor(idx, headColor);
+    } else if (i == tailPos) {
+      strip.setPixelColor(idx, tailColor);
+    } else {
+      strip.setPixelColor(idx, COL_OFF);
+    }
+  }
+}
+
+// Blinking (for pull stop line)
+void segBlink(int corridor, uint32_t colour, bool on) {
+  segSolid(corridor, on ? colour : COL_OFF);
+}
+
+// Pulse (for warning/amber)
+void segPulse(int corridor, int tick) {
+  int brightness = (sin(tick * 0.3) + 1.0) * 40;  // 0-80
+  uint32_t col = strip.Color(brightness * 2, brightness, 0);  // amber
+  segSolid(corridor, col);
+}
+
+// =============================================================================
+// RENDER ALL CORRIDORS
+// Called every ~80ms
+// =============================================================================
+void renderCorridors() {
+  bool blinkOn = (millis() / 500) % 2 == 0;
+
+  for (int c = 0; c < 5; c++) {
+    String state = corridorState[c];
+
+    if (state == "hazard") {
+      // RED solid — fire or confirmed blocked
+      segSolid(c, COL_RED);
+
+    } else if (state == "pull_stop") {
+      // RED blinking — pull policy STOP LINE
+      segBlink(c, COL_RED, blinkOn);
+
+    } else if (state == "warning") {
+      // AMBER pulse — congestion building
+      segPulse(c, chaseTick);
+
+    } else if (state == "route") {
+      // GREEN chase — on active DYN-A* route, safe to proceed.
+      // Direction comes from Python's _build_corridor_states(), which
+      // checks where this corridor's nodes sit in the route sequence.
+      segChase(c, COL_GREEN, COL_GREEN_DIM, chaseTick, corridorDir[c]);
+
+    } else {
+      // "normal" — not on route. Tier 1 stealth: stay completely OFF
+      // during everyday operation so the guidance system is invisible
+      // and shoppers don't learn to tune out the ceiling lights.
+      segSolid(c, COL_OFF);
     }
   }
 
-  FastLED.show();
-
-  greenChasePos++;
-  if (greenChasePos >= NUM_GREEN_PIXELS + 3) greenChasePos = 0;  // loop, +3 lets tail clear
-}
-#endif
-
-void setNormal() {
-#if USE_LED_STRIP
-  stripSetGreenSegment(true);
-  stripSetRedSegment(false);
-#else
-  digitalWrite(PIN_GREEN_LED, HIGH);
-  digitalWrite(PIN_RED_LED,   LOW);
-#endif
-  Serial.println("[ACTUATOR] >> GREEN solid — corridor clear, normal operation");
-}
-
-void setHazardLocal() {
-  // This node IS the hazard location — RED solid (stop), GREEN animates
-  // to show the rest of the system is still actively routing.
-#if USE_LED_STRIP
-  stripSetRedSegment(true);
-  stripSetGreenSegment(false);  // clear green segment — chase animation starts fresh
-  greenChasePos = 0;
-  Serial.println("[ACTUATOR] >> RED solid (this corridor blocked) + GREEN comet chase toward exit (DYN-A* active)");
-#else
-  digitalWrite(PIN_RED_LED, HIGH);
-  Serial.println("[ACTUATOR] >> RED solid (this corridor blocked) + GREEN blinking (DYN-A* active elsewhere)");
-#endif
-}
-
-void pulseGreenDuringHazard() {
-  // Called repeatedly in loop() while systemHazard==true.
-#if USE_LED_STRIP
-  // Strip mode: animated comet chase travels toward the exit end —
-  // visually communicates a DIRECTION, like an arrow pointing to safety.
-  // RED segment stays solid (set once by setHazardLocal) and is
-  // untouched here — only the GREEN segment animates.
-  stripGreenChaseStep();
-#else
-  // Discrete LED mode: simple on/off blink (no direction possible with 1 LED)
-  unsigned long now = millis();
-  if (now - lastGreenToggle >= 400) {
-    greenBlinkState = !greenBlinkState;
-    digitalWrite(PIN_GREEN_LED, greenBlinkState ? HIGH : LOW);
-    lastGreenToggle = now;
-  }
-#endif
-}
-
-void pulseRed(int times) {
-  for (int i = 0; i < times; i++) {
-#if USE_LED_STRIP
-    stripSetRedSegment(true);  delay(200);
-    stripSetRedSegment(false); delay(200);
-#else
-    digitalWrite(PIN_RED_LED, HIGH); delay(200);
-    digitalWrite(PIN_RED_LED, LOW);  delay(200);
-#endif
-  }
-#if USE_LED_STRIP
-  stripSetRedSegment(true);  // hold RED on after pulsing
-#else
-  digitalWrite(PIN_RED_LED, HIGH);
-#endif
-}
-
-void setStandby() {
-#if USE_LED_STRIP
-  stripClearAll();
-#else
-  digitalWrite(PIN_GREEN_LED, LOW);
-  digitalWrite(PIN_RED_LED,   LOW);
-#endif
+  strip.show();
 }
 
 // =============================================================================
-// MQTT CALLBACK  — fires every time a message arrives on the subscribed topic
+// BUZZER CONTROL
 // =============================================================================
-void onMqttMessage(char* topic, byte* payload, unsigned int length) {
-  // Null-terminate payload so we can treat it as a C string
-  char msg[512];
-  unsigned int len = min(length, (unsigned int)511);
-  memcpy(msg, payload, len);
-  msg[len] = '\0';
-
-  Serial.print("[MQTT] Received on ");
-  Serial.print(topic);
-  Serial.print(": ");
-  Serial.println(msg);
-
-  // Parse JSON
-  StaticJsonDocument<512> doc;
-  DeserializationError err = deserializeJson(doc, msg);
-  if (err) {
-    Serial.print("[MQTT] JSON parse error: ");
-    Serial.println(err.c_str());
+void updateBuzzer() {
+  if (!systemHazard) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzOn = false;
     return;
   }
 
-  const char* status    = doc["status"]      | "UNKNOWN";
-  const char* hazardType = doc["hazard_type"] | "";
-  int personCount       = doc["person_count"] | 0;
-
-  lastPersonCount = personCount;
-  Serial.print("[LUMINA] Status="); Serial.print(status);
-  Serial.print("  Hazard=");        Serial.print(hazardType);
-  Serial.print("  Persons=");       Serial.println(personCount);
-
-  // ── Actuation logic ──────────────────────────────────────────────────────
-  if (strcmp(status, "CRITICAL") == 0) {
-    systemHazard = true;
-    setHazardLocal();  // RED solid (this corridor blocked) — GREEN blinks in loop()
-    Serial.println("[LUMINA] !! CRITICAL EVENT — RED stop line projected, GREEN blinking (DYN-A* active)");
-
-  } else if (strcmp(status, "FACP_CONFIRMED") == 0) {
-    fftConfirmed = true;
-    Serial.println("[LUMINA] FACP CONFIRMED — global evacuation routing active");
-    pulseRed(3);   // 3x pulse to signal confirmation, then RED held on
-
-  } else if (strcmp(status, "RESOLVED") == 0) {
-    systemHazard = false;
-    fftConfirmed = false;
-    greenBlinkState = false;
-    setNormal();   // back to GREEN solid, RED off
-    Serial.println("[LUMINA] RESOLVED — system returned to NORMAL");
-
-  } else if (strcmp(status, "NORMAL") == 0) {
-    // Heartbeat from Python — system is nominal, hold last LED state
-    Serial.println("[LUMINA] Heartbeat — system nominal");
-
-  } else {
-    Serial.print("[LUMINA] Unhandled status: ");
-    Serial.println(status);
-  }
-}
-
-// =============================================================================
-// WI-FI CONNECT  (non-blocking — called once at startup only)
-// =============================================================================
-void connectWiFi() {
-  Serial.print("[WIFI] Connecting to ");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  // Give it 10 seconds at startup, then fall through to non-blocking retry in loop()
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
-    delay(500);
-    Serial.print(".");
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println();
-    Serial.print("[WIFI] Connected — IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\n[WIFI] Initial connect failed — will retry non-blocking in loop");
-  }
-}
-
-// =============================================================================
-// MQTT CONNECT  (non-blocking attempt — does NOT freeze if broker unreachable)
-// =============================================================================
-void tryConnectMQTT() {
-  if (WiFi.status() != WL_CONNECTED) return;   // no point trying without Wi-Fi
-  Serial.print("[MQTT] Connecting...");
-
-  // FIX 1: Random client ID prevents HiveMQ from kicking us off (rc=5)
-  // HiveMQ disconnects clients sharing the same ID — a new random ID each
-  // reconnect avoids the 6-second kick cycle on the public broker.
-  String clientId = "lumina-node-" + String(random(0xffff), HEX);
-
-  if (mqttClient.connect(clientId.c_str())) {
-    Serial.println(" connected  id=" + clientId);
-    mqttClient.subscribe(MQTT_TOPIC);
-    Serial.print("[MQTT] Subscribed to: ");
-    Serial.println(MQTT_TOPIC);
-
-    // FIX 2: State memory — restore correct LED state after reconnect.
-    // If the building is still on fire when Wi-Fi comes back, keep RED.
-    // Blindly flashing GREEN would silently cancel an active evacuation.
-    if (systemHazard) {
-      setHazardLocal();
-      Serial.println("[MQTT] Reconnected during HAZARD — RED restored");
-    } else {
-      setNormal();
-      delay(300);
-      setStandby();
+  if (fftConfirmed) {
+    // Continuous 520Hz-like alarm (buzzer is active so just toggle fast)
+    if (millis() - lastBuzzToggle > 480) {  // ~1Hz blink after FACP confirmed
+      buzzOn = !buzzOn;
+      digitalWrite(BUZZER_PIN, buzzOn ? HIGH : LOW);
+      lastBuzzToggle = millis();
     }
   } else {
-    Serial.print(" failed rc=");
-    Serial.println(mqttClient.state());
+    // Pre-FACP: 3 short beeps warning
+    if (millis() - lastBuzzToggle > 800) {
+      buzzOn = !buzzOn;
+      digitalWrite(BUZZER_PIN, buzzOn ? HIGH : LOW);
+      lastBuzzToggle = millis();
+    }
+  }
+}
+
+// =============================================================================
+// MQTT CALLBACK
+// Receives JSON from Flask backend:
+//   Topic: lumina/vitrox/demo/7a9b2f/alerts
+//   Payload: {"system_state": "HAZARD", "facp_confirmed": false,
+//             "corridors": {"C-001":"hazard","C-002":"route","C-003":"normal",
+//                           "C-004":"route","C-005":"normal"}}
+// =============================================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, msg);
+  if (err) {
+    Serial.println("[MQTT] JSON parse error: " + String(err.c_str()));
+    return;
+  }
+
+  // Update system state
+  String sysState = doc["system_state"] | "NORMAL";
+  systemHazard  = (sysState == "HAZARD");
+  fftConfirmed  = doc["facp_confirmed"] | false;
+
+  // Update corridor states + per-corridor chase direction.
+  // Payload shape: {"corridors": {"C-001": {"state":"route","dir":1}, ...}}
+  // (object form) OR {"corridors": {"C-001":"route", ...}} (legacy string
+  // form, defaults dir=1) — both are accepted so older test payloads
+  // during development don't crash the parser.
+  const char* corridorKeys[] = {"C-001", "C-002", "C-003", "C-004", "C-005"};
+  if (doc.containsKey("corridors")) {
+    for (int c = 0; c < 5; c++) {
+      if (!doc["corridors"].containsKey(corridorKeys[c])) continue;
+      JsonVariant cv = doc["corridors"][corridorKeys[c]];
+      if (cv.is<JsonObject>()) {
+        corridorState[c] = cv["state"] | "normal";
+        corridorDir[c]   = cv["dir"]   | 1;
+      } else {
+        // legacy plain-string form
+        corridorState[c] = cv.as<String>();
+        corridorDir[c]   = 1;
+      }
+    }
+  }
+
+  Serial.print("[MQTT] State: " + sysState + " | Corridors: ");
+  for (int c = 0; c < 5; c++) {
+    Serial.print(String(corridorKeys[c]) + "=" + corridorState[c] + " ");
+  }
+  Serial.println();
+}
+
+// =============================================================================
+// Wi-Fi CONNECT
+// =============================================================================
+void connectWifi() {
+  Serial.print("[WiFi] Connecting to " + String(WIFI_SSID));
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" Connected! IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println(" FAILED — running in offline mode");
+  }
+}
+
+// =============================================================================
+// MQTT RECONNECT
+// =============================================================================
+void reconnectMqtt() {
+  if (mqttClient.connected()) return;
+  randomSeed(analogRead(34));  // prevent duplicate client IDs on Wokwi restart
+  String clientId = "LuminaESP32_" + String(random(0xffff), HEX);
+  Serial.print("[MQTT] Connecting as " + clientId + "...");
+  if (mqttClient.connect(clientId.c_str())) {
+    Serial.println(" Connected!");
+    mqttClient.subscribe(MQTT_TOPIC);
+    mqttClient.subscribe(MQTT_TOPIC_ROUTE);
+    Serial.println("[MQTT] Subscribed to " + String(MQTT_TOPIC));
+  } else {
+    Serial.println(" Failed (rc=" + String(mqttClient.state()) + ") retrying...");
   }
 }
 
@@ -371,82 +314,53 @@ void tryConnectMQTT() {
 // =============================================================================
 void setup() {
   Serial.begin(115200);
-  randomSeed(analogRead(34));  // seed RNG — without this, Wokwi generates the
-                                // SAME clientId every run, and HiveMQ kicks
-                                // duplicate client IDs (rc=5) after a few seconds
-  delay(500);
-  Serial.println("\n[LUMINA] ESP32 Edge Node booting...");
+  Serial.println("\n[LUMINA] ESP32 Node starting...");
 
-  pinMode(PIN_STATUS_LED, OUTPUT);
+  // Hardware init
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RELAY_PIN,  OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RELAY_PIN,  LOW);
 
-#if USE_LED_STRIP
-  FastLED.addLeds<WS2812B, PIN_STRIP_DATA, GRB>(strip, NUM_LEDS);
-  FastLED.setBrightness(BRIGHTNESS);
-  Serial.println("[INIT] LED strip mode — NUM_LEDS=" + String(NUM_LEDS) +
-                  " (RED pixels=" + String(NUM_RED_PIXELS) +
-                  ", GREEN pixels=" + String(NUM_GREEN_PIXELS) + ")");
-#else
-  pinMode(PIN_GREEN_LED,  OUTPUT);
-  pinMode(PIN_RED_LED,    OUTPUT);
-  Serial.println("[INIT] Discrete LED mode — GREEN=GPIO" + String(PIN_GREEN_LED) +
-                  ", RED=GPIO" + String(PIN_RED_LED));
-#endif
-  setStandby();
+  // LED strip init
+  strip.begin();
+  strip.setBrightness(80);  // 0-255 — reduce if power bank struggles
+  strip.clear();
+  strip.show();
 
-  connectWiFi();
+  // Startup animation — sweep green across all LEDs
+  for (int i = 0; i < LED_COUNT; i++) {
+    strip.setPixelColor(i, COL_GREEN);
+    strip.show();
+    delay(30);
+  }
+  delay(300);
+  strip.clear();
+  strip.show();
+
+  // Wi-Fi + MQTT
+  connectWifi();
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setCallback(onMqttMessage);
-  tryConnectMQTT();
+  mqttClient.setCallback(mqttCallback);
 
-  Serial.println("[LUMINA] Edge Node ready — listening for events");
+  Serial.println("[LUMINA] Ready. Waiting for MQTT commands...");
 }
 
 // =============================================================================
 // LOOP
 // =============================================================================
 void loop() {
-  unsigned long now = millis();
-
-  // ── Non-blocking Wi-Fi reconnect ─────────────────────────────────────────
-  // Uses millis() so the loop never freezes — LEDs stay in last known state
-  // while reconnecting (critical for booth demo in crowded 2.4GHz environments)
-  if (WiFi.status() != WL_CONNECTED && now - lastWifiRetry > WIFI_RETRY_MS) {
-    lastWifiRetry = now;
-    Serial.println("[WIFI] Disconnected — attempting reconnect...");
-    WiFi.disconnect();
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  // MQTT keep-alive
+  if (!mqttClient.connected()) {
+    reconnectMqtt();
   }
+  mqttClient.loop();
 
-  // ── Non-blocking MQTT reconnect ───────────────────────────────────────────
-  if (WiFi.status() == WL_CONNECTED && !mqttClient.connected() &&
-      now - lastMqttRetry > MQTT_RETRY_MS) {
-    lastMqttRetry = now;
-    tryConnectMQTT();
-  }
-
-  mqttClient.loop();   // processes incoming MQTT messages
-
-  // ── GREEN chase during hazard ─────────────────────────────────────────────
-  // RED stays solid (this corridor blocked) — GREEN animates toward exit
-  // regardless of FACP confirmation status. Occupants need the escape route
-  // visible at all times during a hazard, not just before FACP confirms.
-  if (systemHazard) {
-    pulseGreenDuringHazard();
-  }
-
-  // ── Heartbeat blink every 2 seconds ───────────────────────────────────────
-  if (now - lastHeartbeat > 2000) {
-    lastHeartbeat = now;
-    digitalWrite(PIN_STATUS_LED, !digitalRead(PIN_STATUS_LED));
-    Serial.print("[HEARTBEAT] WiFi=");
-    Serial.print(WiFi.status() == WL_CONNECTED ? "OK" : "DOWN");
-    Serial.print("  MQTT=");
-    Serial.print(mqttClient.connected() ? "OK" : "DOWN");
-    Serial.print("  State=");
-    Serial.print(systemHazard ? "HAZARD" : "NORMAL");
-    Serial.print("  FFT=");
-    Serial.print(fftConfirmed ? "CONFIRMED" : "STANDBY");
-    Serial.print("  Persons=");
-    Serial.println(lastPersonCount);
+  // Animate at ~12 FPS
+  if (millis() - lastAnimMs > 80) {
+    lastAnimMs = millis();
+    chaseTick++;
+    renderCorridors();
+    updateBuzzer();
   }
 }
