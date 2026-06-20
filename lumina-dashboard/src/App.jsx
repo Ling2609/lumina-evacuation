@@ -53,7 +53,7 @@ const LUMINA_NODE_DEFS = {
   "NODE-C":{label:"East Corridor",    color:"#EF4444", cx:560.0,cy:264.0},
   "NODE-D":{label:"South-Central",    color:"#10B981", cx:380.6,cy:466.8},
   "NODE-E":{label:"South-West",       color:"#F59E0B", cx:205.7,cy:517.2},
-  "NODE-F":{label:"East-South",       color:"#EC4899", cx:582.0,cy:469.0},
+  "NODE-F":{label:"East-South",       color:"#84CC16", cx:582.0,cy:469.0},
 };
 
 // Junction to Lumina node mapping
