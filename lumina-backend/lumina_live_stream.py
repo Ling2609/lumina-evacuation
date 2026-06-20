@@ -61,6 +61,7 @@ from routing_engine import (
     J_TO_CORRIDOR,
     EXIT_TO_CORRIDOR,
     J_CORRIDOR_RANK,
+    resolve_node_name,
 )
 from thermal_classifier import ThermalClassifier, _gradual_fire, _normal_ambient
 from fft_classifier import FFTAlarmClassifier, _generate_alarm_tone, FRAME_SIZE, SAMPLE_RATE
@@ -209,11 +210,19 @@ NODES_TOTAL  = 200
 # Single source of truth for battery data — used by api_health() and download_log()
 NODE_BATTERY = {
     "NODE-A": {"pct": 94, "next_service": "Aug 10"},
-    "J4": {"pct": 87, "next_service": "Aug 01"},
+    "NODE-B": {"pct": 87, "next_service": "Aug 01"},
     "NODE-C": {"pct": 72, "next_service": "Jul 15"},
     "NODE-D": {"pct": 81, "next_service": "Aug 05"},
     "NODE-E": {"pct": 96, "next_service": "Aug 12"},
     "NODE-F": {"pct": 63, "next_service": "Jul 01"},
+}
+
+# Mirrors frontend's LUMINA_NODE_DEFS labels — only the 6 physical Lumina
+# ceiling units have batteries, not individual junctions/doors.
+LUMINA_NODE_LABELS = {
+    "NODE-A": "West Corridor", "NODE-B": "Central Crossroad",
+    "NODE-C": "East Corridor", "NODE-D": "South-Central",
+    "NODE-E": "South-West",    "NODE-F": "East-South",
 }
 
 # =============================================================================
@@ -1117,7 +1126,7 @@ def download_log():
     # Supports DOOH ad premium pricing and kiosk rental rates (Appendix G)
     writer.writerow(["FOOTFALL TELEMETRY"])
     writer.writerow(["Total Occupancy (pax)",   total_footfall])
-    writer.writerow(["Peak Zone",               peak_entry[0]])
+    writer.writerow(["Peak Zone",               f"{resolve_node_name(peak_entry[0])} ({peak_entry[0]})"])
     writer.writerow(["Peak Zone Occupancy (pax)", peak_entry[1]["crowd"]])
     writer.writerow(["Average Zone Occupancy (pax)", avg_occ])
     writer.writerow(["Tracking Method",         "Anonymous crowd vectors (no facial data)"])
@@ -1141,7 +1150,7 @@ def download_log():
         else:
             action = "NORMAL"
         writer.writerow([
-            d.get("zone", nid), nid, crowd, vel,
+            resolve_node_name(nid), nid, crowd, vel,
             d["status"].upper(), action,
         ])
     writer.writerow([])
@@ -1165,10 +1174,10 @@ def download_log():
     writer.writerow(["average_zone_occupancy_%", avg_occ_pct,
                      "% of maximum capacity across all nodes"])
     writer.writerow(["high_traffic_zones",
-                     ", ".join(z[0] for z in high_zones) or "None",
+                     ", ".join(f"{resolve_node_name(z[0])} ({z[0]})" for z in high_zones) or "None",
                      "Zones above 60 pax — prime locations for DOOH or kiosk placement"])
     writer.writerow(["low_traffic_zones",
-                     ", ".join(z[0] for z in empty_zones) or "None",
+                     ", ".join(f"{resolve_node_name(z[0])} ({z[0]})" for z in empty_zones) or "None",
                      "Zones below 10 pax — candidate for HVAC reduction"])
     writer.writerow([])
 
@@ -1188,7 +1197,7 @@ def download_log():
         else:
             action = "Maintain current setpoint"
             note   = "Normal occupancy range"
-        writer.writerow([d.get("zone", nid), nid, crowd, temp, action, note])
+        writer.writerow([resolve_node_name(nid), nid, crowd, temp, action, note])
     writer.writerow([])
     writer.writerow(["NOTE", "",
                      "Lumina provides occupancy signals only. Energy savings depend on "
@@ -1235,7 +1244,7 @@ def download_log():
     writer.writerow(["zone", "signal", "detail"])
     for nid, info in current_pull_signals.items():
         reason = info.get("reason", "N/A").replace("\u2014", "-").replace("\u2013", "-")
-        writer.writerow([nid, info.get("signal", "N/A"), reason])
+        writer.writerow([resolve_node_name(nid), info.get("signal", "N/A"), reason])
     if not current_pull_signals:
         writer.writerow(["All zones", "GREEN", "No congestion detected"])
     writer.writerow([])
@@ -1245,7 +1254,7 @@ def download_log():
     writer.writerow(["NODE MAINTENANCE AND BATTERY STATUS"])
     writer.writerow(["node_id", "zone", "battery_pct", "nfpa72_status",
                      "next_service", "action_required"])
-    for nid, d in snap.items():
+    for nid in NODE_BATTERY:
         bat   = BATT.get(nid, 85)
         next_ = NEXT.get(nid, "N/A")
         if bat >= 75:
@@ -1257,7 +1266,7 @@ def download_log():
         else:
             status = "CRITICAL - Below NFPA 72 threshold"
             action = "HOT-SWAP REQUIRED immediately"
-        writer.writerow([nid, d.get("zone", nid), bat, status, next_, action])
+        writer.writerow([nid, LUMINA_NODE_LABELS.get(nid, nid), bat, status, next_, action])
     writer.writerow([])
 
     # --- SECTION 8: SYSTEM PERFORMANCE -

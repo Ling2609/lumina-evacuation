@@ -77,11 +77,31 @@ DOOR_COORDS = {
 }
 
 DOOR_LABELS = {
-    "B1":"Siew Later","B2":"BawangTea","B3":"Chill Zone","B4":"Empty Space",
-    "B5":"Thai Relax","B6":"Female Washroom","B7":"Male Washroom","B8":"Ali Barber",
+    "B1":"Siew Later Restaurant","B2":"BawangTea","B3":"Chill Zone","B4":"Empty Space",
+    "B5":"Thai Relax Massage","B6":"Female Washroom","B7":"Male Washroom","B8":"Ali Barber",
     "B9":"Mamadini","B10":"Public Recipe","B11":"Meating Room","B12":"Baskin Batman",
     "B13":"Customer Service","B14":"MS. DIY","B15":"SofaSoGood","B16":"ReadMe Bookstore",
 }
+
+# Junction zone names — mirrors data.js's nodeData labels, kept here so the
+# backend CSV export can resolve human-readable names without depending on
+# the frontend. Without this, download_log() fell back to raw IDs (J1, B1)
+# for every row since live_node_status entries carry no "zone" field.
+JUNCTION_LABELS = {
+    "J1":"West Corridor (Exit 1 approach)","J2":"West Corridor Upper","J3":"Left-Center Junction",
+    "J4":"Central Crossroad","J5":"Top Branch (Exit 2 vertical)","J6":"Exit 2 Junction",
+    "J7":"Center-Right Junction","J8":"East Corridor Upper","J9":"East Corridor (Exit 3 branch)",
+    "J10":"Exit 3 Junction","J11":"East Corridor Lower","J12":"East-South Junction",
+    "J13":"Exit 4 Junction","J14":"Bottom-Right Junction","J15":"South-Center Junction",
+    "J16":"Center Vertical Junction","J17":"Bottom Corridor Right","J18":"Exit 5 Junction",
+    "J19":"South-West Junction","J20":"Left Lower Junction",
+}
+
+def resolve_node_name(nid: str) -> str:
+    """Single source of truth for human-readable node names in reports/CSV."""
+    if nid in DOOR_LABELS: return DOOR_LABELS[nid]
+    if nid in JUNCTION_LABELS: return JUNCTION_LABELS[nid]
+    return nid  # EXIT-1..5 and anything unrecognized fall back to raw id
 
 # Which junction a store door connects to (nearest corridor junction)
 DOOR_TO_JUNCTION = {
@@ -513,9 +533,19 @@ def get_all_exit_routes(start: str) -> list:
     for exit_id in EXITS:
         path, cost = route_to_specific_exit(start, exit_id, verbose=False)
         if path and cost < 9000:  # skip exits blocked by hazard
-            routes.append({"exit": exit_id, "path": path, "cost": cost,
-                           "safe": cost < 500, "distance_m": round(cost, 1)})
+            routes.append({"exit": exit_id, "path": path, "cost": cost, "distance_m": round(cost, 1)})
     routes.sort(key=lambda r: r["cost"])
+    # "safe" is relative, not an absolute threshold — if the start node ITSELF
+    # is the hazard origin, every route shares that same unavoidable penalty
+    # baked into its cost, which previously made every single exit read as
+    # "unsafe" even when 4 of 5 routes correctly walk straight away from the
+    # hazard after one step. A route is genuinely worse than its peers only
+    # if it costs meaningfully more than the cheapest one — that signals it
+    # detours around an additional hazard the others don't.
+    if routes:
+        best_cost = routes[0]["cost"]
+        for r in routes:
+            r["safe"] = (r["cost"] - best_cost) < 500
     return routes
 
 def block_node_and_reroute(blocked_id: str, start: str) -> dict:
