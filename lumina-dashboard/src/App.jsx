@@ -218,7 +218,8 @@ export default function App() {
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
   const [activeRoute,   setActiveRoute]   = useState(["J19","J18","EXIT-5"]);
   const [pasCountdown,  setPasCountdown]  = useState(178);
-  const [personCount,   setPersonCount]   = useState(0);
+  const [personCount,   setPersonCount]   = useState(0);   // CAM-01 live YOLO track count (lobby only)
+  const [totalFootfall, setTotalFootfall] = useState(0);   // building-wide total across all nodes
   const [thermalState,  setThermalState]  = useState("NORMAL");
   const [fftState,      setFftState]      = useState("SILENT");
   const [pullSignals,   setPullSignals]   = useState({});
@@ -276,6 +277,7 @@ export default function App() {
         const d   = await res.json();
         setBackendOnline(true);
         setPersonCount(d.person_count??0);
+        setTotalFootfall(d.total_footfall??0);
         setAiMode(d.ai_mode??"DIORAMA");
         if (!manualOverrideRef.current) {
           // AUTO mode — backend drives everything
@@ -362,16 +364,21 @@ export default function App() {
   },[]);
 
   // ── Fetch BOMBA quick-exit routes (sorted best→worst by backend) ───────────
+  // Depends only on the route ORIGIN (first node), not the whole activeRoute
+  // array — activeRoute gets a new array identity on every poll even when
+  // its contents are unchanged, so depending on the full array would refetch
+  // quick_routes on every single /api/status tick instead of only when the
+  // hazard origin actually moves.
+  const routeOrigin = activeRoute[0];
   useEffect(()=>{
-    const origin = activeRoute[0];
-    if (!origin) return;
+    if (!routeOrigin) return;
     fetch(apiUrl("/api/quick_routes"),{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({start:origin})
+      body:JSON.stringify({start:routeOrigin})
     }).then(r=>r.json()).then(d=>{
       if (d.routes?.length) setQuickExitRoutes(d.routes);
     }).catch(()=>{});
-  },[activeRoute[0]]);
+  },[routeOrigin]);
 
   // ── POLL /api/health ──────────────────────────────────────────────────────
   useEffect(()=>{
@@ -393,14 +400,20 @@ export default function App() {
       try{
         const p=JSON.parse(msg.toString());
         setMqttMsgCount(n=>n+1);
-        if(p.person_count!==undefined) setPersonCount(p.person_count);
+        // MQTT's person_count is always the true building-wide total (see
+        // lumina_live_stream.py heartbeat/trigger/fall publishes) — NOT the
+        // same metric as the CAM-01 lobby tracker. Routing both REST and
+        // MQTT writes into the same state caused the dashboard number to
+        // visibly alternate between "1" (camera) and "200+" (building).
+        if(p.person_count!==undefined) setTotalFootfall(p.person_count);
         if(p.status==="CRITICAL"){
-          setIsHazard(true); setHazardType(p.hazard_type??"HAZARD");
+          const _hzType = p.hazard_type??"HAZARD";
+          setIsHazard(true); setHazardType(_hzType);
           setPasCountdown(178);
-          if(p.hazard_type==="FALL DETECTED"){
+          if(_hzType==="FALL DETECTED"){
             pushEvent(`Fall detected — buffer zone active, evacuees redirected`,"danger","REACTIVE");
           } else {
-            pushEvent(`CRITICAL: ${p.hazard_type}`,"danger","REACTIVE");
+            pushEvent(`CRITICAL: ${_hzType}`,"danger","REACTIVE");
           }
         }
         if(p.status==="FACP_CONFIRMED"){
@@ -1110,7 +1123,7 @@ export default function App() {
               color:thermalState==="ALERT"?palette.danger:thermalState==="WARNING"?palette.warning:palette.success},
             {label:"FFT",    value:fftState,
               color:fftState==="CONFIRMED"?palette.danger:fftState==="DETECTING"?palette.warning:palette.success},
-            {label:"PERSONS",value:`${personCount}`,color:palette.info},
+            {label:"PERSONS",value:`${totalFootfall}`,color:palette.info},
             {label:"NODES",  value:`${health.nodes_online}/${health.nodes_total}`,color:palette.text},
             {label:"MQTT",   value:`${mqttStatus} ×${mqttMsgCount}`,
               color:mqttStatus==="LIVE"?palette.success:palette.danger},
@@ -1502,17 +1515,29 @@ export default function App() {
                       background:rsetSafe?palette.success:palette.danger,transition:"width 0.5s"}}/>
                   </div>
                 </div>
-                {Object.keys(pullSignals).length>0&&(
-                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                    {Object.entries(pullSignals).map(([nid,info])=>(
-                      <span key={nid} style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,
-                        background:info.signal==="GREEN"?`${palette.success}18`:`${palette.danger}18`,
-                        color:info.signal==="GREEN"?palette.success:palette.danger}}>
-                        {nid}: {info.signal}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                {(()=>{
+                  // Pull Policy is now global (scans every node), so filtering
+                  // is required — showing all ~40 nodes as GREEN badges is
+                  // noise. Only surface nodes that need attention (AMBER/RED)
+                  // or are on the active evacuation route.
+                  const interesting = Object.entries(pullSignals).filter(([nid,info])=>
+                    info.signal!=="GREEN" || activeRoute.includes(nid)
+                  );
+                  if (interesting.length===0) return null;
+                  return(
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap",maxHeight:54,overflowY:"auto"}}>
+                      {interesting.map(([nid,info])=>(
+                        <span key={nid} style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,
+                          background:info.signal==="GREEN"?`${palette.success}18`:
+                            info.signal==="AMBER"?`${palette.warning}18`:`${palette.danger}18`,
+                          color:info.signal==="GREEN"?palette.success:
+                            info.signal==="AMBER"?palette.warning:palette.danger}}>
+                          {nid}: {info.signal}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
                 <div style={{fontSize:9,color:palette.textMuted,display:"flex",gap:8,flexWrap:"wrap"}}>
                   <span>DYN-A* cost: <b style={{color:palette.info}}>{costScore}</b></span>
                   {isHazard&&<span style={{color:palette.danger,fontSize:8}}>
@@ -1598,35 +1623,44 @@ export default function App() {
                   style={{width:"100%",height:"100%",background:"#F8FAFC"}}>
                   {Array.from({length:9},(_,i)=>(<line key={`gv${i}`} x1={i*95} y1={-20} x2={i*95} y2={720} stroke="#E2E8F0" strokeWidth="1"/>))}
                   {Array.from({length:9},(_,i)=>(<line key={`gh${i}`} x1={-20} y1={i*90} x2={780} y2={i*90} stroke="#E2E8F0" strokeWidth="1"/>))}
-                  {nodes.length>0&&[["J1","J2"],["J2","J3"],["J3","J4"],["J3","J20"],["J4","J5"],["J4","J7"],["J4","J16"],
-                    ["J5","J6"],["J6","EXIT-2"],["J7","J8"],["J8","J9"],["J8","J11"],["J9","J10"],
-                    ["J10","EXIT-3"],["J11","J12"],["J12","J13"],["J12","J14"],["J13","EXIT-4"],
-                    ["J14","J15"],["J15","J16"],["J15","J17"],["J17","J18"],
-                    ["J18","EXIT-5"],["J18","J19"],["J19","J20"],["J1","EXIT-1"]].map(([a,b],i)=>{
-                    const na=nodes.find(x=>x.id===a),nb=nodes.find(x=>x.id===b);
-                    if(!na||!nb) return null;
-                    return <line key={i} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
-                      stroke="#CBD5E1" strokeWidth="1.5" strokeDasharray="5 3"/>;
+                  {/* Corridor backbone — spatial context only, not interactive */}
+                  {CORRIDOR_EDGES.map(([a,b],i)=>{
+                    const pa=JUNCTIONS[a]||EXIT_POS[a]; const pb=JUNCTIONS[b]||EXIT_POS[b];
+                    if(!pa||!pb) return null;
+                    return <line key={`ce${i}`} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
+                      stroke="#E2E8F0" strokeWidth="1" strokeDasharray="4 4"/>;
                   })}
-                  {nodes.map(n=>{
-                    const c=statusColor(n.status);
-                    const isSel=selectedNode?.id===n.id;
-                    const m=health.battery[n.id]??{pct:85,next_service:"N/A"};
+                  {/* Store doors — small dots showing exact shop locations */}
+                  {Object.entries(DOOR_POS).map(([bid,pos])=>(
+                    <g key={bid}>
+                      <circle cx={pos.x} cy={pos.y} r="2.5" fill="#CBD5E1" stroke="#94A3B8" strokeWidth="0.75"/>
+                    </g>
+                  ))}
+                  {/* 6 physical Lumina hardware nodes — matches expanded modal exactly */}
+                  {Object.entries(LUMINA_NODE_DEFS).map(([nid,nodeDef])=>{
+                    const m=health.battery[nid]??{pct:85,next_service:"N/A"};
                     const bc=m.pct<60?palette.danger:m.pct<75?palette.warning:palette.success;
+                    const coveredJ=Object.entries(J_TO_NODE).filter(([,n])=>n===nid).map(([j])=>j);
+                    const worst=coveredJ.map(j=>nodes.find(x=>x.id===j)).filter(Boolean)
+                      .sort((a,b)=>(b.status==="alert"?3:b.status==="quarantine"?2:b.status==="warning"?1:0)-
+                                    (a.status==="alert"?3:a.status==="quarantine"?2:a.status==="warning"?1:0))[0];
+                    const c=statusColor(worst?.status??"normal");
+                    const isSel=selectedNode?.id===nid;
+                    const totalCrowd=coveredJ.reduce((s,j)=>s+(nodes.find(x=>x.id===j)?.crowd??0),0);
                     return(
-                      <g key={n.id} style={{cursor:"pointer"}}
-                        onClick={e=>{e.stopPropagation();setSelectedNode(p=>p?.id===n.id?null:n);}}>
-                        {isSel&&<circle cx={n.x} cy={n.y} r="9" fill={c} opacity="0.2"/>}
-                        <circle cx={n.x} cy={n.y} r={isSel?7:5} fill={c} stroke="#fff" strokeWidth="1"
-                          style={n.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
+                      <g key={nid} style={{cursor:"pointer"}}
+                        onClick={()=>setSelectedNode(p=>p?.id===nid?null:{id:nid,zone:nodeDef.label,status:worst?.status??"normal",crowd:totalCrowd,temp:worst?.temp??27,velocity:worst?.velocity??0,pull:worst?.pull_signal??"GREEN"})}>
+                        {isSel&&<circle cx={nodeDef.cx} cy={nodeDef.cy} r="16" fill={c} opacity="0.15"/>}
+                        <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?10:8}
+                          fill={nodeDef.color} stroke="#fff" strokeWidth="1.5"
+                          style={worst?.status==="alert"?{animation:"pulse 1s infinite"}:{}}/>
+                        <circle cx={nodeDef.cx} cy={nodeDef.cy} r={isSel?10:8} fill="none" stroke={c} strokeWidth="2"/>
                         <g>
-                          {/* battery body */}
-                          <rect x={n.x+7} y={n.y-11} width={10} height={5} rx="1" fill={bc} opacity="0.9"/>
-                          {/* nub on right */}
-                          <rect x={n.x+8} y={n.y-6.5} width={1.5} height={1.5} rx="0.5" fill={bc} opacity="0.9"/>
+                          <rect x={nodeDef.cx+9} y={nodeDef.cy-13} width={10} height={5} rx="1" fill={bc} opacity="0.9"/>
+                          <rect x={nodeDef.cx+10} y={nodeDef.cy-8.5} width={1.5} height={1.5} rx="0.5" fill={bc} opacity="0.9"/>
                         </g>
-                        <text x={n.x} y={n.y+14} textAnchor="middle"
-                          style={{fontSize:"8px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.id}</text>
+                        <text x={nodeDef.cx} y={nodeDef.cy+15} textAnchor="middle"
+                          style={{fontSize:"8px",fill:palette.text,fontFamily:"Inter,sans-serif",fontWeight:700}}>{nid}</text>
                       </g>
                     );
                   })}

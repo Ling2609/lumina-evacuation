@@ -792,6 +792,7 @@ def api_status():
         _facp    = facp_confirmed
         _manual  = manual_override
         _count   = current_person_count
+        _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _tracks  = len(current_track_ids)
         _vel     = crowd_velocity_lobby
         _thermal = thermal_state        # needed for header strip between MQTT events
@@ -810,6 +811,7 @@ def api_status():
         "facp_confirmed":     _facp,
         "manual_override":    _manual,
         "person_count":       _count,
+        "total_footfall":     _total_pax,
         "active_tracks":      _tracks,
         "crowd_velocity":     _vel,
         "thermal_state":      _thermal,
@@ -1001,9 +1003,9 @@ def block_node():
     # heartbeat to see the diorama lights react to a manual block.
     mqtt_client.publish(TOPIC, json.dumps({
         "status": "CRITICAL", "system_state": system_state,
-        "manual_override": True, "stealth_mode": False,
-        "person_count": _total_pax, "green_direction": "FOLLOW_ROUTE",
-        "corridors": _corridors,
+        "hazard_type": "MANUAL OVERRIDE", "manual_override": True,
+        "stealth_mode": False, "person_count": _total_pax,
+        "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
     }))
     print(f"[BOMBA] Blocked {node_id}, new route: {' → '.join(result['new_route'])}")
     return jsonify(result)
