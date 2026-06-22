@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import mqtt from "mqtt";
 import { palette } from "./theme";
 import { eventLog, nodeData } from "./data";
@@ -307,6 +307,47 @@ export default function App() {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
     setLiveEvents(p => [{time:`${ts}`,msg,level,tag},...p].slice(0,15));
   };
+
+  // ── DIRECTIONAL ACOUSTIC BEACON (Lumina accessibility feature) ─────────────
+  // Plays a rhythmic 880Hz pulse through the laptop speakers whenever a hazard
+  // is active. This represents a Lumina ceiling node's directional acoustic
+  // emitter — used to create an auditory "breadcrumb trail" along the safe
+  // DYN-A* route for visually impaired evacuees. Deliberately uses 880Hz
+  // (distinct from the 520Hz FACP reference tone) so judges can hear two
+  // acoustically different sounds serving two different purposes simultaneously:
+  // the ESP32 buzzer = legacy building alarm, laptop speaker = Lumina guidance.
+  const audioCtxRef = useRef(null);
+  const beaconIntervalRef = useRef(null);
+
+  const playBeaconPulse = useCallback(() => {
+    try {
+      if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const ctx = audioCtxRef.current;
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.value = 880;            // clearly distinct from 520Hz FACP
+      gain.gain.setValueAtTime(0.4, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.18);
+    } catch(e) { /* AudioContext unavailable (e.g. no audio device) */ }
+  }, []);
+
+  useEffect(() => {
+    if (isHazard) {
+      // Start immediately then pulse every 800ms
+      playBeaconPulse();
+      beaconIntervalRef.current = setInterval(playBeaconPulse, 800);
+    } else {
+      clearInterval(beaconIntervalRef.current);
+    }
+    return () => clearInterval(beaconIntervalRef.current);
+  }, [isHazard, playBeaconPulse]);
 
   // ── POLL /api/status ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -765,6 +806,11 @@ export default function App() {
                 {isHazard&&<span style={{fontSize:11,fontWeight:700,color:palette.danger,
                   background:palette.dangerLight,padding:"3px 10px",borderRadius:6}}>
                   HAZARD ACTIVE — {hazardType}
+                </span>}
+                {isHazard&&<span style={{fontSize:10,fontWeight:600,color:"#7C3AED",
+                  background:"#EDE9FE",padding:"3px 8px",borderRadius:6,
+                  animation:"pulse 0.8s ease-in-out infinite"}}>
+                  ♪ ACOUSTIC BEACON ACTIVE
                 </span>}
                 <button onClick={()=>setTwinExpanded(false)} style={{background:palette.grayLight,
                   border:`1px solid ${palette.border}`,borderRadius:6,padding:"4px 12px",
