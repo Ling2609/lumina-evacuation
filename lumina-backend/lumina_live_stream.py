@@ -192,7 +192,10 @@ def _on_sensor_message(client, userdata, msg):
                 with state_lock:
                     unblock_node(junction)
                     reset_hysteresis()
-                    manual_override = False
+                    # Only release manual_override if no active fire/thermal hazard —
+                    # clearing an obstruction shouldn't cancel an ongoing evacuation
+                    if system_state == "NORMAL":
+                        manual_override = False
 
         # ── MLX90614: real thermal anomaly from physical IR sensor ─────────
         elif sensor == "MLX90614":

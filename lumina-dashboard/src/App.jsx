@@ -335,7 +335,7 @@ export default function App() {
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.18);
-    } catch(e) { /* AudioContext unavailable (e.g. no audio device) */ }
+    } catch { /* AudioContext unavailable (e.g. no audio device) */ }
   }, []);
 
   useEffect(() => {
@@ -1048,7 +1048,7 @@ export default function App() {
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:5}}>
-                    <span style={{color:palette.info}}>① </span>SELECT NODE TO BLOCK
+                    <span style={{color:palette.info}}>① </span>MANUAL CORRIDOR BLOCK (Dashboard Override)
                   </div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5,
                     maxHeight:72,overflowY:"auto",paddingRight:2}}>
@@ -1077,7 +1077,7 @@ export default function App() {
                     cursor:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?"pointer":"not-allowed"}}>
                     {selectedNode&&isHazard&&selectedNode.id!==manualBlockedNode
                       ?`② REROUTE AROUND ${selectedNode.id}`
-                      :"② BLOCK + REROUTE"}
+                      :"② BLOCK + REROUTE (BOMBA Manual Override)"}
                   </button>
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
