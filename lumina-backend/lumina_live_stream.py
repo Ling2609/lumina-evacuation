@@ -193,7 +193,7 @@ def _on_sensor_message(client, userdata, msg):
                     unblock_node(junction)
                     reset_hysteresis()
                     # Only release manual_override if no active fire/thermal hazard —
-                    # clearing an obstruction shouldn't cancel an ongoing evacuation
+                    # clearing a debris obstruction shouldn't cancel an ongoing evacuation
                     if system_state == "NORMAL":
                         manual_override = False
 
@@ -1039,12 +1039,16 @@ def api_facp_clear():
 
 @app.route("/reset")
 def reset_system():
-    global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, manual_override, fire_sim_active
+    global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, \
+           manual_override, fire_sim_active, fft_state, thermal_state, current_route_cost
     with state_lock:
         system_state         = "NORMAL"
         facp_confirmed       = False
         manual_override      = False   # release manual command — restore full AUTO mode
         fire_sim_active      = False   # stop fire simulation — thermal returns to ambient
+        fft_state            = "SILENT"   # clear acoustic confirmation indicator
+        thermal_state        = "NORMAL"   # clear thermal alert indicator
+        current_route_cost   = 0          # clear stale DYN-A* cost from hazard route
         current_route        = ["J19","J18","EXIT-5"]  # restore baseline
         current_pull_signals = {}
         current_rset         = {}

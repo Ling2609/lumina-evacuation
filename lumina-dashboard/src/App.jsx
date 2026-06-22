@@ -1048,7 +1048,7 @@ export default function App() {
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:5}}>
-                    <span style={{color:palette.info}}>① </span>MANUAL CORRIDOR BLOCK (Dashboard Override)
+                    <span style={{color:palette.info}}>① </span>BLOCK CORRIDOR
                   </div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5,
                     maxHeight:72,overflowY:"auto",paddingRight:2}}>
@@ -1077,7 +1077,7 @@ export default function App() {
                     cursor:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?"pointer":"not-allowed"}}>
                     {selectedNode&&isHazard&&selectedNode.id!==manualBlockedNode
                       ?`② REROUTE AROUND ${selectedNode.id}`
-                      :"② BLOCK + REROUTE (BOMBA Manual Override)"}
+                      :"② BLOCK + REROUTE (BOMBA)"}
                   </button>
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
