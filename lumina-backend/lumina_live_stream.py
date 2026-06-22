@@ -146,12 +146,88 @@ def _build_corridor_states():
 # =============================================================================
 # 1. GLOBAL SETUP & THREAD LOCKING
 # =============================================================================
-BROKER = "broker.hivemq.com"
-TOPIC  = "lumina/vitrox/demo/7a9b2f/alerts"   # unique — prevents hackathon collision
+BROKER       = "broker.hivemq.com"
+TOPIC        = "lumina/vitrox/demo/7a9b2f/alerts"   # unique — prevents hackathon collision
+SENSOR_TOPIC = "lumina/vitrox/demo/7a9b2f/sensors"  # ESP32→Python: sensor data
+
+def _on_sensor_message(client, userdata, msg):
+    """
+    Receives physical sensor events published by the ESP32 on SENSOR_TOPIC.
+    Handles two sensor types:
+      HC-SR04  → obstruction detected/cleared, calls block_node_and_reroute()
+      MLX90614 → thermal anomaly, feeds temp reading into ThermalClassifier
+    """
+    global manual_override, current_route, system_state, thermal_state
+    try:
+        data   = json.loads(msg.payload.decode())
+        sensor = data.get("sensor")
+
+        # ── HC-SR04: physical corridor obstruction ─────────────────────────
+        if sensor == "HC-SR04":
+            status  = data.get("status")
+            node_id = data.get("node", "C-003")
+            dist    = data.get("distance_cm", -1)
+            CORRIDOR_TO_JUNCTION = {
+                "C-001": "J2", "C-002": "J4", "C-003": "J8",
+                "C-004": "J12", "C-005": "J18",
+            }
+            junction = CORRIDOR_TO_JUNCTION.get(node_id, "J8")
+
+            if status == "BLOCKED":
+                print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → blocking {junction}, recalculating route")
+                with state_lock:
+                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J16")
+                    current_route   = result["new_route"]
+                    manual_override = True
+                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
+                    _corridors  = _build_corridor_states()
+                mqtt_client.publish(TOPIC, json.dumps({
+                    "status": "CRITICAL", "system_state": system_state,
+                    "hazard_type": f"OBSTRUCTION DETECTED in {node_id}",
+                    "manual_override": True, "person_count": _total_pax,
+                    "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
+                }))
+            elif status == "CLEAR":
+                print(f"[HC-SR04] {node_id} cleared → unblocking {junction}")
+                with state_lock:
+                    unblock_node(junction)
+                    reset_hysteresis()
+                    manual_override = False
+
+        # ── MLX90614: real thermal anomaly from physical IR sensor ─────────
+        elif sensor == "MLX90614":
+            temp_c = data.get("temp_c", 0)
+            print(f"[MLX90614] Real thermal reading: {temp_c}°C")
+            # Feed the real reading into the existing ThermalClassifier —
+            # same pipeline as the simulated path, now driven by real hardware.
+            result = thermal_clf.classify(temp_c)
+            with state_lock:
+                thermal_state = result["state"]
+                if result["state"] in ("WARNING", "ALERT") and system_state == "NORMAL":
+                    system_state = "HAZARD"
+                    live_node_status["J7"]["status"] = "alert"
+                    live_node_status["J7"]["hazard"] = "thermal"
+                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
+                    _corridors  = _build_corridor_states()
+            if result["state"] == "ALERT":
+                mqtt_client.publish(TOPIC, json.dumps({
+                    "status":       "CRITICAL",
+                    "system_state": "HAZARD",
+                    "hazard_type":  "THERMAL ANOMALY (MLX90614)",
+                    "temp_c":       temp_c,
+                    "person_count": _total_pax,
+                    "corridors":    _corridors,
+                }))
+                print(f"[MLX90614] THERMAL ALERT triggered at {temp_c}°C")
+
+    except Exception as e:
+        print(f"[SENSOR] Message error: {e}")
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, "Lumina_Edge_Streamer")
+mqtt_client.message_callback_add(SENSOR_TOPIC, _on_sensor_message)
 try:
     mqtt_client.connect(BROKER, 1883, 60)
+    mqtt_client.subscribe(SENSOR_TOPIC)   # listen for ESP32 sensor events
     mqtt_client.loop_start()
     print("[MQTT] Connected to broker")
 except Exception as e:

@@ -33,12 +33,17 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <Adafruit_MLX90614.h>   // Install: Adafruit MLX90614 Library via Library Manager
+
+Adafruit_MLX90614 mlx = Adafruit_MLX90614();  // I2C: SDA=GPIO21, SCL=GPIO22 (ESP32 default)
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 #define LED_PIN       5     // WS2812B data pin
 #define LED_COUNT     30    // total LEDs on strip
 #define BUZZER_PIN    18    // active buzzer
 #define RELAY_PIN     19    // relay module
+#define TRIG_PIN      12    // HC-SR04 ultrasonic trigger
+#define ECHO_PIN      13    // HC-SR04 ultrasonic echo
 
 // ── LED segment definitions (corridor → LED index range) ─────────────────────
 #define SEG_C001_START  0
@@ -86,6 +91,12 @@ unsigned long lastBuzzToggle = 0;
 unsigned long lastMqttRetry = 0;  // throttles reconnectMqtt() so a dropped
                                    // connection can't block the loop with
                                    // back-to-back TCP connect() attempts
+unsigned long lastPingMs    = 0;  // HC-SR04 ping interval (500ms)
+bool          corridorBlocked = false; // tracks state change to avoid MQTT spam
+
+// Separate topic for sensor→Python messages (ESP32 publishes, Python subscribes)
+// Kept distinct from the alerts topic (Python→ESP32) to avoid feedback loops.
+const char* MQTT_SENSOR_TOPIC = "lumina/vitrox/demo/7a9b2f/sensors";
 bool buzzOn = false;
 
 // ── Objects ───────────────────────────────────────────────────────────────────
@@ -329,8 +340,18 @@ void setup() {
   // Hardware init
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(RELAY_PIN,  OUTPUT);
+  pinMode(TRIG_PIN,   OUTPUT);
+  pinMode(ECHO_PIN,   INPUT);
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(RELAY_PIN,  LOW);
+  digitalWrite(TRIG_PIN,   LOW);
+
+  // MLX90614 thermal sensor init (I2C)
+  if (!mlx.begin()) {
+    Serial.println("[MLX90614] Sensor not found — thermal detection disabled. Check wiring.");
+  } else {
+    Serial.println("[MLX90614] Thermal sensor ready.");
+  }
 
   // LED strip init
   strip.begin();
@@ -357,6 +378,109 @@ void setup() {
 }
 
 // =============================================================================
+// MLX90614 THERMAL DETECTION
+// Reads object (surface) temperature via I2C every 500ms.
+// Threshold 45°C: hot enough to flag a fire/heat anomaly, high enough to
+// avoid false triggers from a warm hand during normal demo setup.
+// Publishes to MQTT_SENSOR_TOPIC (not MQTT_TOPIC) so Python's
+// _on_sensor_message callback receives it and routes it through the same
+// ThermalClassifier pipeline, not directly to the main alerts channel.
+// Wiring: VCC→3.3V, GND→GND, SDA→GPIO21, SCL→GPIO22 (ESP32 I2C default).
+// =============================================================================
+unsigned long lastThermalCheck  = 0;
+bool          thermalHazardSent = false;
+
+void checkThermal() {
+  if (millis() - lastThermalCheck < 500) return;
+  lastThermalCheck = millis();
+
+  float objTemp = mlx.readObjectTempC();
+  if (isnan(objTemp) || objTemp < -40) return;  // sensor not ready or bad read
+
+  Serial.print("[MLX90614] Object temp: ");
+  Serial.print(objTemp);
+  Serial.println("°C");
+
+  if (objTemp > 45.0 && !thermalHazardSent) {
+    thermalHazardSent = true;
+    Serial.println("[MLX90614] Thermal anomaly! Publishing to sensor topic...");
+
+    StaticJsonDocument<128> doc;
+    doc["sensor"]   = "MLX90614";
+    doc["status"]   = "THERMAL_ANOMALY";
+    doc["temp_c"]   = (int)(objTemp * 10) / 10.0;  // 1 decimal place
+    char buf[128];
+    serializeJson(doc, buf);
+    // Publish to SENSOR_TOPIC — Python's _on_sensor_message handles this
+    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
+
+  } else if (objTemp <= 40.0 && thermalHazardSent) {
+    // Hysteresis: require temp to drop 5°C below threshold before clearing
+    thermalHazardSent = false;
+    Serial.println("[MLX90614] Temperature normalised.");
+  }
+}
+
+// =============================================================================
+// HC-SR04 OBSTRUCTION DETECTION
+// Implements the DYN-A* "obstruction status" cost parameter from the proposal
+// (Section 3.3). Mounted horizontally at corridor entry pointing down the
+// corridor length. Normal reading = full empty corridor length (e.g. 25-35cm
+// depending on your diorama). Obstruction (dropped cardboard box) = short
+// reading (<15cm). On state change, publishes to MQTT_SENSOR_TOPIC so Python
+// backend can call block_node_and_reroute() and update LED corridor states.
+// Pings only twice per second (500ms interval) — avoids spamming the MQTT
+// broker and keeps the 30ms pulseIn timeout from visibly stuttering the LEDs.
+// =============================================================================
+void checkObstruction() {
+  if (millis() - lastPingMs < 500) return;
+  lastPingMs = millis();
+
+  // Trigger ultrasonic pulse
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Read echo — 30ms timeout covers up to ~5m range, fine for a diorama
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return;  // no echo = sensor not ready, skip silently
+
+  int distanceCm = (int)(duration * 0.034f / 2);
+
+  bool blocked = (distanceCm > 0 && distanceCm < 15);
+
+  // Only publish on state CHANGE — not every ping — to avoid MQTT spam
+  if (blocked && !corridorBlocked) {
+    corridorBlocked = true;
+    Serial.println("[HC-SR04] Obstruction detected at " + String(distanceCm) + "cm — publishing BLOCKED");
+
+    StaticJsonDocument<128> doc;
+    doc["sensor"]    = "HC-SR04";
+    doc["node"]      = "C-003";    // which corridor this sensor guards
+    doc["status"]    = "BLOCKED";
+    doc["distance_cm"] = distanceCm;
+    char buf[128];
+    serializeJson(doc, buf);
+    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
+
+  } else if (!blocked && corridorBlocked) {
+    corridorBlocked = false;
+    Serial.println("[HC-SR04] Corridor cleared — publishing CLEAR");
+
+    StaticJsonDocument<128> doc;
+    doc["sensor"]    = "HC-SR04";
+    doc["node"]      = "C-003";
+    doc["status"]    = "CLEAR";
+    doc["distance_cm"] = distanceCm;
+    char buf[128];
+    serializeJson(doc, buf);
+    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
+  }
+}
+
+// =============================================================================
 // LOOP
 // =============================================================================
 void loop() {
@@ -380,4 +504,10 @@ void loop() {
     renderCorridors();
     updateBuzzer();
   }
+
+  // HC-SR04 obstruction check — non-blocking, only pings every 500ms
+  checkObstruction();
+
+  // MLX90614 thermal check — non-blocking, only reads every 500ms
+  checkThermal();
 }
