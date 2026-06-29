@@ -47,6 +47,7 @@ from routing_engine import (
     get_all_exit_routes,
     block_node_and_reroute,
     unblock_node,
+    get_all_exit_routes,
     facp_store_alert,
     route_from_store,
     DOOR_TO_JUNCTION,
@@ -156,8 +157,22 @@ def _on_sensor_message(client, userdata, msg):
     Handles two sensor types:
       HC-SR04  → obstruction detected/cleared, calls block_node_and_reroute()
       MLX90614 → thermal anomaly, feeds temp reading into ThermalClassifier
+
+    IMPORTANT: Real sensor events are SUPPRESSED in simulation mode.
+    Bomba override cannot be overridden by sensor events.
     """
     global manual_override, current_route, system_state, thermal_state
+
+    # Respect system mode — ignore real sensors in simulation mode
+    with state_lock:
+        _mode  = system_mode
+        _bomba = bomba_override_active
+    if _mode != "live":
+        print(f"[SENSOR] Suppressed — system is in {_mode.upper()} mode")
+        return
+    if _bomba:
+        print("[SENSOR] Suppressed — Bomba override active")
+        return
     try:
         data   = json.loads(msg.payload.decode())
         sensor = data.get("sensor")
@@ -242,6 +257,23 @@ state_lock   = threading.Lock()
 system_state = "NORMAL"          # NORMAL | HAZARD
 ai_mode      = "DIORAMA"         # DIORAMA | ENTERPRISE
 facp_confirmed = False           # True once FFT confirms the official alarm
+
+# =============================================================================
+# SYSTEM MODE — controls which event sources are accepted
+#   "simulation" : only manual simulation triggers accepted; real sensors ignored
+#   "live"       : only real sensor data accepted; simulation triggers disabled
+# BOMBA override (bomba_override_active) is a special elevated state that works
+# in ANY mode and cannot be cancelled by simulation or sensor events.
+# Priority: bomba_override (3) > live_sensor (2) > simulation (1)
+# =============================================================================
+system_mode           = "simulation"   # "simulation" | "live"
+bomba_override_active = False          # True when Bomba has issued a command override
+
+# Simulation trigger state — which event type was manually triggered
+# None | "fire" | "fallen" | "crowd"
+sim_trigger_type  = None
+sim_trigger_node  = None   # most recent trigger node (for status display)
+active_hazard_nodes = []  # list of {node_id, event_type} for multi-hazard tracking
 
 # Fire simulation flag — no physical thermal sensor in this prototype.
 # Set to True by /trigger (BOMBA "Simulate Fire" button) for demo purposes.
@@ -682,7 +714,7 @@ def _process_ai_cycle(cap, state):
         with state_lock:
             for _nid, (_lo, _hi) in _sensor_model.items():
                 _cur   = live_node_status[_nid]["crowd"]
-                _drift = random.randint(-3, 3)
+                _drift = random.randint(-1, 1)
                 _new   = max(_lo, min(_hi, _cur + _drift))
                 update_crowd(_nid, _new)
 
@@ -879,6 +911,10 @@ def api_status():
         _mode    = ai_mode
         _facp    = facp_confirmed
         _manual  = manual_override
+        _sysmode = system_mode
+        _bomba   = bomba_override_active
+        _simtype = sim_trigger_type
+        _simnode = sim_trigger_node
         _count   = current_person_count
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _tracks  = len(current_track_ids)
@@ -895,6 +931,10 @@ def api_status():
     # All computation outside the lock
     return jsonify({
         "system_state":       _state,
+        "system_mode":        _sysmode,
+        "bomba_override":     _bomba,
+        "sim_trigger_type":   _simtype,
+        "sim_trigger_node":   _simnode,
         "ai_mode":            _mode,
         "facp_confirmed":     _facp,
         "manual_override":    _manual,
@@ -1114,6 +1154,207 @@ def api_unblock():
         reset_hysteresis()
         manual_override = False
     return jsonify({"status": "unblocked", "node_id": node_id})
+
+
+@app.route("/api/set_system_mode/<mode>")
+def set_system_mode(mode):
+    """
+    Switch between simulation and live mode.
+    Simulation: manual triggers only, real sensors suppressed.
+    Live: real sensors only, manual simulation triggers disabled.
+    Bomba override works in both modes.
+    """
+    global system_mode
+    if mode not in ("simulation", "live"):
+        return jsonify({"error": "mode must be 'simulation' or 'live'"}), 400
+    with state_lock:
+        system_mode = mode
+        if mode == "live":
+            # Clear simulation state so DYN-A* thread resumes auto-routing
+            global manual_override, sim_trigger_type, sim_trigger_node
+            manual_override  = False
+            sim_trigger_type = None
+            sim_trigger_node = None
+            active_hazard_nodes.clear()
+    print(f"[MODE] System mode switched to: {mode.upper()}")
+    return jsonify({"status": "success", "system_mode": mode})
+
+
+@app.route("/api/get_system_mode")
+def get_system_mode():
+    """Returns current system mode and Bomba override status."""
+    with state_lock:
+        return jsonify({
+            "system_mode":           system_mode,
+            "bomba_override_active": bomba_override_active,
+            "sim_trigger_type":      sim_trigger_type,
+            "sim_trigger_node":      sim_trigger_node,
+        })
+
+
+@app.route("/api/sim_trigger", methods=["POST"])
+def sim_trigger():
+    """
+    Simulation mode only — manually trigger a fire/fallen/crowd event at a node.
+    Body: { "event_type": "fire"|"fallen"|"crowd", "node_id": "J7" }
+    Rejected if system_mode is not "simulation" or bomba_override_active is True.
+    """
+    global system_state, manual_override, fire_sim_active
+    global sim_trigger_type, sim_trigger_node, active_hazard_nodes
+
+    with state_lock:
+        _mode   = system_mode
+        _bomba  = bomba_override_active
+
+    if _mode != "simulation":
+        return jsonify({"error": "Simulation triggers only allowed in SIMULATION mode"}), 403
+    if _bomba:
+        return jsonify({"error": "Bomba override active — simulation triggers blocked"}), 403
+
+    body       = request.get_json(silent=True) or {}
+    event_type = body.get("event_type", "fire")   # "fire" | "fallen" | "crowd"
+    node_id    = body.get("node_id", "J7")
+
+    if event_type not in ("fire", "fallen", "crowd"):
+        return jsonify({"error": "event_type must be fire, fallen, or crowd"}), 400
+
+    with state_lock:
+        # Accumulate hazards — append to list, do NOT clear previous ones
+        sim_trigger_type  = event_type
+        sim_trigger_node  = node_id
+        system_state      = "HAZARD"
+        manual_override   = True
+        # Track all active hazard nodes for multi-path routing
+        if not any(h["node_id"]==node_id for h in active_hazard_nodes):
+            active_hazard_nodes.append({"node_id": node_id, "event_type": event_type})
+
+        if event_type == "fire":
+            fire_sim_active = True
+            live_node_status[node_id]["status"] = "alert"
+            live_node_status[node_id]["hazard"] = "thermal"
+            hazard_label = "FIRE (Simulation)"
+        elif event_type == "fallen":
+            live_node_status[node_id]["status"] = "alert"
+            live_node_status[node_id]["hazard"] = "fall"
+            live_node_status[node_id]["pull_signal"] = "RED"
+            hazard_label = "PERSON FALLEN (Simulation)"
+        elif event_type == "crowd":
+            live_node_status[node_id]["status"] = "warning"
+            live_node_status[node_id]["hazard"] = "crowd"
+            live_node_status[node_id]["pull_signal"] = "AMBER"
+            hazard_label = "CROWD DENSITY (Simulation)"
+
+        _total_pax = sum(d["crowd"] for d in live_node_status.values())
+        # Reset hysteresis so multi-hazard recalculates fresh each trigger
+        reset_hysteresis()
+        # Calculate best exit route for EACH active hazard node
+        _per_node_routes = []
+        for _h in active_hazard_nodes:
+            _h_routes = get_all_exit_routes(_h["node_id"])
+            if _h_routes:
+                _per_node_routes.append({
+                    "node_id":    _h["node_id"],
+                    "event_type": _h["event_type"],
+                    "best_path":  _h_routes[0]["path"],
+                    "best_exit":  _h_routes[0]["exit"],
+                    "best_cost":  _h_routes[0]["cost"],
+                    "all_exits":  _h_routes,
+                })
+        # Primary route = best route from most recently triggered node
+        _path = _per_node_routes[-1]["best_path"] if _per_node_routes else []
+        if _path:
+            current_route[:] = _path
+        _corridors = _build_corridor_states()
+
+    mqtt_client.publish(TOPIC, json.dumps({
+        "status":       "CRITICAL",
+        "system_state": "HAZARD",
+        "hazard_type":  hazard_label,
+        "source":       "SIMULATION",
+        "node_id":      node_id,
+        "person_count": _total_pax,
+        "corridors":    _corridors,
+    }))
+    print(f"[SIM] Triggered {event_type.upper()} at {node_id} → {len(_per_node_routes)} hazard nodes active")
+    return jsonify({
+        "status":          "success",
+        "event_type":      event_type,
+        "node_id":         node_id,
+        "route":           _path or [],
+        "per_node_routes": _per_node_routes,
+        "message":         f"Simulation: {hazard_label} triggered at {node_id}",
+    })
+
+
+@app.route("/api/bomba_override", methods=["POST"])
+def bomba_override():
+    """
+    Bomba override — works in ANY mode (simulation or live).
+    Highest priority event — cannot be overridden by simulation or sensors.
+    Body: { "action": "activate"|"clear", "node_id": "J7" (optional) }
+    """
+    global system_state, manual_override, fire_sim_active, bomba_override_active
+    global sim_trigger_type, sim_trigger_node
+
+    body    = request.get_json(silent=True) or {}
+    action  = body.get("action", "activate")
+    node_id = body.get("node_id", None)
+
+    if action == "activate":
+        with state_lock:
+            bomba_override_active = True
+            system_state          = "HAZARD"
+            manual_override       = True
+            fire_sim_active       = True   # triggers thermal + FFT simulation
+            sim_trigger_type      = None   # cancel any pending simulation
+            sim_trigger_node      = None
+
+            _node = node_id or "J7"
+            live_node_status[_node]["status"] = "alert"
+            live_node_status[_node]["hazard"] = "thermal"
+            _total_pax = sum(d["crowd"] for d in live_node_status.values())
+            _corridors = _build_corridor_states()
+
+        mqtt_client.publish(TOPIC, json.dumps({
+            "status":       "CRITICAL",
+            "system_state": "HAZARD",
+            "hazard_type":  "BOMBA COMMAND OVERRIDE",
+            "source":       "BOMBA",
+            "person_count": _total_pax,
+            "corridors":    _corridors,
+        }))
+        print("[BOMBA] Override ACTIVATED — highest priority event, all other triggers blocked")
+        return jsonify({"status": "success", "bomba_override_active": True,
+                        "message": "Bomba override activated — all sensors and simulation suppressed"})
+
+    elif action == "clear":
+        with state_lock:
+            bomba_override_active = False
+            system_state          = "NORMAL"
+            manual_override       = False
+            fire_sim_active       = False
+            sim_trigger_type      = None
+            sim_trigger_node      = None
+            active_hazard_nodes.clear()
+            for nid, d in live_node_status.items():
+                d["status"]      = "normal"
+                d["hazard"]      = None
+                d["pull_signal"] = "GREEN"
+            _total_pax = sum(d["crowd"] for d in live_node_status.values())
+            _corridors = _build_corridor_states()
+
+        mqtt_client.publish(TOPIC, json.dumps({
+            "status":       "RESOLVED",
+            "system_state": "NORMAL",
+            "source":       "BOMBA",
+            "person_count": _total_pax,
+            "corridors":    _corridors,
+        }))
+        print("[BOMBA] Override CLEARED — system restored to normal")
+        return jsonify({"status": "success", "bomba_override_active": False,
+                        "message": "Bomba override cleared — normal operation resumed"})
+
+    return jsonify({"error": "action must be activate or clear"}), 400
 
 
 @app.route("/api/quick_routes", methods=["POST","GET"])

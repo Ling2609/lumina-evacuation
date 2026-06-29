@@ -125,7 +125,13 @@ const STORE_DOTS = [
 
 
 
-// Corridor backbone edges — exact train-map topology, no diagonals, no skipping
+
+// Custom SVG cursors for simulation trigger mode
+const SIM_CURSORS = {
+  fire:   'url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjciIGZpbGw9IiNFRjQ0NDQiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHRleHQgeD0iMjAiIHk9IjI2IiBmb250LXNpemU9IjIwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7wn5SlPC90ZXh0Pjwvc3ZnPg==") 8 8, crosshair',
+  fallen: 'url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjciIGZpbGw9IiNGNTlFMEIiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHRleHQgeD0iMjAiIHk9IjI2IiBmb250LXNpemU9IjIwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7wn6eNPC90ZXh0Pjwvc3ZnPg==") 8 8, crosshair',
+  crowd:  'url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjciIGZpbGw9IiMzQjgyRjYiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHRleHQgeD0iMjAiIHk9IjI2IiBmb250LXNpemU9IjIwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7wn5GlPC90ZXh0Pjwvc3ZnPg==") 8 8, crosshair',
+};// Corridor backbone edges — exact train-map topology, no diagonals, no skipping
 const CORRIDOR_EDGES = [
   ["J1","EXIT-1"],["J1","J2"],["J2","J3"],
   ["J3","J4"],["J3","J20"],
@@ -143,10 +149,41 @@ const CORRIDOR_EDGES = [
 
 
 
-// Build route points — handles Bx door IDs, junction IDs, and exit IDs
+// Build adjacency map from CORRIDOR_EDGES for route expansion
+const CORRIDOR_ADJ = {};
+CORRIDOR_EDGES.forEach(([a,b])=>{
+  if(!CORRIDOR_ADJ[a]) CORRIDOR_ADJ[a]=[];
+  if(!CORRIDOR_ADJ[b]) CORRIDOR_ADJ[b]=[];
+  CORRIDOR_ADJ[a].push(b);
+  CORRIDOR_ADJ[b].push(a);
+});
+
+// BFS to find shortest corridor path between two nodes
+const corridorPath = (from, to) => {
+  if(from===to) return [from];
+  const queue = [[from]];
+  const visited = new Set([from]);
+  while(queue.length){
+    const path = queue.shift();
+    const cur = path[path.length-1];
+    for(const nb of (CORRIDOR_ADJ[cur]||[])){
+      if(nb===to) return [...path, nb];
+      if(!visited.has(nb)){ visited.add(nb); queue.push([...path, nb]); }
+    }
+  }
+  return [from, to]; // fallback if no corridor path
+};
+
+// Build route points — expands each step through corridor topology so
+// lines always follow actual corridors, never cut diagonally through walls
 const getRoutePoints = (route) => {
   if (!route || route.length < 2) return "";
-  return route.map(id => {
+  const expanded = [route[0]];
+  for(let i=0; i<route.length-1; i++){
+    const seg = corridorPath(route[i], route[i+1]);
+    seg.slice(1).forEach(n => expanded.push(n));
+  }
+  return expanded.map(id => {
     if (DOOR_POS[id])  return `${DOOR_POS[id].x},${DOOR_POS[id].y}`;
     if (JUNCTIONS[id]) return `${JUNCTIONS[id].x},${JUNCTIONS[id].y}`;
     if (EXIT_POS[id])  return `${EXIT_POS[id].x},${EXIT_POS[id].y}`;
@@ -255,6 +292,7 @@ export default function App() {
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
   const [activeRoute,   setActiveRoute]   = useState(["J19","J18","EXIT-5"]);
+  const [perNodeRoutes, setPerNodeRoutes] = useState([]); // per-hazard-node evacuation paths
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);   // CAM-01 live YOLO track count (lobby only)
   const [totalFootfall, setTotalFootfall] = useState(0);   // building-wide total across all nodes
@@ -280,6 +318,12 @@ export default function App() {
   const [occupancyExpandedCat, setOccupancyExpandedCat] = useState(null); // null | "High Traffic" | "HVAC Reduce" | "HVAC Increase"
   const [manualOverride,  setManualOverride]  = useState(false);
   const [manualBlockedNode, setManualBlockedNode] = useState(null);
+
+  // ── System mode & simulation trigger ────────────────────────────────────
+  // systemMode: "simulation" | "live"
+  // simTriggerType: null | "fire" | "fallen" | "crowd" — selected in toolbar
+  const [systemMode,     setSystemMode]     = useState("simulation");
+  const [simTriggerType, setSimTriggerType] = useState(null);
   const [nodeHealthPage, setNodeHealthPage] = useState(0);
   const [quickExitRoutes, setQuickExitRoutes] = useState([]); // sorted best-to-worst from backend
   const [health, setHealth] = useState({
@@ -301,6 +345,7 @@ export default function App() {
   const hazardLockRef     = useRef(0); // timestamp of last CRITICAL event — ignore stale NORMAL polls for 2s
   const lastVelRef        = useRef(false);
   const manualOverrideRef = useRef(false);
+  const backendOnlineRef  = useRef(false); // tracks previous online state for transition logging
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
 
   const pushEvent = (msg, level="info", tag=null) => {
@@ -355,6 +400,11 @@ export default function App() {
       try {
         const res = await fetch(apiUrl("/api/status"),{signal:AbortSignal.timeout(1200)});
         const d   = await res.json();
+        // Log transition to online only (not every poll tick)
+        if(!backendOnlineRef.current){
+          pushEvent("Backend online — connected to Lumina server","success");
+          backendOnlineRef.current = true;
+        }
         setBackendOnline(true);
         setPersonCount(d.person_count??0);
         setTotalFootfall(d.total_footfall??0);
@@ -440,7 +490,13 @@ export default function App() {
           pushEvent(`Velocity spike ${d.crowd_velocity?.toFixed(1)}/rdg — pre-emptive reroute`,"warning","PRE-EMPTIVE");
           lastVelRef.current=true;
         } else if((d.crowd_velocity??0)<=5) lastVelRef.current=false;
-      } catch { setBackendOnline(false); }
+      } catch {
+        if(backendOnlineRef.current){
+          pushEvent("Backend offline — connection to Lumina server lost","danger");
+          backendOnlineRef.current = false;
+        }
+        setBackendOnline(false);
+      }
     };
     poll();
     const id=setInterval(poll,POLL_MS);
@@ -530,17 +586,64 @@ export default function App() {
     setActiveRoute(["J19","J18","EXIT-5"]);
     setIsHazard(false); setPasCountdown(178); setFftConfirmed(false); setPullSignals({});
     setActiveRoute(["J19","J18","EXIT-5"]);
+    setPerNodeRoutes([]);
+    setSimTriggerType(null);
     pushEvent("RESET — manual override released, returning to AUTO mode","info");
     try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
   };
 
-  const triggerFire=async()=>{
-    // No physical thermal sensor in this prototype — fire is triggered manually
-    // for demonstration. Fall detection (camera) works independently and
-    // does not require this trigger.
-    pushEvent("DEMO: Fire simulation triggered at R-thairelax (Thai Relax) — thermal classifier active","danger","REACTIVE");
-    try{ await fetch(apiUrl("/trigger")); } catch{ pushEvent("Trigger failed — backend offline","danger"); }
+  // ── System mode toggle ───────────────────────────────────────────────────
+  const switchSystemMode=async(mode)=>{
+    try{ await fetch(apiUrl(`/api/set_system_mode/${mode}`)); } catch{ /* offline */ }
+    setSystemMode(mode);
+    setSimTriggerType(null);
+    pushEvent(`System mode switched to ${mode.toUpperCase()}${mode==="live"?" — real sensors active":" — simulation mode active"}`,
+      mode==="live"?"success":"info");
   };
+
+  // ── Simulation trigger — click toolbar icon then click node on map ───────
+  const selectSimTrigger=(type)=>{
+    if(systemMode!=="simulation"){ alert("Switch to SIMULATION mode first."); return; }
+    setSimTriggerType(prev => prev===type ? null : type); // toggle off if same
+  };
+
+  const fireSimTriggerAtNode=async(nodeId)=>{
+    if(!simTriggerType) return false;
+    if(systemMode!=="simulation") return false;
+    const labels={"fire":"🔥 Fire","fallen":"🧍 Fallen Person","crowd":"👥 Crowd Density"};
+    pushEvent(`SIM: ${labels[simTriggerType]} triggered at ${nodeId}`,"danger","REACTIVE");
+    try{
+      const resp = await fetch(apiUrl("/api/sim_trigger"),{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({event_type:simTriggerType, node_id:nodeId})
+      });
+      if(resp.ok){
+        const d = await resp.json();
+        // Set primary route (most recent hazard node → best exit)
+        if(d.route && d.route.length>1){
+          const fullPath = d.route[0]===nodeId ? d.route : [nodeId,...d.route];
+          setActiveRoute(fullPath);
+        }
+        // Store per-node routes for multi-path display
+        if(d.per_node_routes && d.per_node_routes.length>0){
+          setPerNodeRoutes(d.per_node_routes);
+          d.per_node_routes.forEach(r=>{
+            pushEvent(`PATH: ${r.node_id} → ${r.best_exit} (${r.event_type})`, "info", "PRE-EMPTIVE");
+          });
+        }
+      }
+      setNodes(prev=>prev.map(n=>n.id===nodeId
+        ? {...n, status:"alert", hazard:simTriggerType==="fire"?"thermal":simTriggerType}
+        : n));
+      setIsHazard(true);
+    } catch{ pushEvent("Sim trigger failed — backend offline","danger"); }
+    setSimTriggerType(null);
+    return true;
+  };
+
+
+
+  // triggerFire removed — replaced by simulation toolbar (fireSimTriggerAtNode)
 
   const toggleAiMode=async()=>{
     const m=aiMode==="DIORAMA"?"ENTERPRISE":"DIORAMA";
@@ -881,8 +984,8 @@ export default function App() {
                     opacity={hazard?0.8:0.5}/>;
                 })}
 
-                {/* ── Active route — animated green dashes through junctions ── */}
-                {activeRoute.length>=2&&(()=>{
+                {/* ── Active route — hidden when perNodeRoutes is active ── */}
+                {activeRoute.length>=2&&perNodeRoutes.length===0&&(()=>{
                   const pts=getRoutePoints(activeRoute);
                   if(!pts) return null;
                   return(<g>
@@ -894,6 +997,24 @@ export default function App() {
                       strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })()}
+
+                {/* ── Per-hazard-node evacuation paths ── */}
+                {isHazard&&perNodeRoutes.map((nr,i)=>{
+                  const nodeColors=["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EF4444"];
+                  const col=nodeColors[i%nodeColors.length];
+                  const pts=getRoutePoints(nr.best_path||[]);
+                  if(!pts) return null;
+                  return(<g key={nr.node_id}>
+                    <polyline points={pts} fill="none" stroke={col}
+                      strokeWidth={i===perNodeRoutes.length-1?4:2.5}
+                      strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray={i===perNodeRoutes.length-1?"12 6":"6 8"}
+                      opacity={i===perNodeRoutes.length-1?0.95:0.55}
+                      style={i===perNodeRoutes.length-1?{animation:"dash 1.2s linear infinite"}:{}}/>
+                    <polyline points={pts} fill="none" stroke={col}
+                      strokeWidth="12" opacity="0.07" strokeLinecap="round" strokeLinejoin="round"/>
+                  </g>);
+                })}
 
                 {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
@@ -956,7 +1077,7 @@ export default function App() {
                     isOnRoute?palette.success:nodeColor;
                   const r=isOnRoute||isAlert?7:4;
                   return(
-                    <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
@@ -1005,6 +1126,40 @@ export default function App() {
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
                 flexDirection:"column",overflowY:"auto",overflowX:"hidden",minWidth:255,maxWidth:280}}>
+
+                {/* ── SIMULATION PANEL — only in simulation mode ── */}
+                {systemMode==="simulation"&&(
+                  <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,
+                    flexShrink:0,background:"#FFFBEB"}}>
+                    <div style={{fontSize:8,fontWeight:700,color:"#92400E",marginBottom:5,letterSpacing:"0.04em"}}>
+                      🎮 SIM — select trigger, click node on map
+                    </div>
+                    <div style={{display:"flex",gap:4}}>
+                      {[
+                        {type:"fire",   emoji:"🔥", label:"Fire",   color:"#EF4444", bg:"#FEE2E2"},
+                        {type:"fallen", emoji:"🧍", label:"Fallen", color:"#F59E0B", bg:"#FEF3C7"},
+                        {type:"crowd",  emoji:"👥", label:"Crowd",  color:"#3B82F6", bg:"#DBEAFE"},
+                      ].map(({type,emoji,label,color,bg})=>(
+                        <button key={type} onClick={()=>selectSimTrigger(type)}
+                          style={{flex:1,padding:"6px 4px",fontSize:9,fontWeight:700,borderRadius:6,
+                            background:simTriggerType===type?bg:"#fff",
+                            border:`2px solid ${simTriggerType===type?color:"#E5E7EB"}`,
+                            color:simTriggerType===type?color:"#6B7280",
+                            cursor:"pointer",textAlign:"center",
+                            boxShadow:simTriggerType===type?`0 0 8px ${color}40`:"none"}}>
+                          <div style={{fontSize:14}}>{emoji}</div>
+                          <div>{label}</div>
+                        </button>
+                      ))}
+                    </div>
+                    {simTriggerType&&(
+                      <div style={{fontSize:8,color:"#6366F1",marginTop:4,fontWeight:600,textAlign:"center"}}>
+                        ✦ Click a node on the map to trigger
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:6}}>ACTIVE ROUTE</div>
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -1143,21 +1298,13 @@ export default function App() {
                     {fftConfirmed?"FFT CONFIRMED":"Awaiting acoustic confirmation"}
                   </div>
                   <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:4}}>
-                    <button onClick={triggerFire} disabled={isHazard} style={{width:"100%",
-                      background:!isHazard?palette.dangerLight:"transparent",
-                      border:`1px solid ${!isHazard?palette.danger:palette.border}`,
-                      borderRadius:5,padding:"5px",fontSize:9,fontWeight:600,
-                      color:!isHazard?palette.danger:palette.textMuted,
-                      cursor:!isHazard?"pointer":"not-allowed",opacity:!isHazard?1:0.4}}
-                      title="No physical thermal sensor in this prototype — triggers fire simulation for demo">
-                      🔥 SIMULATE FIRE (DEMO)
-                    </button>
+
                     <button onClick={resetSystem} disabled={!isHazard} style={{width:"100%",
                       background:isHazard?palette.grayLight:"transparent",
                       border:`1px solid ${isHazard?palette.gray:palette.border}`,
                       borderRadius:5,padding:"5px",fontSize:9,fontWeight:600,
                       color:isHazard?palette.text:palette.textMuted,
-                      cursor:isHazard?"pointer":"not-allowed",opacity:isHazard?1:0.4}}>RESET</button>
+                      cursor:isHazard?"pointer":"not-allowed",opacity:isHazard?1:0.4}}>RESET SYSTEM</button>
                   </div>
                 </div>
               </div>
@@ -1195,15 +1342,6 @@ export default function App() {
           </span>
         </div>
         <div style={{display:"flex",gap:14,alignItems:"center",flexShrink:1,minWidth:0,overflow:"hidden"}}>
-          {manualOverride&&(
-            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,
-              background:`${palette.warning}18`,border:`1px solid ${palette.warning}`,
-              borderRadius:5,padding:"2px 7px"}}>
-              <div style={{width:5,height:5,borderRadius:"50%",background:palette.warning,
-                animation:"pulse 1s infinite",flexShrink:0}}/>
-              <span style={{fontSize:9,fontWeight:700,color:palette.warningDark,whiteSpace:"nowrap"}}>MANUAL</span>
-            </div>
-          )}
           {[
             {label:"FACP",   value:isHazard?`${pasCountdown}s`:"—",
               color:isHazard?(pasCountdown<60?palette.danger:palette.warning):palette.gray,
@@ -1230,6 +1368,13 @@ export default function App() {
             color:aiMode==="DIORAMA"?palette.infoDark??palette.info:palette.purple,
             borderRadius:6,padding:"4px 10px",fontSize:10,fontWeight:600,cursor:"pointer"}}>
             {aiMode==="DIORAMA"?"TOY AI":"REAL AI"}
+          </button>
+          <button onClick={()=>switchSystemMode(systemMode==="simulation"?"live":"simulation")} style={{
+            background:systemMode==="simulation"?"#FEF3C7":"#DCFCE7",
+            border:`1px solid ${systemMode==="simulation"?"#F59E0B":"#16A34A"}`,
+            color:systemMode==="simulation"?"#92400E":"#166534",
+            borderRadius:6,padding:"4px 10px",fontSize:10,fontWeight:600,cursor:"pointer"}}>
+            {systemMode==="simulation"?"🎮 SIM":"📡 LIVE"}
           </button>
           <button onClick={resetSystem} disabled={!isHazard} style={{
             background:isHazard?palette.grayLight:"transparent",
@@ -1346,9 +1491,10 @@ export default function App() {
                         <span style={{width:6,height:6,borderRadius:1,background:c,display:"inline-block"}}/>{l}
                       </span>
                     ))}
-                    {manualOverride&&<span style={{color:palette.purple,fontWeight:600}}>● MANUAL LOCK</span>}
+                    
                   </div>
                 </div>
+
                 <svg viewBox="-30 -30 820 760" onClick={()=>setTwinExpanded(true)}
                   style={{flex:1,width:"100%",background:"#F8FAFC",cursor:"pointer"}}
                   title="Click to expand full command view">
@@ -1414,8 +1560,8 @@ export default function App() {
                     opacity={hazard?0.8:0.5}/>;
                 })}
 
-                {/* ── Active route — animated green dashes through junctions ── */}
-                {activeRoute.length>=2&&(()=>{
+                {/* ── Active route — hidden when perNodeRoutes is active ── */}
+                {activeRoute.length>=2&&perNodeRoutes.length===0&&(()=>{
                   const pts=getRoutePoints(activeRoute);
                   if(!pts) return null;
                   return(<g>
@@ -1427,6 +1573,24 @@ export default function App() {
                       strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })()}
+
+                {/* ── Per-hazard-node evacuation paths ── */}
+                {isHazard&&perNodeRoutes.map((nr,i)=>{
+                  const nodeColors=["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EF4444"];
+                  const col=nodeColors[i%nodeColors.length];
+                  const pts=getRoutePoints(nr.best_path||[]);
+                  if(!pts) return null;
+                  return(<g key={nr.node_id}>
+                    <polyline points={pts} fill="none" stroke={col}
+                      strokeWidth={i===perNodeRoutes.length-1?4:2.5}
+                      strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray={i===perNodeRoutes.length-1?"12 6":"6 8"}
+                      opacity={i===perNodeRoutes.length-1?0.95:0.55}
+                      style={i===perNodeRoutes.length-1?{animation:"dash 1.2s linear infinite"}:{}}/>
+                    <polyline points={pts} fill="none" stroke={col}
+                      strokeWidth="12" opacity="0.07" strokeLinecap="round" strokeLinejoin="round"/>
+                  </g>);
+                })}
 
                 {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
@@ -1489,7 +1653,7 @@ export default function App() {
                     isOnRoute?palette.success:nodeColor;
                   const r=isOnRoute||isAlert?7:4;
                   return(
-                    <g key={id} style={{cursor:"pointer"}} onClick={()=>setSelectedNode(n??null)}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
