@@ -317,7 +317,7 @@ export default function App() {
   const [nodeMapExpanded, setNodeMapExpanded] = useState(false);
   const [occupancyExpandedCat, setOccupancyExpandedCat] = useState(null); // null | "High Traffic" | "HVAC Reduce" | "HVAC Increase"
   const [manualOverride,  setManualOverride]  = useState(false);
-  const [manualBlockedNode, setManualBlockedNode] = useState(null);
+  const [manualBlockedNodes, setManualBlockedNodes] = useState([]); // array for multi-block
 
   // ── System mode & simulation trigger ────────────────────────────────────
   // systemMode: "simulation" | "live"
@@ -346,6 +346,8 @@ export default function App() {
   const lastVelRef        = useRef(false);
   const manualOverrideRef = useRef(false);
   const backendOnlineRef  = useRef(false); // tracks previous online state for transition logging
+  const perNodeRoutesRef  = useRef([]);    // ref so poll closure always sees current perNodeRoutes
+  useEffect(()=>{ perNodeRoutesRef.current = perNodeRoutes; }, [perNodeRoutes]);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
 
   const pushEvent = (msg, level="info", tag=null) => {
@@ -409,6 +411,8 @@ export default function App() {
         setPersonCount(d.person_count??0);
         setTotalFootfall(d.total_footfall??0);
         setAiMode(d.ai_mode??"DIORAMA");
+        // Sync system mode from backend so frontend never diverges after restart
+        if(d.system_mode) setSystemMode(d.system_mode);
         if (!manualOverrideRef.current) {
           // AUTO mode — backend drives everything
           setIsHazard(d.system_state==="HAZARD");
@@ -419,6 +423,13 @@ export default function App() {
           const stalePoll = d.system_state==="NORMAL" && (Date.now()-hazardLockRef.current < 2000);
           if (!stalePoll) {
             // Only sync route from backend if not in manual override mode
+            if(d.per_node_routes?.length>0){
+              // Multi-hazard mode — update all per-node routes from backend real-time calc
+              setPerNodeRoutes(d.per_node_routes);
+            } else if(d.per_node_routes?.length===0 && perNodeRoutesRef.current.length>0){
+              // Backend cleared per-node routes (reset) — clear frontend too
+              setPerNodeRoutes([]);
+            }
             if (d.current_route?.length && !manualOverrideRef.current) setActiveRoute(d.current_route);
           }
           if (d.pull_signals) setPullSignals(d.pull_signals);
@@ -581,15 +592,20 @@ export default function App() {
 
   // ── ACTIONS ───────────────────────────────────────────────────────────────
   const resetSystem=async()=>{
+    // Call backend first so it clears active_hazard_nodes before next poll
+    try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
+    // Then clear all frontend state atomically
     setManualOverride(false);
-    setManualBlockedNode(null);
+    setManualBlockedNodes([]);
     setActiveRoute(["J19","J18","EXIT-5"]);
-    setIsHazard(false); setPasCountdown(178); setFftConfirmed(false); setPullSignals({});
-    setActiveRoute(["J19","J18","EXIT-5"]);
+    setIsHazard(false);
+    setPasCountdown(178);
+    setFftConfirmed(false);
+    setPullSignals({});
     setPerNodeRoutes([]);
     setSimTriggerType(null);
-    pushEvent("RESET — manual override released, returning to AUTO mode","info");
-    try{ await fetch(apiUrl("/reset")); } catch{ /* offline */ }
+    setNodes(prev=>prev.map(n=>({...n,status:"normal",hazard:null})));
+    pushEvent("RESET — all hazards cleared, returning to AUTO mode","info");
   };
 
   // ── System mode toggle ───────────────────────────────────────────────────
@@ -631,6 +647,10 @@ export default function App() {
             pushEvent(`PATH: ${r.node_id} → ${r.best_exit} (${r.event_type})`, "info", "PRE-EMPTIVE");
           });
         }
+      } else {
+        const err = await resp.json().catch(()=>({}));
+        console.warn(`[SIM] ${resp.status}: ${err.error||"unknown error"} — backend system_mode may not be simulation`);
+        pushEvent(`Sim trigger rejected (${resp.status}) — check mode sync`,"danger");
       }
       setNodes(prev=>prev.map(n=>n.id===nodeId
         ? {...n, status:"alert", hazard:simTriggerType==="fire"?"thermal":simTriggerType}
@@ -639,6 +659,28 @@ export default function App() {
     } catch{ pushEvent("Sim trigger failed — backend offline","danger"); }
     setSimTriggerType(null);
     return true;
+  };
+
+  // Double-click a triggered node to cancel that hazard and remove its path
+  const cancelSimTriggerAtNode=async(nodeId)=>{
+    const exists = perNodeRoutes.find(r=>r.node_id===nodeId);
+    if(!exists) return;
+    try{
+      await fetch(apiUrl("/api/cancel_sim_trigger"),{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({node_id:nodeId})
+      });
+    } catch{ /* offline */ }
+    setPerNodeRoutes(prev=>prev.filter(r=>r.node_id!==nodeId));
+    setNodes(prev=>prev.map(n=>n.id===nodeId
+      ? {...n, status:"normal", hazard:null}
+      : n));
+    pushEvent(`SIM: Hazard cancelled at ${nodeId}`,"info","PRE-EMPTIVE");
+    // If no more hazards, clear hazard state
+    if(perNodeRoutes.length<=1){
+      setIsHazard(false);
+      setActiveRoute(["J19","J18","EXIT-5"]);
+    }
   };
 
 
@@ -652,15 +694,15 @@ export default function App() {
   };
 
   const overridePath=async()=>{
-    if(!isHazard){ alert("Cannot override during normal operations."); return; }
-    // Start from current hazard origin (first node of active route)
+    // Allow blocking in any state — Bomba may need to pre-emptively block
+    // Start from current hazard origin or active route start
     const rawTarget=selectedNode?.id??activeRoute[0]??"J19";
     // Defensive normalization: if a door ID (B1-B16) is ever selected,
-    // convert to its junction so manualBlockedNode matches room rid keys
+    // convert to its junction so manualBlockedNodes matches room rid keys
     // and the Digital Twin actually highlights purple on quarantine.
     const target=DOOR_TO_J[rawTarget]||rawTarget;
     // Only reject if THIS node was already manually blocked by BOMBA
-    if(target===manualBlockedNode){
+    if(manualBlockedNodes.includes(target)){
       alert(`${target} is already manually blocked. Press RESET to release it.`); return;
     }
     setManualOverride(true);
@@ -670,11 +712,29 @@ export default function App() {
         body:JSON.stringify({node_id:target, start:activeRoute[0]||"J16"})});
       const d=await r.json();
       if(d.new_route){
-        setManualBlockedNode(target);
-        setActiveRoute(d.new_route);
+        setManualBlockedNodes(prev=>[...prev.filter(x=>x!==target), target]);
         setNodes(prev=>prev.map(n=>n.id===target?{...n,status:"quarantine",hazard:"crowd"}:n));
-        setSelectedNode(null); // clear selection so stale status doesn't confuse next action
+        setSelectedNode(null);
         pushEvent(`BOMBA override: ${target} quarantined — route locked. Auto-routing PAUSED.`,"warning","REACTIVE");
+        if(perNodeRoutes.length>0){
+          // Multi-hazard mode — recalculate each per-node route avoiding the blocked node
+          const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
+            try{
+              const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({start:nr.node_id})});
+              if(rr.ok){
+                const dd=await rr.json();
+                const best=dd.routes?.find(rt=>!rt.path?.includes(target))||dd.routes?.[0];
+                if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+              }
+            } catch{ /* offline */ }
+            return nr;
+          }));
+          setPerNodeRoutes(updated);
+        } else {
+          setActiveRoute(d.new_route);
+        }
       } else {
         pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
       }
@@ -930,7 +990,7 @@ export default function App() {
                 {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
                   const hazardFill = n?.status==="alert"?"#FEE2E2":
-                                     n?.id===manualBlockedNode?"#E9D5FF":
+                                     manualBlockedNodes.includes(n?.id)?"#E9D5FF":
                                      n?.status==="quarantine"?"#FEF3C7":null;
                   const fillColor = hazardFill || r.fill || "white";
                   const fs = 8;
@@ -999,20 +1059,18 @@ export default function App() {
                 })()}
 
                 {/* ── Per-hazard-node evacuation paths ── */}
-                {isHazard&&perNodeRoutes.map((nr,i)=>{
-                  const nodeColors=["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EF4444"];
-                  const col=nodeColors[i%nodeColors.length];
+                {isHazard&&perNodeRoutes.map((nr)=>{
+                  const evtCol={"fire":"#EF4444","fallen":"#F59E0B","crowd":"#3B82F6"};
+                  const col=evtCol[nr.event_type]||"#10B981";
                   const pts=getRoutePoints(nr.best_path||[]);
                   if(!pts) return null;
                   return(<g key={nr.node_id}>
                     <polyline points={pts} fill="none" stroke={col}
-                      strokeWidth={i===perNodeRoutes.length-1?4:2.5}
-                      strokeLinecap="round" strokeLinejoin="round"
-                      strokeDasharray={i===perNodeRoutes.length-1?"12 6":"6 8"}
-                      opacity={i===perNodeRoutes.length-1?0.95:0.55}
-                      style={i===perNodeRoutes.length-1?{animation:"dash 1.2s linear infinite"}:{}}/>
+                      strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray="12 6" opacity="0.92"
+                      style={{animation:"dash 1.2s linear infinite"}}/>
                     <polyline points={pts} fill="none" stroke={col}
-                      strokeWidth="12" opacity="0.07" strokeLinecap="round" strokeLinejoin="round"/>
+                      strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })}
 
@@ -1066,21 +1124,25 @@ export default function App() {
                 {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
                   const isOnRoute=activeRoute.includes(id);
-                  const isPending=manualBlockedNode===id+"_PENDING";
-                  const isBlocked=id===manualBlockedNode||isPending;
+                  const isBlocked=manualBlockedNodes.includes(id);
+                  const isPending=false; // kept for compat
                   const isAlert=n?.status==="alert";
+                  const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
                   const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
                   const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
                     isAlert?palette.danger:
                     isTier2?palette.warning:
                     isOnRoute?palette.success:nodeColor;
-                  const r=isOnRoute||isAlert?7:4;
+                  const r=isOnRoute||isAlert?7:isCrowd?6:4;
                   return(
-                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
+                      {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
+                        fill={palette.warning} opacity="0.2"
+                        style={{animation:"pulse 1.4s linear infinite"}}/>}
                       <circle cx={pos.x} cy={pos.y} r={r}
                         fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
                       {/* Show ID only on route or alert */}
@@ -1096,7 +1158,7 @@ export default function App() {
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(x=>x!==manualBlockedNode);
+                        const rv=activeRoute.filter(x=>!manualBlockedNodes.includes(x));
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
                         const isL=vi===rv.length;
@@ -1133,6 +1195,9 @@ export default function App() {
                     flexShrink:0,background:"#FFFBEB"}}>
                     <div style={{fontSize:8,fontWeight:700,color:"#92400E",marginBottom:5,letterSpacing:"0.04em"}}>
                       🎮 SIM — select trigger, click node on map
+                    </div>
+                    <div style={{fontSize:7,color:"#B45309",marginBottom:5}}>
+                      Double-click a triggered node to cancel it
                     </div>
                     <div style={{display:"flex",gap:4}}>
                       {[
@@ -1207,30 +1272,73 @@ export default function App() {
                   </div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5,
                     maxHeight:72,overflowY:"auto",paddingRight:2}}>
-                    {nodes.map(n=>{
+                    {nodes.filter(n=>!DOOR_POS[n.id]).map(n=>{
                       const isSel   = selectedNode?.id===n.id;
-                      const isBomba = n.id===manualBlockedNode;
+                      const isBomba = manualBlockedNodes.includes(n.id);
                       return(
                         <button key={n.id}
-                          onClick={()=>!isBomba&&setSelectedNode(p=>p?.id===n.id?null:n)}
+                          onClick={async()=>{
+                            if(isBomba){
+                              // Click blocked node again to unblock it
+                              try{
+                                await fetch(apiUrl("/api/unblock_node"),{method:"POST",
+                                  headers:{"Content-Type":"application/json"},
+                                  body:JSON.stringify({node_id:n.id})});
+                                const remaining = manualBlockedNodes.filter(x=>x!==n.id);
+                                setManualBlockedNodes(remaining);
+                                setNodes(prev=>prev.map(x=>x.id===n.id?{...x,status:"normal",hazard:null}:x));
+                                pushEvent(`BOMBA: ${n.id} unblocked`,"info","PRE-EMPTIVE");
+                                if(remaining.length===0) setManualOverride(false);
+                                // Recalculate all per-node routes now that node is unblocked
+                                if(perNodeRoutes.length>0){
+                                  const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
+                                    try{
+                                      const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
+                                        headers:{"Content-Type":"application/json"},
+                                        body:JSON.stringify({start:nr.node_id})});
+                                      if(rr.ok){
+                                        const dd=await rr.json();
+                                        const best=dd.routes?.find(rt=>rt.safe)||dd.routes?.[0];
+                                        if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+                                      }
+                                    } catch{ /* offline */ }
+                                    return nr;
+                                  }));
+                                  setPerNodeRoutes(updated);
+                                } else {
+                                  // Single route mode — fetch updated route from backend
+                                  try{
+                                    const rr=await fetch(apiUrl("/api/get_route"));
+                                    if(rr.ok){
+                                      const dd=await rr.json();
+                                      if(dd.route?.length>1) setActiveRoute(dd.route);
+                                    }
+                                  } catch{ /* offline */ }
+                                }
+                              } catch{ pushEvent("Unblock failed — backend offline","danger"); }
+                            } else {
+                              setSelectedNode(p=>p?.id===n.id?null:n);
+                            }
+                          }}
                           style={{
                             background:isBomba?palette.purpleLight:isSel?palette.warningLight:"transparent",
                             border:`1px solid ${isBomba?palette.purple:isSel?palette.warning:palette.border}`,
                             borderRadius:4,padding:"2px 7px",fontSize:9,fontWeight:600,
                             color:isBomba?palette.purple:isSel?palette.warningDark:palette.textMuted,
-                            cursor:isBomba?"not-allowed":"pointer",
-                            opacity:isBomba?0.6:1,
-                          }}>{(DOOR_POS[n.id]?.label||EXIT_POS[n.id]?.label||n.id)}{isBomba?" ✕":""}</button>
+                            cursor:"pointer",
+                            opacity:isBomba?0.8:1,
+                          }} title={isBomba?"Click to unblock":undefined}>
+                          {(DOOR_POS[n.id]?.label||EXIT_POS[n.id]?.label||n.id)}{isBomba?" ✕":""}</button>
                       );
                     })}
                   </div>
                   <button onClick={overridePath} style={{width:"100%",
-                    background:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warningLight:"transparent",
-                    border:`1px solid ${isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warning:palette.border}`,
+                    background:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warningLight:"transparent",
+                    border:`1px solid ${selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warning:palette.border}`,
                     borderRadius:5,padding:"5px",fontSize:10,fontWeight:700,
-                    color:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?palette.warningDark:palette.textMuted,
-                    cursor:isHazard&&selectedNode&&selectedNode.id!==manualBlockedNode?"pointer":"not-allowed"}}>
-                    {selectedNode&&isHazard&&selectedNode.id!==manualBlockedNode
+                    color:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warningDark:palette.textMuted,
+                    cursor:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?"pointer":"not-allowed"}}>
+                    {selectedNode&&!manualBlockedNodes.includes(selectedNode.id)
                       ?`② REROUTE AROUND ${selectedNode.id}`
                       :"② BLOCK + REROUTE (BOMBA)"}
                   </button>
@@ -1261,7 +1369,7 @@ export default function App() {
                           if(d.route?.length) {
                             setActiveRoute(d.route);
                             setManualOverride(true);
-                            setManualBlockedNode(null);
+                            setManualBlockedNodes([]);
                           }
                         });
                       }} disabled={blocked} style={{width:"100%",marginBottom:3,
@@ -1506,7 +1614,7 @@ export default function App() {
                 {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
                   const hazardFill = n?.status==="alert"?"#FEE2E2":
-                                     n?.id===manualBlockedNode?"#E9D5FF":
+                                     manualBlockedNodes.includes(n?.id)?"#E9D5FF":
                                      n?.status==="quarantine"?"#FEF3C7":null;
                   const fillColor = hazardFill || r.fill || "white";
                   const fs = 8;
@@ -1575,20 +1683,18 @@ export default function App() {
                 })()}
 
                 {/* ── Per-hazard-node evacuation paths ── */}
-                {isHazard&&perNodeRoutes.map((nr,i)=>{
-                  const nodeColors=["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EF4444"];
-                  const col=nodeColors[i%nodeColors.length];
+                {isHazard&&perNodeRoutes.map((nr)=>{
+                  const evtCol={"fire":"#EF4444","fallen":"#F59E0B","crowd":"#3B82F6"};
+                  const col=evtCol[nr.event_type]||"#10B981";
                   const pts=getRoutePoints(nr.best_path||[]);
                   if(!pts) return null;
                   return(<g key={nr.node_id}>
                     <polyline points={pts} fill="none" stroke={col}
-                      strokeWidth={i===perNodeRoutes.length-1?4:2.5}
-                      strokeLinecap="round" strokeLinejoin="round"
-                      strokeDasharray={i===perNodeRoutes.length-1?"12 6":"6 8"}
-                      opacity={i===perNodeRoutes.length-1?0.95:0.55}
-                      style={i===perNodeRoutes.length-1?{animation:"dash 1.2s linear infinite"}:{}}/>
+                      strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
+                      strokeDasharray="12 6" opacity="0.92"
+                      style={{animation:"dash 1.2s linear infinite"}}/>
                     <polyline points={pts} fill="none" stroke={col}
-                      strokeWidth="12" opacity="0.07" strokeLinecap="round" strokeLinejoin="round"/>
+                      strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })}
 
@@ -1642,21 +1748,25 @@ export default function App() {
                 {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
                   const isOnRoute=activeRoute.includes(id);
-                  const isPending=manualBlockedNode===id+"_PENDING";
-                  const isBlocked=id===manualBlockedNode||isPending;
+                  const isBlocked=manualBlockedNodes.includes(id);
+                  const isPending=false; // kept for compat
                   const isAlert=n?.status==="alert";
+                  const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
                   const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
                   const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
                     isAlert?palette.danger:
                     isTier2?palette.warning:
                     isOnRoute?palette.success:nodeColor;
-                  const r=isOnRoute||isAlert?7:4;
+                  const r=isOnRoute||isAlert?7:isCrowd?6:4;
                   return(
-                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
+                      {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
+                        fill={palette.warning} opacity="0.2"
+                        style={{animation:"pulse 1.4s linear infinite"}}/>}
                       <circle cx={pos.x} cy={pos.y} r={r}
                         fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
                       {/* Show ID only on route or alert */}
@@ -1672,7 +1782,7 @@ export default function App() {
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(x=>x!==manualBlockedNode);
+                        const rv=activeRoute.filter(x=>!manualBlockedNodes.includes(x));
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
                         const isL=vi===rv.length;

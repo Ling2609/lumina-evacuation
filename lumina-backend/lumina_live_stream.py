@@ -290,6 +290,7 @@ current_route         = ["J19","J18","EXIT-5"]
 current_pull_signals  = {}
 current_rset          = {}
 current_route_cost    = 0   # raw DYN-A* cost score — exposed to frontend
+current_per_node_routes = []  # per-hazard-node routes for multi-path real-time display
 
 LOG_FILE = "lumina_telemetry_log.csv"
 
@@ -612,7 +613,7 @@ def _process_ai_cycle(cap, state):
     """
     global system_state, ai_mode, current_person_count
     global current_track_ids, crowd_velocity_lobby
-    global current_route, current_pull_signals, current_rset, current_route_cost
+    global current_route, current_pull_signals, current_rset, current_route_cost, current_per_node_routes
     global facp_confirmed, _last_drift_tick, _frame_buffer
 
     success, frame = cap.read()
@@ -697,7 +698,11 @@ def _process_ai_cycle(cap, state):
     # Locked: update_crowd/get_crowd_velocity mutate live_node_status,
     # which /reset and other Flask threads also touch concurrently.
     with state_lock:
-        update_crowd("J16", person_count)
+        # Only update J16 crowd from camera if it's not a sim-triggered hazard node
+        # Otherwise the camera count (0 in demo) would immediately overwrite the sim
+        _j16_is_sim = any(h["node_id"]=="J16" for h in active_hazard_nodes)
+        if not _j16_is_sim:
+            update_crowd("J16", person_count)
         vel = get_crowd_velocity("J16")
         current_person_count = person_count
         current_track_ids    = track_ids_this_frame
@@ -708,8 +713,8 @@ def _process_ai_cycle(cap, state):
         _last_drift_tick = int(t_now)
         _in_hazard = (cur_state == "HAZARD")
         _sensor_model = {
-            "J4": (40, 70), "J7": (75, 99 if _in_hazard else 84),
-            "J8": (60, 84), "J18": (10, 30), "J12": (20, 45),
+            "J4": (15, 40), "J7": (20, 45 if not _in_hazard else 99),
+            "J8": (10, 38), "J18": (5, 20), "J12": (8, 30),
         }
         with state_lock:
             for _nid, (_lo, _hi) in _sensor_model.items():
@@ -780,18 +785,40 @@ def _process_ai_cycle(cap, state):
     if t_now - state["route_cooldown"] >= 1.0 and not manual_override:
         state["route_cooldown"] = t_now
         with state_lock:
-            lobby_hazard = live_node_status.get("J16", {}).get("hazard")
-            start_node = "J7" if lobby_hazard == "fall" else "J16"
-            path, score = calculate_safest_route(start_node, verbose=False)
-            if path:
-                if start_node == "J7":
-                    path = ["J16"] + path
-                signals = run_pull_policy()  # global — evaluates ALL nodes, not just the route
-                rset    = estimate_rset(path)
-                current_route        = path
-                current_pull_signals = signals
-                current_rset         = rset
-                current_route_cost   = score
+            # In simulation mode with active hazards: recalculate from each
+            # hazard node so all per-node routes stay current as crowd changes.
+            # In normal/live mode: use lobby camera start node.
+            if system_mode == "simulation" and active_hazard_nodes:
+                # Recalculate best route for each active hazard node
+                _per = []
+                for _h in active_hazard_nodes:
+                    _h_routes = get_all_exit_routes(_h["node_id"])
+                    if _h_routes:
+                        _per.append({
+                            "node_id":    _h["node_id"],
+                            "event_type": _h["event_type"],
+                            "best_path":  _h_routes[0]["path"],
+                            "best_exit":  _h_routes[0]["exit"],
+                            "best_cost":  _h_routes[0]["cost"],
+                            "all_exits":  _h_routes,
+                        })
+                if _per:
+                    current_per_node_routes[:] = _per
+                    current_route[:] = _per[-1]["best_path"]
+            else:
+                lobby_hazard = live_node_status.get("J16", {}).get("hazard")
+                start_node = "J7" if lobby_hazard == "fall" else "J16"
+                path, score = calculate_safest_route(start_node, verbose=False)
+                if path:
+                    if start_node == "J7":
+                        path = ["J16"] + path
+                    current_route[:] = path
+                    current_route_cost = score
+                    current_per_node_routes.clear()
+            signals = run_pull_policy()
+            rset    = estimate_rset(current_route)
+            current_pull_signals = signals
+            current_rset         = rset
 
     with state_lock:
         _state   = system_state
@@ -882,6 +909,34 @@ def set_mode(new_mode):
     return jsonify({"status": "error"}), 400
 
 
+@app.route("/api/cancel_sim_trigger", methods=["POST"])
+def cancel_sim_trigger():
+    """
+    Cancel a specific simulation hazard at a node.
+    Body: { "node_id": "J7" }
+    Removes the node from active_hazard_nodes and clears its hazard state.
+    """
+    global active_hazard_nodes, system_state, manual_override, fire_sim_active
+    body    = request.get_json(silent=True) or {}
+    node_id = body.get("node_id")
+    if not node_id:
+        return jsonify({"error": "node_id required"}), 400
+    with state_lock:
+        active_hazard_nodes[:] = [h for h in active_hazard_nodes if h["node_id"] != node_id]
+        if node_id in live_node_status:
+            live_node_status[node_id]["status"]      = "normal"
+            live_node_status[node_id]["hazard"]      = None
+            live_node_status[node_id]["pull_signal"] = "GREEN"
+        # If no more active hazards, return to normal
+        if not active_hazard_nodes:
+            system_state    = "NORMAL"
+            manual_override = False
+            fire_sim_active = False
+    print(f"[SIM] Cancelled hazard at {node_id}, {len(active_hazard_nodes)} hazards remaining")
+    return jsonify({"status": "success", "node_id": node_id,
+                    "remaining_hazards": len(active_hazard_nodes)})
+
+
 @app.route("/api/get_route")
 def get_route():
     with state_lock:
@@ -922,6 +977,7 @@ def api_status():
         _thermal = thermal_state        # needed for header strip between MQTT events
         _fft     = fft_state            # needed for header strip between MQTT events
         _route   = list(current_route)
+        _per_node = list(current_per_node_routes)
         _signals = dict(current_pull_signals)
         _rset    = dict(current_rset)
         _t_lat   = _thermal_latency_ms
@@ -949,6 +1005,7 @@ def api_status():
         "nodes_online":       NODES_ONLINE,
         "nodes_total":        NODES_TOTAL,
         "current_route":      _route,
+        "per_node_routes":    _per_node,
         "pull_signals":       _signals,
         "rset":               _rset,
         "baseline_rset":      estimate_baseline_rset(_route) if _route else {},
@@ -1080,18 +1137,24 @@ def api_facp_clear():
 @app.route("/reset")
 def reset_system():
     global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, \
-           manual_override, fire_sim_active, fft_state, thermal_state, current_route_cost
+           manual_override, fire_sim_active, fft_state, thermal_state, current_route_cost, \
+           sim_trigger_type, sim_trigger_node
     with state_lock:
         system_state         = "NORMAL"
         facp_confirmed       = False
-        manual_override      = False   # release manual command — restore full AUTO mode
-        fire_sim_active      = False   # stop fire simulation — thermal returns to ambient
-        fft_state            = "SILENT"   # clear acoustic confirmation indicator
-        thermal_state        = "NORMAL"   # clear thermal alert indicator
-        current_route_cost   = 0          # clear stale DYN-A* cost from hazard route
-        current_route        = ["J19","J18","EXIT-5"]  # restore baseline
+        manual_override      = False
+        fire_sim_active      = False
+        fft_state            = "SILENT"
+        thermal_state        = "NORMAL"
+        current_route_cost   = 0
+        current_route        = ["J19","J18","EXIT-5"]
         current_pull_signals = {}
         current_rset         = {}
+        current_per_node_routes.clear()
+        active_hazard_nodes.clear()   # clear sim triggers so DYN-A* stops repopulating
+        reset_hysteresis()            # clear cached route so fresh calc on next tick
+        sim_trigger_type = None
+        sim_trigger_node = None
         for nid, data in live_node_status.items():
             data["status"]      = "normal"
             data["hazard"]      = None
@@ -1223,7 +1286,8 @@ def sim_trigger():
         sim_trigger_type  = event_type
         sim_trigger_node  = node_id
         system_state      = "HAZARD"
-        manual_override   = True
+        # Do NOT set manual_override=True — we need DYN-A* loop to keep
+        # recalculating in real-time as crowd density changes
         # Track all active hazard nodes for multi-path routing
         if not any(h["node_id"]==node_id for h in active_hazard_nodes):
             active_hazard_nodes.append({"node_id": node_id, "event_type": event_type})
