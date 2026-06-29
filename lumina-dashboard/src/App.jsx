@@ -767,7 +767,7 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0;}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
         @keyframes dash{to{stroke-dashoffset:-28}}
-        @keyframes hazardBlink{0%,100%{opacity:0.12}50%{opacity:0.32}}
+        @keyframes hazardBlink{0%,100%{opacity:0.12} @keyframes restrictedBlink{0%,100%{opacity:0.9}50%{opacity:0.3}}50%{opacity:0.32}}
         ::-webkit-scrollbar{width:4px;height:4px}
         ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:2px}
         button{font-family:inherit;}
@@ -1150,8 +1150,16 @@ export default function App() {
                       {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
                         fill={palette.warning} opacity="0.2"
                         style={{animation:"pulse 1.4s linear infinite"}}/>}
+                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+7}
+                        fill="none" stroke={palette.purple} strokeWidth="2"
+                        strokeDasharray="4 3" opacity="0.85"
+                        style={{animation:"restrictedBlink 2s ease-in-out infinite"}}>
+                        <title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>
+                      </circle>}
                       <circle cx={pos.x} cy={pos.y} r={r}
-                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
+                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9">
+                        {isBlocked&&<title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>}
+                      </circle>
                       {/* Show ID only on route or alert */}
                       {(isOnRoute||isAlert||isBlocked)&&(
                         <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
@@ -1233,6 +1241,16 @@ export default function App() {
                 )}
 
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
+                  {selectedNode&&manualBlockedNodes.includes(selectedNode.id)&&(
+                    <div style={{padding:"5px 8px",marginBottom:6,borderRadius:5,fontSize:9,
+                      background:palette.purpleLight,border:`1px solid ${palette.purple}40`,
+                      color:palette.purple,fontWeight:600}}>
+                      ⊘ {selectedNode.id} — Precautionary Block Active
+                      <div style={{fontWeight:400,marginTop:2,color:palette.textMuted}}>
+                        Automatic reroute enabled for future hazards.
+                      </div>
+                    </div>
+                  )}
                   <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:6}}>ACTIVE ROUTE</div>
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
                     {activeRoute.map((id,i)=>{
@@ -1781,8 +1799,16 @@ export default function App() {
                       {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
                         fill={palette.warning} opacity="0.2"
                         style={{animation:"pulse 1.4s linear infinite"}}/>}
+                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+7}
+                        fill="none" stroke={palette.purple} strokeWidth="2"
+                        strokeDasharray="4 3" opacity="0.85"
+                        style={{animation:"restrictedBlink 2s ease-in-out infinite"}}>
+                        <title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>
+                      </circle>}
                       <circle cx={pos.x} cy={pos.y} r={r}
-                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9"/>
+                        fill={dotColor} stroke="#fff" strokeWidth="1.5" opacity="0.9">
+                        {isBlocked&&<title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>}
+                      </circle>
                       {/* Show ID only on route or alert */}
                       {(isOnRoute||isAlert||isBlocked)&&(
                         <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
