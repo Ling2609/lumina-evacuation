@@ -916,7 +916,7 @@ def cancel_sim_trigger():
     Body: { "node_id": "J7" }
     Removes the node from active_hazard_nodes and clears its hazard state.
     """
-    global active_hazard_nodes, system_state, manual_override, fire_sim_active
+    global active_hazard_nodes, system_state, manual_override, fire_sim_active, facp_confirmed
     body    = request.get_json(silent=True) or {}
     node_id = body.get("node_id")
     if not node_id:
@@ -932,6 +932,26 @@ def cancel_sim_trigger():
             system_state    = "NORMAL"
             manual_override = False
             fire_sim_active = False
+            facp_confirmed  = False  # reset so next fire triggers FACP sequence cleanly
+            _total_pax      = sum(d["crowd"] for d in live_node_status.values())
+            _corridors      = _build_corridor_states()
+            _publish_resolve = True
+        else:
+            _publish_resolve = False
+            _total_pax       = 0
+            _corridors       = {}
+
+    # Publish RESOLVED to MQTT so ESP32 hardware turns off — must be outside lock
+    if _publish_resolve:
+        mqtt_client.publish(TOPIC, json.dumps({
+            "status":          "RESOLVED",
+            "system_state":    "NORMAL",
+            "person_count":    _total_pax,
+            "stealth_mode":    True,
+            "green_direction": "NONE",
+            "corridors":       _corridors,
+        }))
+
     print(f"[SIM] Cancelled hazard at {node_id}, {len(active_hazard_nodes)} hazards remaining")
     return jsonify({"status": "success", "node_id": node_id,
                     "remaining_hazards": len(active_hazard_nodes)})

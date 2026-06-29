@@ -744,6 +744,13 @@ export default function App() {
   // ── DERIVED ───────────────────────────────────────────────────────────────
   const rsetTotal   = rset.RSET_s ?? 142;
   const rsetSafe    = rset.safe   ?? true;
+  // Confidence: low cost = high confidence. Baseline cost ~20 = 100%, fire penalty 5000 = ~0%
+  // Capped 0-100. In normal state (no hazard) show 100%.
+  const routeConfidence = isHazard
+    ? Math.round(Math.max(0, Math.min(100, 100 - (costScore / 100))))
+    : 100;
+  const confidenceColor = routeConfidence >= 80 ? palette.success
+    : routeConfidence >= 50 ? palette.warning : palette.danger;
 
   const hazardBorder = isHazard ? `2px solid ${palette.danger}` : `1px solid ${palette.border}`;
 
@@ -1260,10 +1267,17 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <div style={{marginTop:5,fontSize:9,padding:"3px 6px",borderRadius:4,
-                    background:rsetSafe?palette.successLight:palette.dangerLight}}>
-                    RSET <b style={{color:rsetSafe?palette.success:palette.danger}}>{rsetTotal}s</b>
-                    {" / "}ASET <b style={{color:palette.info}}>{rset.ASET_s??600}s</b>
+                  <div style={{marginTop:5,display:"flex",gap:4}}>
+                    <div style={{flex:1,fontSize:9,padding:"3px 6px",borderRadius:4,
+                      background:rsetSafe?palette.successLight:palette.dangerLight}}>
+                      RSET <b style={{color:rsetSafe?palette.success:palette.danger}}>{rsetTotal}s</b>
+                      {" / "}ASET <b style={{color:palette.info}}>{rset.ASET_s??600}s</b>
+                    </div>
+                    <div style={{fontSize:9,padding:"3px 8px",borderRadius:4,fontWeight:700,
+                      background:confidenceColor+"18",border:`1px solid ${confidenceColor}40`,
+                      color:confidenceColor,whiteSpace:"nowrap"}}>
+                      ✦ {routeConfidence}% safe
+                    </div>
                   </div>
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
@@ -1885,10 +1899,15 @@ export default function App() {
                     </div>
                   );
                 })()}
-                <div style={{fontSize:9,color:palette.textMuted,display:"flex",gap:8,flexWrap:"wrap"}}>
-                  <span>DYN-A* cost: <b style={{color:palette.info}}>{costScore}</b></span>
+                <div style={{fontSize:9,color:palette.textMuted,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                  <span style={{fontWeight:700,fontSize:11,color:confidenceColor}}>
+                    ✦ Route Confidence: {routeConfidence}%
+                  </span>
+                  <span style={{color:palette.textMuted}}>
+                    (DYN-A* cost: {costScore})
+                  </span>
                   {isHazard&&<span style={{color:palette.danger,fontSize:8}}>
-                    thermal penalty +5000 applied
+                    hazard penalty applied
                   </span>}
                 </div>
               </div>
