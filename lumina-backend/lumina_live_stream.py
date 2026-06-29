@@ -404,10 +404,8 @@ def _thermal_thread():
 
         with state_lock:
             thermal_state = result["state"]
-            # Write system_state inside state_lock — prevents race condition with
-            # /reset endpoint which also holds state_lock while iterating nodes.
-            # globals() hack is unnecessary inside the lock; direct assignment works.
-            if result["state"] == "ALERT" and system_state == "NORMAL":
+            # In simulation mode, thermal sensor cannot override sim state
+            if result["state"] == "ALERT" and system_state == "NORMAL" and system_mode == "live":
                 system_state = "HAZARD"
                 live_node_status["J16"]["status"] = "alert"
                 live_node_status["J16"]["hazard"] = "thermal"
@@ -723,13 +721,14 @@ def _process_ai_cycle(cap, state):
                 _new   = max(_lo, min(_hi, _cur + _drift))
                 update_crowd(_nid, _new)
 
-    if vel > 5 and cur_state == "NORMAL":
+    if vel > 5 and cur_state == "NORMAL" and system_mode == "live":
         print(f"[CROWD] Velocity spike {vel:+.2f} — pre-emptive reroute")
         with state_lock:
             live_node_status["J16"]["status"] = "warning"
 
     # --- FALL ESCALATION ---
-    if current_frame_has_fall:
+    # In simulation mode, camera fall detection is suppressed — manual triggers only
+    if current_frame_has_fall and system_mode == "live":
         state["recovery_timer_start"] = 0
         if state["fall_timer_start"] == 0:
             state["fall_timer_start"] = t_now
@@ -754,7 +753,8 @@ def _process_ai_cycle(cap, state):
         state["fall_timer_start"] = 0
         with state_lock:
             _n011_hazard = live_node_status["J16"]["hazard"]
-        if cur_state == "HAZARD" and _n011_hazard == "fall":
+        # Only auto-recover fall in live mode — simulation handles its own state
+        if system_mode == "live" and cur_state == "HAZARD" and _n011_hazard == "fall":
             if state["recovery_timer_start"] == 0:
                 state["recovery_timer_start"] = t_now
             if t_now - state["recovery_timer_start"] >= 3.0:

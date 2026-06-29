@@ -48,12 +48,12 @@ const LUMINA_NODE_DEFS = {
   // "outside" the polygon but not realistic ceiling-mount clearance) —
   // nudged into clear corridor space while staying representative of the
   // cluster's actual junction layout.
-  "NODE-A":{label:"West Corridor",    color:"#3B82F6", cx:148.6,cy:286.6},
-  "NODE-B":{label:"Central Crossroad",color:"#8B5CF6", cx:380.6,cy:264.0},
-  "NODE-C":{label:"East Corridor",    color:"#EF4444", cx:560.0,cy:264.0},
-  "NODE-D":{label:"South-Central",    color:"#10B981", cx:380.6,cy:466.8},
-  "NODE-E":{label:"South-West",       color:"#F59E0B", cx:205.7,cy:517.2},
-  "NODE-F":{label:"East-South",       color:"#84CC16", cx:582.0,cy:469.0},
+  "NODE-A":{label:"West Corridor",    color:"#EF4444", cx:148.6,cy:286.6},  // Red
+  "NODE-B":{label:"Central Crossroad",color:"#F97316", cx:380.6,cy:264.0},  // Orange
+  "NODE-C":{label:"East Corridor",    color:"#EAB308", cx:560.0,cy:264.0},  // Yellow
+  "NODE-D":{label:"South-Central",    color:"#22C55E", cx:380.6,cy:466.8},  // Green
+  "NODE-E":{label:"South-West",       color:"#3B82F6", cx:205.7,cy:517.2},  // Blue
+  "NODE-F":{label:"East-South",       color:"#8B5CF6", cx:582.0,cy:469.0},  // Violet
 };
 
 // Junction to Lumina node mapping
@@ -521,6 +521,7 @@ export default function App() {
   // quick_routes on every single /api/status tick instead of only when the
   // hazard origin actually moves.
   const routeOrigin = activeRoute[0];
+  const blockedKey  = manualBlockedNodes.join(",");
   useEffect(()=>{
     if (!routeOrigin) return;
     fetch(apiUrl("/api/quick_routes"),{
@@ -529,7 +530,8 @@ export default function App() {
     }).then(r=>r.json()).then(d=>{
       if (d.routes?.length) setQuickExitRoutes(d.routes);
     }).catch(()=>{});
-  },[routeOrigin]);
+  // Refresh when blocked nodes change (block/unblock) or route origin changes
+  },[routeOrigin, blockedKey]);
 
   // ── POLL /api/health ──────────────────────────────────────────────────────
   useEffect(()=>{
@@ -767,7 +769,7 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0;}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
         @keyframes dash{to{stroke-dashoffset:-28}}
-        @keyframes hazardBlink{0%,100%{opacity:0.12} @keyframes restrictedBlink{0%,100%{opacity:0.9}50%{opacity:0.3}}50%{opacity:0.32}}
+        @keyframes hazardBlink{0%,100%{opacity:1}50%{opacity:0.2}} @keyframes restrictedBlink{0%,100%{opacity:0.9}50%{opacity:0.3}}
         ::-webkit-scrollbar{width:4px;height:4px}
         ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:2px}
         button{font-family:inherit;}
@@ -1067,16 +1069,14 @@ export default function App() {
 
                 {/* ── Per-hazard-node evacuation paths ── */}
                 {isHazard&&perNodeRoutes.map((nr)=>{
-                  const evtCol={"fire":"#EF4444","fallen":"#F59E0B","crowd":"#3B82F6"};
-                  const col=evtCol[nr.event_type]||"#10B981";
                   const pts=getRoutePoints(nr.best_path||[]);
                   if(!pts) return null;
                   return(<g key={nr.node_id}>
-                    <polyline points={pts} fill="none" stroke={col}
+                    <polyline points={pts} fill="none" stroke={palette.success}
                       strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
                       strokeDasharray="12 6" opacity="0.92"
                       style={{animation:"dash 1.2s linear infinite"}}/>
-                    <polyline points={pts} fill="none" stroke={col}
+                    <polyline points={pts} fill="none" stroke={palette.success}
                       strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })}
@@ -1161,15 +1161,27 @@ export default function App() {
                         {isBlocked&&<title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>}
                       </circle>
                       {/* Show ID only on route or alert */}
-                      {(isOnRoute||isAlert||isBlocked)&&(
-                        <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
-                          style={{fontSize:7,fontWeight:700,fill:dotColor,fontFamily:"Inter,sans-serif"}}>{id}</text>
-                      )}
+                      <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd?8:6.5,
+                          fontWeight:isOnRoute||isAlert||isBlocked?700:400,
+                          fill:isOnRoute||isAlert||isBlocked||isCrowd?dotColor:"#94A3B8",
+                          opacity:isOnRoute||isAlert||isBlocked||isCrowd?1:0.7,
+                          fontFamily:"Inter,sans-serif"}}>{id}</text>
                       {/* Hazard emoji */}
-                      {isHazard&&isAlert&&(()=>{
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
-                        return<text x={pos.x} y={pos.y-r-12} textAnchor="middle"
-                          style={{fontSize:12,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
+                      {(isAlert||isCrowd)&&(()=>{
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        return(<g>
+                          <circle cx={pos.x} cy={pos.y-r-18} r={12}
+                            fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
+                          <foreignObject x={pos.x-12} y={pos.y-r-30} width={24} height={24}>
+                            <div xmlns="http://www.w3.org/1999/xhtml"
+                              style={{fontSize:16,textAlign:"center",lineHeight:"24px",
+                                animation:"hazardBlink 1.4s ease-in-out infinite",
+                                fontFamily:"Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif"}}>
+                              {icon}
+                            </div>
+                          </foreignObject>
+                        </g>);
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
@@ -1241,7 +1253,7 @@ export default function App() {
                 )}
 
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
-                  {selectedNode&&manualBlockedNodes.includes(selectedNode.id)&&(
+                  {selectedNode&&manualBlockedNodes.includes(selectedNode.id)&&!isHazard&&(
                     <div style={{padding:"5px 8px",marginBottom:6,borderRadius:5,fontSize:9,
                       background:palette.purpleLight,border:`1px solid ${palette.purple}40`,
                       color:palette.purple,fontWeight:600}}>
@@ -1387,8 +1399,9 @@ export default function App() {
                     const exitId    = rt.exit;
                     const exitLabel = EXIT_POS[exitId]?.label || exitId;
                     const isActive  = activeRoute[activeRoute.length-1] === exitId;
-                    const exitNode  = nodes.find(n=>n.id===exitId);
-                    const blocked   = exitNode?.status==="quarantine"||exitNode?.status==="alert" || !rt.safe;
+                    // Check if any junction in the route path is manually blocked
+                    const pathBlocked = rt.path?.some(nid=>manualBlockedNodes.includes(nid));
+                    const blocked   = pathBlocked || !rt.safe;
                     const rankLabel = rank===0?"BEST":rank===1?"2nd":rank===2?"3rd":`${rank+1}th`;
                     return(
                       <button key={exitId} onClick={()=>{
@@ -1716,16 +1729,14 @@ export default function App() {
 
                 {/* ── Per-hazard-node evacuation paths ── */}
                 {isHazard&&perNodeRoutes.map((nr)=>{
-                  const evtCol={"fire":"#EF4444","fallen":"#F59E0B","crowd":"#3B82F6"};
-                  const col=evtCol[nr.event_type]||"#10B981";
                   const pts=getRoutePoints(nr.best_path||[]);
                   if(!pts) return null;
                   return(<g key={nr.node_id}>
-                    <polyline points={pts} fill="none" stroke={col}
+                    <polyline points={pts} fill="none" stroke={palette.success}
                       strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"
                       strokeDasharray="12 6" opacity="0.92"
                       style={{animation:"dash 1.2s linear infinite"}}/>
-                    <polyline points={pts} fill="none" stroke={col}
+                    <polyline points={pts} fill="none" stroke={palette.success}
                       strokeWidth="14" opacity="0.08" strokeLinecap="round" strokeLinejoin="round"/>
                   </g>);
                 })}
@@ -1810,15 +1821,27 @@ export default function App() {
                         {isBlocked&&<title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>}
                       </circle>
                       {/* Show ID only on route or alert */}
-                      {(isOnRoute||isAlert||isBlocked)&&(
-                        <text x={pos.x} y={pos.y-r-3} textAnchor="middle"
-                          style={{fontSize:7,fontWeight:700,fill:dotColor,fontFamily:"Inter,sans-serif"}}>{id}</text>
-                      )}
+                      <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd?8:6.5,
+                          fontWeight:isOnRoute||isAlert||isBlocked?700:400,
+                          fill:isOnRoute||isAlert||isBlocked||isCrowd?dotColor:"#94A3B8",
+                          opacity:isOnRoute||isAlert||isBlocked||isCrowd?1:0.7,
+                          fontFamily:"Inter,sans-serif"}}>{id}</text>
                       {/* Hazard emoji */}
-                      {isHazard&&isAlert&&(()=>{
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🚨":"⚠";
-                        return<text x={pos.x} y={pos.y-r-12} textAnchor="middle"
-                          style={{fontSize:12,animation:"hazardBlink 1.4s ease-in-out infinite"}}>{icon}</text>;
+                      {(isAlert||isCrowd)&&(()=>{
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        return(<g>
+                          <circle cx={pos.x} cy={pos.y-r-18} r={12}
+                            fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
+                          <foreignObject x={pos.x-12} y={pos.y-r-30} width={24} height={24}>
+                            <div xmlns="http://www.w3.org/1999/xhtml"
+                              style={{fontSize:16,textAlign:"center",lineHeight:"24px",
+                                animation:"hazardBlink 1.4s ease-in-out infinite",
+                                fontFamily:"Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif"}}>
+                              {icon}
+                            </div>
+                          </foreignObject>
+                        </g>);
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
