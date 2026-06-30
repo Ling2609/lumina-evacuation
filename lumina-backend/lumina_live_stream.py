@@ -641,7 +641,7 @@ def _process_ai_cycle(cap, state):
 
     if _run_inference:
         if cur_mode == "DIORAMA":
-            results = model_diorama.track(frame, persist=True, conf=0.45,
+            results = model_diorama.track(frame, persist=True, conf=0.30,
                                           classes=[0], verbose=False)
         else:
             results = model_enterprise.track(frame, persist=True, conf=0.60,
