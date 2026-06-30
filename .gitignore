@@ -11,10 +11,12 @@ node_modules/
 dist/
 .vite/
 
-# Models — too large for GitHub (100MB limit)
-models/
+# Models — too large for GitHub (100MB limit), EXCEPT our trained fall detector
 *.pt
 *.rknn
+!**/models/fall_detector.pt
+**/models/*
+!**/models/fall_detector.pt
 
 # Sensitive
 *.env

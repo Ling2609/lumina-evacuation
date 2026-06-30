@@ -354,6 +354,22 @@ print("[INIT] Loading DUAL-ENGINE AI models...")
 model_diorama    = YOLO("yolov8n.pt")         # toy/diorama: bounding-box aspect ratio
 model_enterprise = YOLO("yolov8n-pose.pt")    # real humans: skeletal keypoints
 
+# Custom-trained fall-detection model — single class "Fall-Detected", fine-tuned
+# on the Roboflow fall-detection-ca3o8 dataset (10.8k images, elevated/CCTV
+# angles). Used as a FALLBACK ONLY: when model_diorama finds zero people in a
+# frame, this checks specifically for a fallen-person shape — covers the
+# steep-angle case where COCO's general "person" class loses the silhouette.
+# Path: place fall_detector.pt next to this script, or set FALL_MODEL_PATH env var.
+import os as _os
+_fall_model_path = _os.environ.get("FALL_MODEL_PATH", "models/fall_detector.pt")
+try:
+    model_fall_detector = YOLO(_fall_model_path)
+    print(f"[INIT] Custom fall-detection model loaded from {_fall_model_path}")
+except Exception as _e:
+    model_fall_detector = None
+    print(f"[INIT] WARNING: could not load fall-detection model ({_e}) — "
+          f"falling back to background-subtraction only")
+
 print("[INIT] Starting camera...")
 # CAMERA_INDEX: 0 = built-in webcam, 1+ = USB/external webcam
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
@@ -592,6 +608,80 @@ def _check_fall_enterprise(kpts, w: int, h: int) -> tuple:
         return False, "upright"
 
 
+# =============================================================================
+# FALLBACK: Background-subtraction blob detection
+#
+# Used ONLY when YOLO returns zero person detections in a frame. At steep
+# camera angles (e.g. 45° down on a toy diorama), a fallen figure can lose
+# enough of its silhouette that YOLO — trained on real human poses — simply
+# doesn't recognize it as "person" at any confidence threshold. This isn't
+# a tuning problem; the features needed for shape-based detection aren't
+# present in the frame at that angle/scale.
+#
+# Background subtraction sidesteps this entirely: it doesn't care what
+# shape the object makes, only that something non-background appeared in
+# the scene and is sitting roughly still — which is consistent with "a
+# person is down" rather than walking through. This is a classical CV
+# technique, not a neural model, and is deliberately simple/fast (<5ms)
+# so it can run every frame as a cheap fallback without hurting FPS.
+# =============================================================================
+_bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+    history=300, varThreshold=40, detectShadows=False
+)
+_MIN_BLOB_AREA       = 800    # px^2 — ignore tiny noise/specks
+_STATIONARY_RADIUS   = 25     # px — blob centroid must stay within this to count as "still"
+_STATIONARY_SECONDS  = 2.5    # how long a blob must persist before flagging as fallen
+
+def _check_fall_background_subtraction(frame, state) -> tuple:
+    """
+    Fallback fall signal when YOLO sees zero people in the frame.
+    Returns (is_fallen: bool, trigger: str, bbox: tuple|None)
+
+    `state` carries persistent tracking across calls:
+      state["bg_blob_centroid"]   — last seen centroid (x, y) or None
+      state["bg_blob_since"]      — timestamp the blob first appeared near
+                                     this position, or 0 if not tracking
+    """
+    fg_mask = _bg_subtractor.apply(frame, learningRate=0.003)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN,
+                                np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        state["bg_blob_centroid"] = None
+        state["bg_blob_since"]    = 0
+        return False, "no_blob", None
+
+    # Largest blob only — assume one figure of interest at a time for the demo
+    largest = max(contours, key=cv2.contourArea)
+    area    = cv2.contourArea(largest)
+    if area < _MIN_BLOB_AREA:
+        state["bg_blob_centroid"] = None
+        state["bg_blob_since"]    = 0
+        return False, "blob_too_small", None
+
+    x, y, w, h = cv2.boundingRect(largest)
+    cx, cy     = x + w // 2, y + h // 2
+    t_now      = time.time()
+
+    prev = state.get("bg_blob_centroid")
+    if prev is not None:
+        dist = math.hypot(cx - prev[0], cy - prev[1])
+        if dist > _STATIONARY_RADIUS:
+            # Blob moved too much — reset the "since" timer, still walking/shifting
+            state["bg_blob_since"] = t_now
+    else:
+        state["bg_blob_since"] = t_now
+
+    state["bg_blob_centroid"] = (cx, cy)
+    elapsed = t_now - state["bg_blob_since"]
+
+    if elapsed >= _STATIONARY_SECONDS:
+        return True, "bg_subtraction_stationary", (x, y, x + w, y + h)
+    return False, "bg_subtraction_pending", (x, y, x + w, y + h)
+
+
 # ── Shared frame buffer (AI worker writes, /video_feed reads) ──────────────
 # This decouples AI processing from the browser: YOLO inference, fall
 # detection, and DYN-A* routing run continuously in a background thread
@@ -691,6 +781,57 @@ def _process_ai_cycle(cap, state):
             if is_fallen:
                 cv2.putText(frame, f"FALL [{fall_trigger}]", (x1, y2 + 14),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 100, 255), 1)
+
+    # --- FALL-DETECTION MODEL: runs every cycle, independent of person_count ---
+    # Gating this behind "model_diorama found nobody" was a bug — a fallen
+    # figure lying near a standing person that IS detected normally would
+    # never trigger the check, since person_count would be >0. The trained
+    # fall model is cheap enough (tens of ms) to just run every inference
+    # pass and merge its results in regardless of what the main detector saw.
+    def _boxes_overlap(a, b, thresh=0.3):
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter == 0:
+            return False
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        return (inter / area_a) > thresh
+
+    if model_fall_detector is not None:
+        fd_results = model_fall_detector.predict(frame, conf=0.40, verbose=False)
+        for fd_box in fd_results[0].boxes:
+            fx1, fy1, fx2, fy2 = map(int, fd_box.xyxy[0])
+            fd_conf = float(fd_box.conf[0])
+            new_box = (fx1, fy1, fx2, fy2)
+            # Skip if this overlaps a box already flagged this frame (avoid
+            # double-marking the same fallen figure if model_diorama's own
+            # bbox/keypoint check already caught it).
+            if any(_boxes_overlap(new_box, existing) for existing in fallen_boxes):
+                continue
+            fallen_boxes.append(new_box)
+            current_frame_has_fall = True
+            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (0, 0, 255), 2)
+            cv2.putText(frame, f"FALL [fall_model {fd_conf:.2f}]", (fx1, fy2 + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 100, 255), 1)
+
+    # --- LAST-RESORT FALLBACK: background subtraction ---
+    # Only when model_diorama found literally nobody this frame AND the
+    # trained fall model also found nothing — covers the case where even
+    # the fall model's COCO-adjacent training doesn't generalize to this
+    # specific shot. Blob detection assumes one isolated change region, so
+    # it's not meaningful to run in busy mixed scenes — zero-detection only.
+    if person_count == 0 and not current_frame_has_fall:
+        bg_fallen, bg_trigger, bg_bbox = _check_fall_background_subtraction(frame, state)
+        if bg_fallen and bg_bbox is not None:
+            bx1, by1, bx2, by2 = bg_bbox
+            fallen_boxes.append((bx1, by1, bx2, by2))
+            current_frame_has_fall = True
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
+            cv2.putText(frame, f"FALL [{bg_trigger}]", (bx1, by2 + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 100, 255), 1)
 
     # --- FEED INTO ROUTING ENGINE ---
     # Locked: update_crowd/get_crowd_velocity mutate live_node_status,
@@ -865,6 +1006,7 @@ def _ai_worker():
     state = {
         "fall_timer_start": 0, "recovery_timer_start": 0, "route_cooldown": 0,
         "prev_time": time.time(), "frame_counter": 0, "last_results": None,
+        "bg_blob_centroid": None, "bg_blob_since": 0,
     }
     while not _ai_thread_stop.is_set():
         try:
