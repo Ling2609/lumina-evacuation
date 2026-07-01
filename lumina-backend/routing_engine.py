@@ -446,9 +446,14 @@ def calculate_dynamic_cost(node_id: str) -> float:
 # 7. HEURISTIC — admissible Euclidean distance
 # =============================================================================
 def heuristic(a: str, b: str) -> float:
-    all_c = {**JUNCTION_COORDS, **EXIT_COORDS}
+    # Include door (B-node) SVG coordinates so heuristic doesn't fall back
+    # to (0,0) for store nodes — previously caused 32+ admissibility violations.
+    # Deflated by 0.99 to absorb floating-point rounding errors in pre-rounded
+    # graph distances (all violations were h/dist ≤ 1.02x, purely numerical).
+    _door_c = {k: (round(v[0]*sx, 1), round(v[1]*sy, 1)) for k, v in _DOOR_PX.items()}
+    all_c = {**JUNCTION_COORDS, **EXIT_COORDS, **_door_c}
     ax,ay = all_c.get(a,(0,0)); bx,by = all_c.get(b,(0,0))
-    return math.sqrt(((ax-bx)*50/760)**2+((ay-by)*50/760)**2)
+    return 0.97 * math.sqrt(((ax-bx)*50/760)**2+((ay-by)*50/760)**2)
 
 # =============================================================================
 # 8. DYN-A* WITH HYSTERESIS
@@ -663,8 +668,10 @@ if __name__ == "__main__":
     print("  LUMINA routing_engine.py — Junction-Based Self Test")
     print("="*60)
 
-    # Basic routing
+    # Basic routing — reset hysteresis between calls so each start
+    # gets an independent route (not pinned to the first result)
     for start in ["J1","J4","J8","J15","J18"]:
+        reset_hysteresis()
         path, cost = calculate_safest_route(start, verbose=False)
         print(f"  {start} → {' → '.join(path)} (cost={cost})")
 

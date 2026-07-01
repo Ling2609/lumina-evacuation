@@ -184,7 +184,10 @@ def run_thermal_demo():
     _separator("-")
     print("  SCENARIO A — Normal ambient temperature (HVAC baseline)")
     _separator("-")
-    clf_a = ThermalClassifier("N-011")
+    clf_a = ThermalClassifier("J16")
+    # Pre-seed so warmup is complete — classifier can show NORMAL state properly.
+    for _ in range(30):
+        clf_a.classify(_normal_ambient(0))
     for tick in range(20):
         temp   = _normal_ambient(tick)
         result = clf_a.classify(temp)
@@ -200,7 +203,12 @@ def run_thermal_demo():
     _separator("-")
     print("  SCENARIO B — Gradual smouldering fire (onset at tick 15)")
     _separator("-")
-    clf_b = ThermalClassifier("N-042")
+    clf_b = ThermalClassifier("J7")
+    # Pre-seed 30 ambient readings so calibration is complete before the demo.
+    # In production, a node runs for minutes before any incident — warmup
+    # would already be done. Seeding here reflects that real-world condition.
+    for _ in range(30):
+        clf_b.classify(_normal_ambient(0))
     last_state = "NORMAL"
     for tick in range(35):
         temp   = _gradual_fire(tick, onset=15)
@@ -223,9 +231,12 @@ def run_thermal_demo():
     print("  SCENARIO C — Flash fire (onset at tick 10, rapid spike)")
     print("  This tests the rate-of-change detector, not just Z-score.")
     _separator("-")
-    clf_c = ThermalClassifier("N-067")
+    clf_c = ThermalClassifier("J8")
+    # Pre-seed 30 ambient readings to complete warmup before the demo.
+    for _ in range(30):
+        clf_c.classify(_normal_ambient(0))
     last_state = "NORMAL"
-    for tick in range(20):
+    for tick in range(25):   # extended to 25 so full spike is visible
         temp   = _flash_fire(tick, onset=10)
         result = clf_c.classify(temp)
         marker = " ← STATE CHANGE" if result["state"] != last_state else ""
@@ -247,19 +258,19 @@ def run_thermal_demo():
 
   # One classifier per node, created at startup
   thermal_nodes = {
-      "N-011": ThermalClassifier("N-011"),
-      "N-042": ThermalClassifier("N-042"),
+      "J16": ThermalClassifier("J16"),
+      "J7":  ThermalClassifier("J7"),
   }
 
   # Inside your sensor read loop (or MQTT callback):
-  result = thermal_nodes["N-042"].classify(sensor_reading_celsius)
+  result = thermal_nodes["J7"].classify(sensor_reading_celsius)
 
   if result["state"] == "ALERT":
       # Trigger DYN-A* reroute immediately
       with state_lock:
-          live_node_status["N-042"]["status"] = "alert"
-          live_node_status["N-042"]["hazard"] = "thermal"
-      calculate_safest_route("N-011", "N-089")
+          live_node_status["J7"]["status"] = "alert"
+          live_node_status["J7"]["hazard"] = "thermal"
+      calculate_safest_route("J16")
     """)
     _separator()
 

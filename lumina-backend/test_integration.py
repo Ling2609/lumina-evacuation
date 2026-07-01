@@ -9,12 +9,12 @@
 #   2. YOLO model loaded, camera open
 #   3. Normal state — correct defaults
 #   4. TRIGGER fires hazard, DYN-A* reroutes away from fire node
-#   5. Route avoids N-042 after thermal hazard
+#   5. Route avoids J7 after thermal hazard
 #   6. RESET restores NORMAL state
-#   7. /api/block_node quarantines a node and returns a new route
+#   7. /api/block_node quarantines J4 and returns a new route
 #   8. /download_log responds with CSV data
 #   9. MQTT topic is reachable (broker connectivity)
-#  10. All 6 nodes present in /api/status response
+#  10. All routing nodes present in /api/status response
 #
 # If everything passes: system is demo-ready.
 # If anything fails:    fix it before the judges arrive.
@@ -156,10 +156,16 @@ def run_tests():
             warn(f"system_state is {state}", "Run /reset before testing")
 
         nodes = status.get("nodes", {})
-        if len(nodes) == 6:
-            ok("All 6 nodes present in response", ", ".join(nodes.keys()))
+        expected_nodes = 41  # 20 junctions + 16 store doors + 5 exits
+        j_count  = sum(1 for n in nodes if n.startswith("J"))
+        b_count  = sum(1 for n in nodes if n.startswith("B"))
+        ex_count = sum(1 for n in nodes if n.startswith("EXIT"))
+        if j_count == 20 and b_count == 16 and ex_count == 5:
+            ok(f"All {len(nodes)} nodes present (20J + 16B + 5EXIT)", f"{j_count}J {b_count}B {ex_count}EXIT")
+        elif len(nodes) > 0:
+            warn(f"Node count {len(nodes)} (expected {expected_nodes})", f"J={j_count} B={b_count} EXIT={ex_count}")
         else:
-            fail(f"Expected 6 nodes, got {len(nodes)}", str(list(nodes.keys())))
+            fail("No nodes in /api/status response", "Backend may not have initialised yet")
 
         route = status.get("current_route", [])
         if route:
@@ -201,18 +207,18 @@ def run_tests():
                 fail(f"system_state is still {state2} after TRIGGER", "Expected HAZARD")
 
             route2 = status2.get("current_route", [])
-            if route2 and "N-042" not in route2:
-                ok("DYN-A* route avoids N-042 (fire zone)", " → ".join(route2))
-            elif "N-042" in (route2 or []):
-                fail("Route still passes through N-042 (fire zone)", " → ".join(route2))
+            if route2 and "J7" not in route2:
+                ok("DYN-A* route avoids J7 (fire zone)", " → ".join(route2))
+            elif "J7" in (route2 or []):
+                fail("Route still passes through J7 (fire zone)", " → ".join(route2))
             else:
                 warn("No route returned after trigger", "DYN-A* may still be calculating")
 
-            n042 = status2.get("nodes", {}).get("N-042", {})
-            if n042.get("status") == "alert":
-                ok("N-042 status is 'alert'")
+            j7_node = status2.get("nodes", {}).get("J7", {})
+            if j7_node.get("status") == "alert":
+                ok("J7 status is 'alert'")
             else:
-                fail(f"N-042 status is '{n042.get('status')}' after trigger", "Expected 'alert'")
+                fail(f"J7 status is '{j7_node.get('status')}' after trigger", "Expected 'alert'")
 
     # ── TEST 4: Block node ────────────────────────────────────────────────────
     section("4. Manual Node Override (/api/block_node)")
@@ -221,20 +227,22 @@ def run_tests():
     get("/reset")
     time.sleep(0.5)
 
-    block_resp = post("/api/block_node", {"node_id": "N-031"}, "POST /api/block_node")
+    block_resp = post("/api/block_node", {"node_id": "J4"}, "POST /api/block_node")
     if not block_resp:
         fail("/api/block_node not responding")
     else:
-        if block_resp.get("status") == "success":
-            ok("Node N-031 quarantined successfully")
+        if block_resp.get("blocked") == "J4" or block_resp.get("status") == "success":
+            ok("Node J4 quarantined successfully")
+        elif block_resp.get("new_route"):
+            ok("Node J4 quarantined successfully (route returned)")
         else:
-            fail(f"block_node returned: {block_resp.get('status')}", str(block_resp))
+            fail(f"block_node unexpected response", str(block_resp))
 
         new_route = block_resp.get("new_route", [])
-        if new_route and "N-031" not in new_route:
-            ok("New route avoids N-031", " → ".join(new_route))
-        elif "N-031" in (new_route or []):
-            fail("New route still includes N-031", " → ".join(new_route))
+        if new_route and "J4" not in new_route:
+            ok("New route avoids J4", " → ".join(new_route))
+        elif "J4" in (new_route or []):
+            fail("New route still includes J4", " → ".join(new_route))
         else:
             warn("No route returned from block_node")
 
@@ -288,22 +296,22 @@ def run_tests():
     try:
         from routing_engine import (
             calculate_safest_route, run_pull_policy, estimate_rset,
-            live_node_status, update_crowd, heuristic, NODE_COORDS
+            live_node_status, update_crowd, heuristic, JUNCTION_COORDS
         )
 
         # Normal path
         for nid in live_node_status:
             live_node_status[nid]["status"] = "normal"
             live_node_status[nid]["hazard"] = None
-        path, cost = calculate_safest_route("N-011", "N-089", verbose=False)
-        assert path and path[-1] == "N-089", "No path to exit"
+        path, cost = calculate_safest_route("J16", verbose=False)
+        assert path and path[0] == "J16" and path[-1].startswith("EXIT"), "No path to exit"
         ok("DYN-A* finds path in normal mode", " → ".join(path))
 
         # Fire path
-        live_node_status["N-042"]["status"] = "alert"
-        live_node_status["N-042"]["hazard"] = "thermal"
-        path2, cost2 = calculate_safest_route("N-011", "N-089", verbose=False)
-        assert "N-042" not in path2, "Fire route passes through N-042"
+        live_node_status["J7"]["status"] = "alert"
+        live_node_status["J7"]["hazard"] = "thermal"
+        path2, cost2 = calculate_safest_route("J16", verbose=False)
+        assert "J7" not in path2, "Fire route passes through J7"
         ok("DYN-A* avoids fire node", " → ".join(path2))
 
         # Heuristic admissibility

@@ -242,7 +242,7 @@ def run_fft_demo():
     _separator("-")
     print("  TEST A — Pure 520 Hz alarm signal (should confirm in 3 frames)")
     _separator("-")
-    clf_a = FFTAlarmClassifier("N-011")
+    clf_a = FFTAlarmClassifier("J16")
     alarm_signal = _generate_alarm_tone(2.0, snr_db=25)
     _run_frames(clf_a, alarm_signal, "ALARM", n_frames=8)
     print(f"\n  Final state: {clf_a.state}")
@@ -257,7 +257,7 @@ def run_fft_demo():
     print("  TEST B — HVAC hum only (no alarm) — must stay SILENT")
     print("  This validates the 100% false-positive rejection from the proposal")
     _separator("-")
-    clf_b = FFTAlarmClassifier("N-031")
+    clf_b = FFTAlarmClassifier("J7")
     hvac_signal = _generate_ambient_noise(2.0, noise_type="HVAC hum")
     _run_frames(clf_b, hvac_signal, "HVAC", n_frames=8)
     print(f"\n  Final state: {clf_b.state}  (expected: SILENT)")
@@ -273,7 +273,7 @@ def run_fft_demo():
     print("  TEST C — 520 Hz alarm mixed with human speech")
     print("  Simulates a crowded corridor with people shouting")
     _separator("-")
-    clf_c = FFTAlarmClassifier("N-042")
+    clf_c = FFTAlarmClassifier("J4")
     mixed_on  = _generate_mixed(2.0, alarm_on=True,  noise_type="Human speech")
     mixed_off = _generate_mixed(2.0, alarm_on=False, noise_type="Human speech")
 
@@ -298,7 +298,7 @@ def run_fft_demo():
     _separator("-")
     print("  TEST D — Latency benchmark (target: <500 ms per frame)")
     _separator("-")
-    clf_d  = FFTAlarmClassifier("N-067")
+    clf_d  = FFTAlarmClassifier("J8")
     signal = _generate_alarm_tone(5.0)
     lats   = []
     for i in range(50):
@@ -319,13 +319,13 @@ def run_fft_demo():
     print("""
   # Option 1: Use simulated audio (no microphone hardware needed)
   from fft_classifier import FFTAlarmClassifier, _generate_alarm_tone
-  clf = FFTAlarmClassifier("N-011")
+  clf = FFTAlarmClassifier("J16")
   result = clf.classify_frame(audio_frame_np_array)
 
   # Option 2: Use live microphone (requires: pip install sounddevice)
   import sounddevice as sd
   from fft_classifier import FFTAlarmClassifier, FRAME_SIZE, SAMPLE_RATE
-  clf = FFTAlarmClassifier("N-011")
+  clf = FFTAlarmClassifier("J16")
 
   def audio_callback(indata, frames, time_info, status):
       result = clf.classify_frame(indata[:, 0])

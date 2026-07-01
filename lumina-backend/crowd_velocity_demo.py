@@ -67,12 +67,12 @@ def pause(seconds=0.6):
 # ── Reset all nodes to clean state ───────────────────────────────────────────
 def reset_all():
     defaults = {
-        "N-011": ("normal", None,      20),
-        "N-031": ("normal", None,      15),
-        "N-042": ("normal", None,      25),
-        "N-043": ("normal", None,      20),
-        "N-067": ("normal", None,      10),
-        "N-089": ("normal", None,       8),
+        "J16":  ("normal", None,      20),
+        "J7":   ("normal", None,      15),
+        "B9":   ("normal", None,      25),
+        "J8":   ("normal", None,      20),
+        "J4":   ("normal", None,      10),
+        "EXIT-1": ("normal", None,      8),
     }
     for nid, (status, hazard, crowd) in defaults.items():
         live_node_status[nid]["status"]      = status
@@ -131,7 +131,7 @@ def print_route(path, cost, signals, rset_data):
 def demo_proactive_rerouting():
     header("DEMO 1 — PROACTIVE CROWD REROUTING (The Core USP)")
     print(f"""
-  {DIM}Scenario: Event ends at Retail A (N-042). Crowd flows into Corridor B (N-043).
+  {DIM}Scenario: Event ends at Store B9. Crowd flows into Corridor B (J8).
   The corridor fills gradually over 8 steps (20 → 90 pax).
 
   A static exit sign always points the same way.
@@ -144,15 +144,15 @@ def demo_proactive_rerouting():
     previous_route = None
 
     for step_num, crowd in enumerate(crowd_steps, 1):
-        step(f"Step {step_num}/8 — N-043 crowd → {crowd} pax")
-        update_crowd("N-043", crowd)
-        vel = get_crowd_velocity("N-043")
+        step(f"Step {step_num}/8 — J8 crowd → {crowd} pax")
+        update_crowd("J8", crowd)
+        vel = get_crowd_velocity("J8")
 
-        path, cost = calculate_safest_route("N-011", "N-089", verbose=False)
+        path, cost = calculate_safest_route("J16", verbose=False)
         signals    = run_pull_policy(path)
         rset_data  = estimate_rset(path)
 
-        print_node_table(highlight="N-043")
+        print_node_table(highlight="J8")
 
         if previous_route and path != previous_route:
             alert(f"PREDICTIVE REROUTE TRIGGERED at {crowd} pax "
@@ -174,13 +174,13 @@ def demo_proactive_rerouting():
 
 # =============================================================================
 # DEMO 2: FLASH FIRE — EMERGENCY REROUTE IN <500ms
-# Fire breaks out at Retail A (N-042). System reroutes instantly.
+# Fire breaks out at Retail A (J7). System reroutes instantly.
 # Proves the sub-500ms latency claim from Section 4.1 of the proposal.
 # =============================================================================
 def demo_flash_fire():
     header("DEMO 2 — FLASH FIRE + SUB-500ms REROUTE")
     print(f"""
-  {DIM}Scenario: Normal operation. Fire breaks out suddenly at Retail A (N-042).
+  {DIM}Scenario: Normal operation. Fire breaks out suddenly at Store B9.
   System must detect, classify, and reroute before the first person
   walks into the hazard zone.
 
@@ -191,23 +191,23 @@ def demo_flash_fire():
     reset_all()
 
     step("T+0.0s — Normal operation")
-    path_normal, cost_normal = calculate_safest_route("N-011", "N-089", verbose=False)
+    path_normal, cost_normal = calculate_safest_route("J16", verbose=False)
     print_node_table()
     result("Normal route", " → ".join(path_normal))
     pause(0.8)
 
-    step("T+0.0s — Thermal anomaly detected at N-042")
+    step("T+0.0s — Thermal anomaly detected at B9")
     print(f"  {DIM}Edge AI processing (<500ms)...{RESET}")
     pause(0.4)
 
     # Trigger fire — measure ONLY calculate_safest_route (the 500ms claim)
     # run_pull_policy and estimate_rset are outside the measurement window
-    live_node_status["N-042"]["status"] = "alert"
-    live_node_status["N-042"]["hazard"] = "thermal"
-    update_crowd("N-042", 92)
+    live_node_status["B9"]["status"] = "alert"
+    live_node_status["B9"]["hazard"] = "thermal"
+    update_crowd("B9", 92)
 
     t_start = time.perf_counter()
-    path_fire, cost_fire = calculate_safest_route("N-011", "N-089", verbose=False)
+    path_fire, cost_fire = calculate_safest_route("J16", verbose=False)
     elapsed = (time.perf_counter() - t_start) * 1000   # this is the 500ms claim
 
     signals   = run_pull_policy(path_fire)   # outside measurement
@@ -218,19 +218,19 @@ def demo_flash_fire():
     print(f"  {BOLD}Actuation latency: {elapsed:.3f} ms{RESET}  "
           f"{target_color}{'(TARGET MET ✓)' if elapsed < 500 else '(EXCEEDED TARGET)'}{RESET}")
 
-    print_node_table(highlight="N-042")
+    print_node_table(highlight="B9")
     print_route(path_fire, cost_fire, signals, rset_data)
 
-    avoids_fire = "N-042" not in path_fire
+    avoids_fire = "B9" not in path_fire
     if avoids_fire:
-        ok(f"Route avoids N-042 (thermal hazard) ✓")
+        ok(f"Route avoids B9 (thermal hazard) ✓")
     else:
         alert("Route still passes through fire zone — check penalties")
 
     print(f"\n  {BOLD}{GREEN}KEY INSIGHT:{RESET}")
     print(f"  Normal route: {' → '.join(path_normal)}")
     print(f"  Fire route:   {' → '.join(path_fire)}")
-    print(f"  DYN-A* added a 5000-point thermal penalty to N-042,")
+    print(f"  DYN-A* added a 5000-point thermal penalty to B9,")
     print(f"  making any path through it mathematically non-optimal.\n")
 
 
@@ -242,8 +242,8 @@ def demo_flash_fire():
 def demo_pull_policy():
     header("DEMO 3 — IoT PULL POLICY (Stampede Prevention)")
     print(f"""
-  {DIM}Scenario: Fire at N-042. Crowd surges toward the only remaining
-  corridor (N-031 / N-067). Without intervention, people pile up
+  {DIM}Scenario: Fire at B9. Crowd surges toward the only remaining
+  corridor (J7 / J4). Without intervention, people pile up
   and a fatal crush occurs (Fruin Level of Service F).
 
   The Pull Policy detects downstream congestion and projects a
@@ -254,23 +254,23 @@ def demo_pull_policy():
     reset_all()
 
     # Set up post-fire scenario with congested corridor
-    live_node_status["N-042"]["status"] = "alert"
-    live_node_status["N-042"]["hazard"] = "thermal"
-    update_crowd("N-043", 88)   # crowd spills into corridor B
+    live_node_status["B9"]["status"] = "alert"
+    live_node_status["B9"]["hazard"] = "thermal"
+    update_crowd("J8", 88)   # crowd spills into east corridor
 
     phases = [
-        ("Post-fire: crowd surging toward N-031/N-067",
-         {"N-031": 30, "N-067": 20}, False),
-        ("Corridor filling — N-031 moderate, N-067 clear",
-         {"N-031": 55, "N-067": 25}, False),
-        ("BOTTLENECK FORMING — N-031 dense, N-067 filling",
-         {"N-031": 72, "N-067": 45}, True),
+        ("Post-fire: crowd surging toward J7/J4",
+         {"J7": 30, "J4": 20}, False),
+        ("Corridor filling — J7 moderate, J4 clear",
+         {"J7": 55, "J4": 25}, False),
+        ("BOTTLENECK FORMING — J7 dense, J4 filling",
+         {"J7": 72, "J4": 45}, True),
         ("PEAK CONGESTION — Pull Policy holding upstream",
-         {"N-031": 88, "N-067": 65}, True),
-        ("Crowd thinning — N-067 clearing",
-         {"N-031": 60, "N-067": 30}, False),
+         {"J7": 88, "J4": 65}, True),
+        ("Crowd thinning — J4 clearing",
+         {"J7": 60, "J4": 30}, False),
         ("CORRIDOR CLEAR — Pull Policy releases GREEN",
-         {"N-031": 30, "N-067": 12}, False),
+         {"J7": 30, "J4": 12}, False),
     ]
 
     for phase_num, (desc, crowds, expect_red) in enumerate(phases, 1):
@@ -278,7 +278,7 @@ def demo_pull_policy():
         for nid, crowd in crowds.items():
             update_crowd(nid, crowd)
 
-        path, cost = calculate_safest_route("N-011", "N-089", verbose=False)
+        path, cost = calculate_safest_route("J16", verbose=False)
         signals    = run_pull_policy(path)
         rset_data  = estimate_rset(path)
 
@@ -286,7 +286,7 @@ def demo_pull_policy():
         print_route(path, cost, signals, rset_data)
 
         # Check if Pull Policy correctly applied
-        lobby_signal = signals.get("N-011", {}).get("signal", "GREEN")
+        lobby_signal = signals.get("J16", {}).get("signal", "GREEN")
         if expect_red and lobby_signal == "RED":
             alert("🔴 RED STOP LINE projected at Lobby — people held upstream")
         elif not expect_red and lobby_signal == "GREEN":
@@ -295,7 +295,7 @@ def demo_pull_policy():
         pause(0.9)
 
     print(f"\n  {BOLD}{GREEN}KEY INSIGHT:{RESET}")
-    print(f"  The Pull Policy held people at N-011 (Lobby) when N-031 was congested.")
+    print(f"  The Pull Policy held people at J16 (Central Junction) when J7 was congested.")
     print(f"  This prevents the fatal crush that killed 97 people at Roskilde 2000.")
     print(f"  A static exit sign would have kept pushing people into the bottleneck.\n")
 
