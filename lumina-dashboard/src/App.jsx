@@ -35,7 +35,7 @@ const DOOR_POS = {
 
 // Store door → nearest corridor junction (matches routing_engine.py DOOR_TO_JUNCTION)
 const DOOR_TO_J = {
-  B1:"J2", B2:"J3", B3:"J6", B4:"J4", B5:"J7", B6:"J10",
+  B1:"J2", B2:"J3", B3:"J4", B4:"J4", B5:"J7", B6:"J10",
   B7:"J9", B8:"J11", B9:"J16", B10:"J16", B11:"J20", B12:"J18",
   B13:"J19", B14:"J14", B15:"J12", B16:"J13",
 };
@@ -59,7 +59,7 @@ const LUMINA_NODE_DEFS = {
 // Junction to Lumina node mapping
 const J_TO_NODE = {
   J1:"NODE-A",J2:"NODE-A",J3:"NODE-A",
-  J4:"NODE-B",J5:"NODE-B",J6:"NODE-B",J7:"NODE-B",
+  J4:"NODE-B",J7:"NODE-B",
   J8:"NODE-C",J9:"NODE-C",J10:"NODE-C",J11:"NODE-C",
   J15:"NODE-D",J16:"NODE-D",
   J18:"NODE-E",J19:"NODE-E",J20:"NODE-E",
@@ -73,7 +73,7 @@ const ROOM_POLYGONS = [
   {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
   {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
   {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
-  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J6"},
+  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J4"},
   {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
   {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
   {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
@@ -87,9 +87,17 @@ const ROOM_POLYGONS = [
   {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
 ];
 
+// Interior walls that aren't part of a room polygon outline — drawn as extra
+// segments across corridor gaps. Currently: the physical wall added between
+// Public Recipe and Mamadini at J16 (blocks the J16↔J15 walkway at the bottom
+// of the gap; J16 itself stays open from the top, connecting to J4).
+const WALL_SEGMENTS = [
+  {x1:325.8, y1:432.0, x2:396.6, y2:432.0},
+];
+
 const JUNCTIONS = {
   J1:{x:120.1,y:331.7}, J2:{x:120.1,y:264.0}, J3:{x:205.7,y:264.0},
-  J4:{x:380.6,y:264.0}, J5:{x:380.6,y:103.4}, J6:{x:282.1,y:103.4},
+  J4:{x:380.6,y:264.0},
   J7:{x:455.8,y:264.0}, J8:{x:582.0,y:264.0}, J9:{x:582.0,y:167.4},
   J10:{x:582.0,y:86.8}, J11:{x:582.0,y:357.0}, J12:{x:582.0,y:469.0},
   J13:{x:700.9,y:469.0}, J14:{x:474.8,y:469.0}, J15:{x:380.6,y:469.0},
@@ -98,10 +106,8 @@ const JUNCTIONS = {
 };
 const EXIT_POS = {
   "EXIT-1":{x:15.4, y:331.7, label:"Exit 1"},
-  "EXIT-2":{x:282.1, y:12.3, label:"Exit 2"},
   "EXIT-3":{x:582.0, y:12.3, label:"Exit 3"},
   "EXIT-4":{x:751.4, y:469.0, label:"Exit 4"},
-  "EXIT-5":{x:205.7, y:675.8, label:"Exit 5"},
 };
 const STORE_DOTS = [
   {x:120.2,y:219.3,label:"Siew Later",    zone:"yellow"},
@@ -135,15 +141,14 @@ const SIM_CURSORS = {
 const CORRIDOR_EDGES = [
   ["J1","EXIT-1"],["J1","J2"],["J2","J3"],
   ["J3","J4"],["J3","J20"],
-  ["J4","J5"],["J4","J7"],["J4","J16"],
-  ["J5","J6"],["J6","EXIT-2"],
+  ["J4","J7"],["J4","J16"],
   ["J7","J8"],["J8","J9"],["J8","J11"],
   ["J9","J10"],["J10","EXIT-3"],
   ["J11","J12"],["J12","J13"],["J12","J14"],
   ["J13","EXIT-4"],["J14","J15"],
-  ["J15","J16"],["J15","J17"],
-  ["J16","J4"],
-  ["J17","J18"],["J18","EXIT-5"],["J18","J19"],
+  ["J15","J17"],
+  // NOTE: J15-J16 edge removed — physical wall added between them
+  ["J17","J18"],["J18","J19"],
   ["J19","J20"],["J20","J3"],
 ];
 
@@ -291,7 +296,7 @@ export default function App() {
   const [isHazard,      setIsHazard]      = useState(false);
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
-  const [activeRoute,   setActiveRoute]   = useState(["J19","J18","EXIT-5"]);
+  const [activeRoute,   setActiveRoute]   = useState(["J19","J20","J3","J2","J1","EXIT-1"]);
   const [perNodeRoutes, setPerNodeRoutes] = useState([]); // per-hazard-node evacuation paths
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);   // CAM-01 live YOLO track count (lobby only)
@@ -599,7 +604,7 @@ export default function App() {
     // Then clear all frontend state atomically
     setManualOverride(false);
     setManualBlockedNodes([]);
-    setActiveRoute(["J19","J18","EXIT-5"]);
+    setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
     setIsHazard(false);
     setPasCountdown(178);
     setFftConfirmed(false);
@@ -681,7 +686,7 @@ export default function App() {
     // If no more hazards, clear hazard state
     if(perNodeRoutes.length<=1){
       setIsHazard(false);
-      setActiveRoute(["J19","J18","EXIT-5"]);
+      setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
     }
   };
 
@@ -1029,6 +1034,12 @@ export default function App() {
                   );
                 })}
 
+                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider at J16) ── */}
+                {WALL_SEGMENTS.map((w,i)=>(
+                  <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
+                    stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
+                ))}
+
                 {/* Customer Service — open area, 3 walls only (per corrected coords) */}
                 <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
                 <line x1={221.7} y1={432.0} x2={221.7} y2={483.1} stroke="#94A3B8" strokeWidth="1.5"/>
@@ -1086,7 +1097,7 @@ export default function App() {
                   const isOnRoute=activeRoute.includes(id);
                   const bw=36, bh=14;
                   const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
-                  const by=id==="EXIT-2"||id==="EXIT-3"?pos.y-bh-8:id==="EXIT-5"?pos.y+10:pos.y-bh/2;
+                  const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
@@ -1393,8 +1404,8 @@ export default function App() {
                   </div>
                   <div style={{maxHeight:130,overflowY:"auto",paddingRight:2}}>
                   {(quickExitRoutes.length ? quickExitRoutes : [
-                    {exit:"EXIT-1",safe:true},{exit:"EXIT-2",safe:true},
-                    {exit:"EXIT-3",safe:true},{exit:"EXIT-4",safe:true},{exit:"EXIT-5",safe:true},
+                    {exit:"EXIT-1",safe:true},
+                    {exit:"EXIT-3",safe:true},{exit:"EXIT-4",safe:true},
                   ]).map((rt,rank)=>{
                     const exitId    = rt.exit;
                     const exitLabel = EXIT_POS[exitId]?.label || exitId;
@@ -1689,6 +1700,12 @@ export default function App() {
                   );
                 })}
 
+                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider at J16) ── */}
+                {WALL_SEGMENTS.map((w,i)=>(
+                  <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
+                    stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
+                ))}
+
                 {/* Customer Service — open area, 3 walls only (per corrected coords) */}
                 <rect x={221.7} y={432.0} width={104.1} height={135.4} fill="#FFEDD5" stroke="none"/>
                 <line x1={221.7} y1={432.0} x2={221.7} y2={483.1} stroke="#94A3B8" strokeWidth="1.5"/>
@@ -1746,7 +1763,7 @@ export default function App() {
                   const isOnRoute=activeRoute.includes(id);
                   const bw=36, bh=14;
                   const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
-                  const by=id==="EXIT-2"||id==="EXIT-3"?pos.y-bh-8:id==="EXIT-5"?pos.y+10:pos.y-bh/2;
+                  const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}

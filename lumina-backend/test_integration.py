@@ -156,7 +156,7 @@ def run_tests():
             warn(f"system_state is {state}", "Run /reset before testing")
 
         nodes = status.get("nodes", {})
-        expected_nodes = 41  # 20 junctions + 16 store doors + 5 exits
+        expected_nodes = 37  # 18 junctions + 16 store doors + 3 exits
         j_count  = sum(1 for n in nodes if n.startswith("J"))
         b_count  = sum(1 for n in nodes if n.startswith("B"))
         ex_count = sum(1 for n in nodes if n.startswith("EXIT"))
@@ -227,24 +227,48 @@ def run_tests():
     get("/reset")
     time.sleep(0.5)
 
-    block_resp = post("/api/block_node", {"node_id": "J4"}, "POST /api/block_node")
+    # J12 has real redundancy (J11/J13/J14 all connect to it) — use it to verify
+    # DYN-A* actually reroutes around a blocked node when an alternate exists.
+    block_resp = post("/api/block_node", {"node_id": "J12"}, "POST /api/block_node")
     if not block_resp:
         fail("/api/block_node not responding")
     else:
-        if block_resp.get("blocked") == "J4" or block_resp.get("status") == "success":
-            ok("Node J4 quarantined successfully")
+        if block_resp.get("blocked") == "J12" or block_resp.get("status") == "success":
+            ok("Node J12 quarantined successfully")
         elif block_resp.get("new_route"):
-            ok("Node J4 quarantined successfully (route returned)")
+            ok("Node J12 quarantined successfully (route returned)")
         else:
             fail(f"block_node unexpected response", str(block_resp))
 
         new_route = block_resp.get("new_route", [])
-        if new_route and "J4" not in new_route:
-            ok("New route avoids J4", " → ".join(new_route))
-        elif "J4" in (new_route or []):
-            fail("New route still includes J4", " → ".join(new_route))
+        if new_route and "J12" not in new_route:
+            ok("New route avoids J12", " → ".join(new_route))
+        elif "J12" in (new_route or []):
+            fail("New route still includes J12", " → ".join(new_route))
         else:
             warn("No route returned from block_node")
+
+    get("/reset")
+    time.sleep(0.5)
+
+    # J4 is a KNOWN single point of failure for J16/B9/B10 (Mamadini, Public
+    # Recipe) — the J15-J16 corridor was walled off per the physical floor
+    # plan update, leaving J4 as the only way out of that cluster. Blocking
+    # J4 is EXPECTED to still return a route through J4 (quarantine-penalized,
+    # not blocked outright) since no alternate path exists. This is a
+    # documented design tradeoff, not a bug — see routing_engine.py comments
+    # on the J15-J16 edge removal.
+    block_resp = post("/api/block_node", {"node_id": "J4"}, "POST /api/block_node")
+    if not block_resp:
+        fail("/api/block_node not responding")
+    else:
+        new_route = block_resp.get("new_route", [])
+        if new_route and "J4" in new_route:
+            ok("J4 block: route still passes through J4 (expected — single point of failure for J16/B9/B10, wall between J16-J15 is intentional)")
+        elif new_route and "J4" not in new_route:
+            warn("J4 block: route avoided J4 — unexpected given current topology, verify J15-J16 wall is still in place")
+        else:
+            warn("No route returned from block_node (J4)")
 
     # ── TEST 5: RESET ─────────────────────────────────────────────────────────
     section("5. System Reset")
