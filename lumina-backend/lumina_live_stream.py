@@ -848,6 +848,11 @@ def _process_ai_cycle(cap, state):
         crowd_velocity_lobby = round(vel, 3)
 
     # --- STOCHASTIC SENSOR MODEL — secondary nodes ---
+    # Skip any node that's currently a sim-triggered hazard — same protection
+    # J16 already has above. Without this, the drift values here (all below
+    # TIER1_CROWD) would force-clear a crowd sim trigger on J4/J7/J8/J12/J18
+    # within ~2 seconds of it firing — the icon/route would blink once then
+    # vanish, even though J16-triggered sims looked fine.
     if not manual_override and int(t_now) % 2 == 0 and int(t_now) != _last_drift_tick:
         _last_drift_tick = int(t_now)
         _in_hazard = (cur_state == "HAZARD")
@@ -856,7 +861,10 @@ def _process_ai_cycle(cap, state):
             "J8": (10, 38), "J18": (5, 20), "J12": (8, 30),
         }
         with state_lock:
+            _sim_node_ids = {h["node_id"] for h in active_hazard_nodes}
             for _nid, (_lo, _hi) in _sensor_model.items():
+                if _nid in _sim_node_ids:
+                    continue
                 _cur   = live_node_status[_nid]["crowd"]
                 _drift = random.randint(-1, 1)
                 _new   = max(_lo, min(_hi, _cur + _drift))
