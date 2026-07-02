@@ -160,8 +160,8 @@ def run_tests():
         j_count  = sum(1 for n in nodes if n.startswith("J"))
         b_count  = sum(1 for n in nodes if n.startswith("B"))
         ex_count = sum(1 for n in nodes if n.startswith("EXIT"))
-        if j_count == 20 and b_count == 16 and ex_count == 5:
-            ok(f"All {len(nodes)} nodes present (20J + 16B + 5EXIT)", f"{j_count}J {b_count}B {ex_count}EXIT")
+        if j_count == 18 and b_count == 16 and ex_count == 3:
+            ok(f"All {len(nodes)} nodes present (18J + 16B + 3EXIT)", f"{j_count}J {b_count}B {ex_count}EXIT")
         elif len(nodes) > 0:
             warn(f"Node count {len(nodes)} (expected {expected_nodes})", f"J={j_count} B={b_count} EXIT={ex_count}")
         else:
@@ -258,7 +258,7 @@ def run_tests():
     # not blocked outright) since no alternate path exists. This is a
     # documented design tradeoff, not a bug — see routing_engine.py comments
     # on the J15-J16 edge removal.
-    block_resp = post("/api/block_node", {"node_id": "J4"}, "POST /api/block_node")
+    block_resp = post("/api/block_node", {"node_id": "J4", "start": "J16"}, "POST /api/block_node")
     if not block_resp:
         fail("/api/block_node not responding")
     else:

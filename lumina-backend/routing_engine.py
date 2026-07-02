@@ -356,6 +356,14 @@ def get_crowd_velocity(junction_id: str) -> float:
     den = sum((i-mean_x)**2 for i in range(n))
     return round(num/den if den>0 else 0.0, 2)
 
+CROWD_CLEAR_MARGIN = 10  # pax — crowd status won't clear until count drops this far
+                          # below TIER1_CROWD, not just 1 pax under it. Without this,
+                          # camera jitter (±1-2 pax frame-to-frame) near the 50-pax
+                          # threshold caused the crowd icon to flicker on/off rapidly
+                          # while the route (which has its own 20% cost hysteresis)
+                          # stayed showing the already-rerouted state — a visible
+                          # desync between the icon and the route line.
+
 def update_crowd(junction_id: str, count: int):
     node = live_node_status[junction_id]
     node["crowd"] = count
@@ -371,11 +379,17 @@ def update_crowd(junction_id: str, count: int):
         if node["status"] == "normal":
             node["status"] = "quarantine" if count >= CORRIDOR_CAPACITY else "warning"
             node["hazard"] = "crowd"
-    else:
+    elif count < (TIER1_CROWD - CROWD_CLEAR_MARGIN):
+        # Clearly below threshold — safe to clear the crowd hazard/icon
         node["tier"] = 1
         if node["hazard"] == "crowd":
             node["status"] = "normal"
             node["hazard"] = None
+    else:
+        # In the dead zone between (TIER1 - margin) and TIER1/TIER2 — hold
+        # whatever state we're already in. Prevents flicker from minor
+        # camera-count jitter right at the boundary.
+        node["tier"] = 2 if node["hazard"] == "crowd" else 1
 
 # =============================================================================
 # 6. DYNAMIC COST FUNCTION (capacity-constrained)
