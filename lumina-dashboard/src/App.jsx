@@ -731,10 +731,16 @@ export default function App() {
     // convert to its junction so manualBlockedNodes matches room rid keys
     // and the Digital Twin actually highlights purple on quarantine.
     const target=DOOR_TO_J[rawTarget]||rawTarget;
-    // Only reject if THIS node was already manually blocked by BOMBA
-    if(manualBlockedNodes.includes(target)){
-      alert(`${target} is already manually blocked. Press RESET to release it.`); return;
-    }
+    // Previously this hard-stopped with a native alert() if manualBlockedNodes
+    // (frontend-only state) already listed this node — but that list can
+    // silently drift out of sync with the backend across a long testing
+    // session (e.g. if a node was blocked, then the system reset without a
+    // full page reload). When that happened, clicking block did NOTHING —
+    // no fetch, no state change, just a popup — while the visible banner
+    // stayed frozen on stale text from whatever the LAST successful action
+    // was. block_node_and_reroute() is idempotent (re-blocking an already-
+    // blocked node just reconfirms the same state), so there's no need to
+    // gate on a local guess — let the backend be the authority.
     setManualOverride(true);
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
@@ -817,7 +823,16 @@ export default function App() {
       } else {
         pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
       }
-    } catch{ pushEvent("Override failed — backend offline","danger"); }
+    } catch(err){
+      // Previously this always showed "backend offline" regardless of what
+      // actually happened — misleading when the network request succeeded
+      // fine (confirmed via DevTools: 200 response, correct body) but a JS
+      // error occurred somewhere AFTER that in state-update code. Surfacing
+      // the real error message and logging it to console makes the actual
+      // failure point visible instead of always pointing at the network.
+      console.error("[overridePath] failed:", err);
+      pushEvent(`Override failed — ${err?.message||"unknown error"} (see console)`,"danger");
+    }
   };
 
   // ── DERIVED ───────────────────────────────────────────────────────────────
