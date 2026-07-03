@@ -616,6 +616,7 @@ export default function App() {
     setPerNodeRoutes([]);
     setSimTriggerType(null);
     setShelterAlert(null);
+    setSelectedHazardTab(null);
     setNodes(prev=>prev.map(n=>({...n,status:"normal",hazard:null,shelterInPlace:false,impassable:false})));
     pushEvent("RESET — all hazards cleared, returning to AUTO mode","info");
   };
@@ -1616,7 +1617,7 @@ export default function App() {
                                   try{
                                     const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
                                       headers:{"Content-Type":"application/json"},
-                                      body:JSON.stringify({start:strandedOrigin})});
+                                      body:JSON.stringify({start:strandedOrigin, mark_shelter:true})});
                                     if(rr.ok){
                                       const dd=await rr.json();
                                       const best=dd.routes?.[0];
