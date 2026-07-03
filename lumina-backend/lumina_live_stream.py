@@ -1666,16 +1666,40 @@ def bomba_override():
 def api_quick_routes():
     """
     Returns routes to all reachable exits from a given start point.
-    Used by BOMBA quick route panel.
+    Used by BOMBA quick route panel, and by the per-hazard-node route
+    refresh after a block/unblock (which passes mark_shelter=true).
     """
     body  = request.get_json(silent=True) or {}
     start = body.get("start") or request.args.get("start", "J4")
+    # Opt-in only — the general-purpose Quick Reroute panel also calls this
+    # endpoint on every render for casual "what are my options" lookups, and
+    # marking shelter_in_place on every such call would create false
+    # positives on nodes that were never actually a tracked hazard origin.
+    mark_shelter = bool(body.get("mark_shelter", False))
     from routing_engine import DOOR_TO_JUNCTION
     if start in DOOR_TO_JUNCTION:
         start_j = DOOR_TO_JUNCTION[start]
     else:
         start_j = start
-    routes = get_all_exit_routes(start_j)
+    with state_lock:
+        routes = get_all_exit_routes(start_j)
+        # Guard against marking a manually-blocked PASSAGE as shelter (nobody
+        # is "at" a blocked corridor junction waiting for rescue — it's just
+        # a route that no longer exists). block_node_and_reroute() tags a
+        # manual BOMBA block with hazard="collapsed" specifically for this.
+        # IMPORTANT: this is NOT the same check as "is this node impassable"
+        # — a fire/hazard node is ALSO impassable, but for a different
+        # reason (it IS the danger), and someone actually there legitimately
+        # needs shelter marking. Checking impassable alone would incorrectly
+        # block that case too.
+        _is_manual_block = live_node_status.get(start, {}).get("hazard") == "collapsed"
+        if mark_shelter and start in live_node_status and not _is_manual_block:
+            # Make the backend the authoritative source for this flag —
+            # previously the frontend set shelterInPlace locally after
+            # discovering a stranded hazard node via this same endpoint,
+            # but never told the backend, so the very next /api/status poll
+            # would overwrite it back to false (the "blinks once" bug).
+            live_node_status[start]["shelter_in_place"] = (len(routes) == 0)
     # If start was a door, prepend it
     if start in DOOR_TO_JUNCTION:
         for r in routes:

@@ -775,7 +775,7 @@ export default function App() {
             try{
               const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
                 headers:{"Content-Type":"application/json"},
-                body:JSON.stringify({start:nr.node_id})});
+                body:JSON.stringify({start:nr.node_id, mark_shelter:true})});
               if(rr.ok){
                 const dd=await rr.json();
                 const best=dd.routes?.find(rt=>!rt.path?.includes(target))||dd.routes?.[0];
@@ -1491,7 +1491,7 @@ export default function App() {
                                     try{
                                       const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
                                         headers:{"Content-Type":"application/json"},
-                                        body:JSON.stringify({start:nr.node_id})});
+                                        body:JSON.stringify({start:nr.node_id, mark_shelter:true})});
                                       if(rr.ok){
                                         const dd=await rr.json();
                                         const best=dd.routes?.find(rt=>rt.safe)||dd.routes?.[0];
