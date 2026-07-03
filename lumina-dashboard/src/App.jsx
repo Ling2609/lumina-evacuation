@@ -730,8 +730,13 @@ export default function App() {
     } catch{ /* offline */ }
     const remaining = perNodeRoutes.filter(r=>r.node_id!==nodeId);
     setPerNodeRoutes(remaining);
+    // If this was a crowd-type hazard, the crowd NUMBER was entirely
+    // synthetic (set by the simulation, not a real camera reading) — clear
+    // it locally too, matching the backend fix, instead of leaving a stale
+    // "60p"-style count showing until the next poll happens to catch up.
+    const wasCrowd = exists.event_type === "crowd";
     setNodes(prev=>prev.map(n=>n.id===nodeId
-      ? {...n, status:"normal", hazard:null, shelterInPlace:false}
+      ? {...n, status:"normal", hazard:null, shelterInPlace:false, ...(wasCrowd?{crowd:0}:{})}
       : n));
     if(shelterAlert===nodeId) setShelterAlert(null);
     pushEvent(`SIM: Hazard cancelled at ${nodeId}`,"info","PRE-EMPTIVE");
@@ -1494,7 +1499,19 @@ export default function App() {
                 {/* ── Colour legend — horizontal row, centered under the
                      floor plan. Outer wall spans x=15.4 to 751.7 (center
                      383.5); 5 items spaced 145 apart span 580 units total,
-                     so starting at 383.5-290=93.5 centers the whole row. ── */}
+                     so starting at 383.5-290=93.5 centers the whole row.
+                     A small "NODE STATUS" label disambiguates this from the
+                     room fill colors (store/zone categories), which are a
+                     completely separate, unrelated color system on the same
+                     map — without a label, a first-time viewer could
+                     reasonably wonder if the room colors ALSO mean
+                     something hazard-related. ── */}
+                <rect x="8" y="682" width="730" height="30" rx="5"
+                  fill="#FFFFFF" stroke={palette.border} strokeWidth="1"/>
+                <text x="18" y="694" style={{fontSize:7,fontWeight:700,letterSpacing:0.5,
+                  fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                  NODE STATUS
+                </text>
                 <g>
                   {[
                     [palette.success, "Safe route"],

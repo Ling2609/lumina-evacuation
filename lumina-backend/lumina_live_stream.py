@@ -1079,6 +1079,10 @@ def cancel_sim_trigger():
     if not node_id:
         return jsonify({"error": "node_id required"}), 400
     with state_lock:
+        # Capture event_type BEFORE filtering active_hazard_nodes removes it —
+        # needed to decide whether this was a crowd-type hazard.
+        _cancelled_entry = next((h for h in active_hazard_nodes if h["node_id"] == node_id), None)
+        _was_crowd = _cancelled_entry is not None and _cancelled_entry.get("event_type") == "crowd"
         active_hazard_nodes[:] = [h for h in active_hazard_nodes if h["node_id"] != node_id]
         if node_id in live_node_status:
             live_node_status[node_id]["status"]           = "normal"
@@ -1086,6 +1090,18 @@ def cancel_sim_trigger():
             live_node_status[node_id]["pull_signal"]       = "GREEN"
             live_node_status[node_id]["impassable"]        = False
             live_node_status[node_id]["shelter_in_place"]  = False
+            if _was_crowd:
+                # The crowd NUMBER here was entirely synthetic — set by the
+                # simulation trigger, not a real camera reading — so
+                # cancelling it should bring the count back down too, unlike
+                # the general /reset button, which deliberately leaves real
+                # crowd counts alone ("people don't vanish just because the
+                # alarm cleared"). update_crowd() also correctly resets
+                # capacity_streak and tier as a side effect, instead of
+                # leaving them stuck at whatever they were mid-hazard —
+                # which could otherwise silently re-trigger the same hazard
+                # on the very next crowd reading even after cancelling it.
+                update_crowd(node_id, 0)
         # Immediately rebuild per-hazard routes to exclude the cancelled
         # node, rather than leaving current_per_node_routes stale until the
         # periodic background loop happens to catch up (throttled to once/
@@ -1375,6 +1391,11 @@ def reset_system():
             data["pull_signal"]      = "GREEN"
             data["impassable"]       = False
             data["shelter_in_place"] = False
+            # capacity_streak is purely an internal debounce counter, not a
+            # real-world quantity — unlike crowd count, there's no reason to
+            # preserve it, and leaving it stuck high after an explicit reset
+            # could cause an immediate re-block on the very next reading.
+            data["capacity_streak"]  = 0
         # Reset clears hazard state, NOT actual occupancy — people don't
         # vanish from the building just because the alarm cleared.
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
@@ -1678,6 +1699,7 @@ def bomba_override():
                 d["pull_signal"]      = "GREEN"
                 d["impassable"]       = False
                 d["shelter_in_place"] = False
+                d["capacity_streak"]  = 0
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 

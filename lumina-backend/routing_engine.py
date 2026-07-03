@@ -701,6 +701,7 @@ def unblock_node(node_id: str):
         live_node_status[node_id]["hazard"] = None
         live_node_status[node_id]["impassable"] = False
         live_node_status[node_id]["shelter_in_place"] = False
+        live_node_status[node_id]["capacity_streak"] = 0
 
 # =============================================================================
 # 9. 3-TIER PULL POLICY (AMBER divert, not RED stop)
