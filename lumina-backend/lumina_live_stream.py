@@ -1073,6 +1073,7 @@ def cancel_sim_trigger():
     Removes the node from active_hazard_nodes and clears its hazard state.
     """
     global active_hazard_nodes, system_state, manual_override, fire_sim_active, facp_confirmed
+    global current_per_node_routes, current_route
     body    = request.get_json(silent=True) or {}
     node_id = body.get("node_id")
     if not node_id:
@@ -1085,6 +1086,32 @@ def cancel_sim_trigger():
             live_node_status[node_id]["pull_signal"]       = "GREEN"
             live_node_status[node_id]["impassable"]        = False
             live_node_status[node_id]["shelter_in_place"]  = False
+        # Immediately rebuild per-hazard routes to exclude the cancelled
+        # node, rather than leaving current_per_node_routes stale until the
+        # periodic background loop happens to catch up (throttled to once/
+        # second, and gated behind conditions that don't always hold) — the
+        # frontend polls /api/status and was pulling this stale list right
+        # back over its own already-correct local removal, making a
+        # cancelled hazard's tab/route reappear until ALL hazards were
+        # cancelled (only then did the special "no hazards left" branch
+        # below correctly clear everything).
+        _per = []
+        for _h in active_hazard_nodes:
+            _h_routes = get_all_exit_routes(_h["node_id"])
+            if _h_routes:
+                _per.append({
+                    "node_id":    _h["node_id"],
+                    "event_type": _h["event_type"],
+                    "best_path":  _h_routes[0]["path"],
+                    "best_exit":  _h_routes[0]["exit"],
+                    "best_cost":  _h_routes[0]["cost"],
+                    "all_exits":  _h_routes,
+                })
+        current_per_node_routes[:] = _per
+        if _per:
+            current_route[:] = _per[-1]["best_path"]
+        else:
+            current_route[:] = []
         # If no more active hazards, return to normal
         if not active_hazard_nodes:
             system_state    = "NORMAL"

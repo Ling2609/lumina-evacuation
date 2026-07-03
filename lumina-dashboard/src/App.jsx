@@ -1491,9 +1491,10 @@ export default function App() {
                     </text>}
                   </g>
                 )}
-                {/* ── Colour legend — sits in the empty margin below the floor
-                     plan (outer wall ends ~y=676, viewBox extends to ~730),
-                     so it never overlaps any room or corridor. ── */}
+                {/* ── Colour legend — horizontal row, centered under the
+                     floor plan. Outer wall spans x=15.4 to 751.7 (center
+                     383.5); 5 items spaced 145 apart span 580 units total,
+                     so starting at 383.5-290=93.5 centers the whole row. ── */}
                 <g>
                   {[
                     [palette.success, "Safe route"],
@@ -1502,7 +1503,7 @@ export default function App() {
                     [palette.warning, "Moderate crowd"],
                     [palette.purple,  "Blocked"],
                   ].map(([color,label],i)=>(
-                    <g key={label} transform={`translate(${-20 + i*155}, 700)`}>
+                    <g key={label} transform={`translate(${93.5 + i*145}, 700)`}>
                       <circle cx="4" cy="0" r="4" fill={color}/>
                       <text x="12" y="0" dominantBaseline="central"
                         style={{fontSize:9,fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
@@ -2363,23 +2364,6 @@ export default function App() {
                     </text>}
                   </g>
                 )}
-                <g>
-                  {[
-                    [palette.success, "Safe route"],
-                    [palette.danger,  "Fire / hazard"],
-                    [palette.info,    "Shelter — no route"],
-                    [palette.warning, "Moderate crowd"],
-                    [palette.purple,  "Blocked"],
-                  ].map(([color,label],i)=>(
-                    <g key={label} transform={`translate(${-20 + i*155}, 700)`}>
-                      <circle cx="4" cy="0" r="4" fill={color}/>
-                      <text x="12" y="0" dominantBaseline="central"
-                        style={{fontSize:9,fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
-                        {label}
-                      </text>
-                    </g>
-                  ))}
-                </g>
                 </svg>
                 {selectedNode&&(
                   <div style={{padding:"7px 12px",borderTop:`1px solid ${palette.border}`,flexShrink:0,
