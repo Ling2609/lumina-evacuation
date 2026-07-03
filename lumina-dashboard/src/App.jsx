@@ -687,15 +687,29 @@ export default function App() {
         body:JSON.stringify({node_id:nodeId})
       });
     } catch{ /* offline */ }
-    setPerNodeRoutes(prev=>prev.filter(r=>r.node_id!==nodeId));
+    const remaining = perNodeRoutes.filter(r=>r.node_id!==nodeId);
+    setPerNodeRoutes(remaining);
     setNodes(prev=>prev.map(n=>n.id===nodeId
       ? {...n, status:"normal", hazard:null}
       : n));
     pushEvent(`SIM: Hazard cancelled at ${nodeId}`,"info","PRE-EMPTIVE");
-    // If no more hazards, clear hazard state
-    if(perNodeRoutes.length<=1){
+    // The "ACTIVE ROUTE" panel (and the green on-route node highlighting)
+    // is driven by a SEPARATE single `activeRoute` value, not perNodeRoutes
+    // directly — it always reflects whichever hazard was most recently
+    // triggered. If we just cancelled THAT specific hazard, activeRoute is
+    // now pointing at a hazard that no longer exists, and nothing else was
+    // updating it — the nodes on that stale path stayed green forever.
+    // Previously this only handled the case where NO hazards remained;
+    // now it also reassigns to whichever hazard IS still active.
+    const wasPrimary = activeRoute[0]===nodeId;
+    if(remaining.length===0){
       setIsHazard(false);
       setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
+    } else if(wasPrimary){
+      // Reassign to the next most-recently-triggered remaining hazard,
+      // matching the backend's own "last entry = primary" convention.
+      const next = remaining[remaining.length-1];
+      if(next?.best_path?.length) setActiveRoute(next.best_path);
     }
   };
 
