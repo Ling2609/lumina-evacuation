@@ -324,6 +324,7 @@ export default function App() {
   const [manualOverride,  setManualOverride]  = useState(false);
   const [manualBlockedNodes, setManualBlockedNodes] = useState([]); // array for multi-block
   const [shelterAlert, setShelterAlert] = useState(null); // node id stranded with no viable route, or null
+  const [selectedHazardTab, setSelectedHazardTab] = useState(null); // which hazard's route is shown, when multiple are active
 
   // ── System mode & simulation trigger ────────────────────────────────────
   // systemMode: "simulation" | "live"
@@ -690,8 +691,9 @@ export default function App() {
     const remaining = perNodeRoutes.filter(r=>r.node_id!==nodeId);
     setPerNodeRoutes(remaining);
     setNodes(prev=>prev.map(n=>n.id===nodeId
-      ? {...n, status:"normal", hazard:null}
+      ? {...n, status:"normal", hazard:null, shelterInPlace:false}
       : n));
+    if(shelterAlert===nodeId) setShelterAlert(null);
     pushEvent(`SIM: Hazard cancelled at ${nodeId}`,"info","PRE-EMPTIVE");
     // The "ACTIVE ROUTE" panel (and the green on-route node highlighting)
     // is driven by a SEPARATE single `activeRoute` value, not perNodeRoutes
@@ -723,6 +725,52 @@ export default function App() {
     setAiMode(m);
   };
 
+  // Re-checks every OTHER active hazard's own route after a block, so a
+  // block that doesn't directly affect the currently-viewed hazard (e.g.
+  // you're viewing an already-stranded J8, but the new block also happens
+  // to cut off J15) still gets reflected everywhere it should. Previously
+  // this only ran on the "this specific test succeeded" path, so blocking
+  // while viewing an already-no-route hazard silently skipped checking
+  // whether anyone ELSE was newly affected by that same block.
+  const refreshOtherHazardRoutes = async(blockedTarget)=>{
+    if(perNodeRoutes.length===0) return;
+    const newlyStranded = [];
+    const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
+      if(nr.node_id === blockedTarget){
+        newlyStranded.push(nr.node_id);
+        return {...nr, best_path:[], best_exit:null};
+      }
+      try{
+        const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({start:nr.node_id, mark_shelter:true})});
+        if(rr.ok){
+          const dd=await rr.json();
+          const best=dd.routes?.find(rt=>!rt.path?.includes(blockedTarget))||dd.routes?.[0];
+          if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+          newlyStranded.push(nr.node_id);
+          return {...nr, best_path:[], best_exit:null};
+        } else {
+          console.error(`[per-hazard refresh] quick_routes returned ${rr.status} for ${nr.node_id}`);
+        }
+      } catch(err){
+        console.error(`[per-hazard refresh] failed for ${nr.node_id}:`, err);
+      }
+      return nr;
+    }));
+    setPerNodeRoutes(updated);
+    if(newlyStranded.length>0){
+      setNodes(prev=>prev.map(n=>newlyStranded.includes(n.id)?{...n,shelterInPlace:true}:n));
+      // Never surface the just-blocked node itself as the shelter alert —
+      // a closed passage isn't a shelter location, even if it also
+      // happened to be a hazard's own origin.
+      if(!shelterAlert){
+        const candidates = newlyStranded.filter(id=>id!==blockedTarget);
+        if(candidates.length>0) setShelterAlert(candidates[candidates.length-1]);
+      }
+    }
+  };
+
   const overridePath=async()=>{
     // Allow blocking in any state — Bomba may need to pre-emptively block
     // Start from current hazard origin or active route start
@@ -742,10 +790,19 @@ export default function App() {
     // blocked node just reconfirms the same state), so there's no need to
     // gate on a local guess — let the backend be the authority.
     setManualOverride(true);
+    // When multiple hazards are active, block/reroute should test reachability
+    // from whichever hazard tab the user is ACTUALLY looking at — not a
+    // generic activeRoute[0] that might belong to a completely different
+    // hazard. Previously these could mismatch: you'd view J9's tab, click
+    // block, but the backend call would silently test some other hazard's
+    // origin, updating the banner for a result unrelated to what you saw.
+    const blockStart = (perNodeRoutes.length>1 && selectedHazardTab)
+      ? selectedHazardTab
+      : (activeRoute[0]||shelterAlert||"J4");
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({node_id:target, start:activeRoute[0]||shelterAlert||"J4"})});
+        body:JSON.stringify({node_id:target, start:blockStart})});
       const d=await r.json();
       // Always register the block itself — it succeeded (the node IS
       // quarantined) regardless of whether a route still exists from
@@ -765,6 +822,17 @@ export default function App() {
         if(strandedId){
           setShelterAlert(strandedId);
           setNodes(prev=>prev.map(n=>n.id===strandedId?{...n,shelterInPlace:true}:n));
+          // THE ACTUAL ROOT CAUSE of the tab showing a stale route after
+          // becoming stranded: the hazard tabs read directly from
+          // perNodeRoutes[x].best_path, not from activeRoute/shelterAlert.
+          // This branch was updating everything EXCEPT that — so a tab
+          // could correctly be flagged "shelterInPlace" on its node, the
+          // banner could correctly say "NO ROUTE", and yet the tab's own
+          // displayed route stayed frozen on stale pre-block data forever,
+          // because nothing ever told perNodeRoutes about it.
+          setPerNodeRoutes(prev=>prev.map(nr=>
+            nr.node_id===strandedId ? {...nr, best_path:[], best_exit:null} : nr
+          ));
         }
         setActiveRoute([]);
         // Update the banner immediately from this response rather than
@@ -775,6 +843,9 @@ export default function App() {
         setIsHazard(true);
         setHazardType("NO ROUTE — RESCUE REQUIRED");
         pushEvent(`NO ROUTE${strandedId?` from ${strandedId}`:""} — SHELTER IN PLACE, rescue required`,"danger","REACTIVE");
+        // Even though THIS specific test came back no-route, other active
+        // hazards may ALSO be newly affected by the same block — check them.
+        await refreshOtherHazardRoutes(target);
       } else if(d.new_route){
         setShelterAlert(null);
         setHazardType("MANUAL OVERRIDE");
@@ -786,40 +857,8 @@ export default function App() {
         // map's node colors (driven by status, not activeRoute) correctly
         // updated — creating a silent mismatch between the two displays.
         setActiveRoute(d.new_route);
-        if(perNodeRoutes.length>0){
-          // Multi-hazard mode — ALSO recalculate every other hazard node's
-          // own route avoiding the newly-blocked node, so the map's per-
-          // hazard route lines stay consistent too.
-          const newlyStranded = [];
-          const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
-            try{
-              const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify({start:nr.node_id, mark_shelter:true})});
-              if(rr.ok){
-                const dd=await rr.json();
-                const best=dd.routes?.find(rt=>!rt.path?.includes(target))||dd.routes?.[0];
-                if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
-                // No route found for THIS hazard node either — it's now
-                // genuinely stranded by the block we just made, even though
-                // it wasn't the node this particular block was tested from.
-                // Previously this fell through to `return nr` unchanged,
-                // silently keeping a stale route that no longer exists.
-                // Defensive: never flag the just-blocked node itself.
-                if(nr.node_id !== target) newlyStranded.push(nr.node_id);
-                return {...nr, best_path:[], best_exit:null};
-              }
-            } catch{ /* offline */ }
-            return nr;
-          }));
-          setPerNodeRoutes(updated);
-          if(newlyStranded.length>0){
-            setNodes(prev=>prev.map(n=>newlyStranded.includes(n.id)?{...n,shelterInPlace:true}:n));
-            // Surface the most recently-discovered stranded node as the
-            // primary shelter alert if nothing else is already showing.
-            if(!shelterAlert) setShelterAlert(newlyStranded[newlyStranded.length-1]);
-          }
-        }
+        // Even a successful block for THIS hazard may affect others.
+        await refreshOtherHazardRoutes(target);
       } else {
         pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
       }
@@ -1333,7 +1372,20 @@ export default function App() {
                         // House emoji removed per feedback — blue coloring already communicates
                         // shelter status clearly enough; keep showing the hazard-type
                         // icon regardless so it's still clear WHAT the hazard is.
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        // Prefer perNodeRoutes' event_type over n?.hazard — the
+                        // latter is per-frontend-node state that can drift out
+                        // of sync during multi-hazard sessions (seen: a fallen
+                        // node showing the fallback triangle instead of 🧍
+                        // because n.hazard wasn't "fall" at render time, even
+                        // though perNodeRoutes correctly still listed it as
+                        // event_type "fallen"). perNodeRoutes is populated
+                        // directly from the backend's active_hazard_nodes list,
+                        // a more authoritative source for "what hazard is this."
+                        const _hazardEntry = perNodeRoutes.find(nr=>nr.node_id===id);
+                        const _effectiveHazard = _hazardEntry
+                          ? (_hazardEntry.event_type==="fire"?"thermal":_hazardEntry.event_type==="fallen"?"fall":_hazardEntry.event_type==="crowd"?"crowd":n?.hazard)
+                          : n?.hazard;
+                        const icon=_effectiveHazard==="thermal"?"🔥":_effectiveHazard==="fall"?"🧍":_effectiveHazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
@@ -1434,15 +1486,64 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                  <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:6}}>ACTIVE ROUTE</div>
+                  <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:6}}>
+                    {perNodeRoutes.length>1?"ACTIVE ROUTE":"ACTIVE ROUTE"}
+                  </div>
+                  {perNodeRoutes.length>1 && (()=>{
+                    // Multiple simultaneous hazards — small tabs let you pick
+                    // which one's route is shown below, instead of an
+                    // ambiguous single route with no indication of which
+                    // hazard it belongs to, or a bulky stacked list.
+                    const activeTab = perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1];
+                    if(selectedHazardTab!==activeTab.node_id){
+                      // Keep selection valid if the previously-picked hazard
+                      // was cancelled/resolved — fall back to most recent.
+                      setTimeout(()=>setSelectedHazardTab(activeTab.node_id),0);
+                    }
+                    return(
+                      <div style={{display:"flex",gap:3,marginBottom:6,flexWrap:"wrap"}}>
+                        {perNodeRoutes.map(nr=>{
+                          const hazardIcon = nr.event_type==="fire"?"🔥":nr.event_type==="fallen"?"🧍":nr.event_type==="crowd"?"👥":"⚠";
+                          const isActive = nr.node_id===activeTab.node_id;
+                          const noRoute = !nr.best_path || nr.best_path.length===0;
+                          return(
+                            <button key={nr.node_id} onClick={()=>setSelectedHazardTab(nr.node_id)}
+                              style={{fontSize:9,fontWeight:700,padding:"3px 7px",borderRadius:5,cursor:"pointer",
+                                background:isActive?(noRoute?palette.infoLight:palette.warningLight):"transparent",
+                                border:`1px solid ${isActive?(noRoute?palette.info:palette.warning):palette.border}`,
+                                color:isActive?(noRoute?palette.infoDark:palette.warningDark):palette.textMuted}}>
+                              {hazardIcon} {nr.node_id}{noRoute?" 🏠":""}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  {(()=>{
+                    // Resolve which route to actually display: the selected
+                    // hazard tab's route if multi-hazard, otherwise the plain
+                    // single activeRoute (BOMBA block / single hazard case).
+                    const multi = perNodeRoutes.length>1;
+                    const activeTab = multi ? (perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1]) : null;
+                    const displayRoute = multi ? (activeTab?.best_path||[]) : activeRoute;
+                    if(multi && displayRoute.length===0){
+                      return(
+                        <div style={{padding:"8px 10px",background:palette.infoLight,color:palette.infoDark,
+                          borderRadius:6,border:`1px solid ${palette.info}`,fontWeight:700,fontSize:10}}>
+                          🏠 {activeTab?.node_id} is cut off from all exits.
+                          <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
+                        </div>
+                      );
+                    }
+                    return (
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    {activeRoute.map((id,i)=>{
+                    {displayRoute.map((id,i)=>{
                       const n=nodes.find(x=>x.id===id);
                       const sc=statusColor(n?.status??"normal");
                       const isDoor=!!DOOR_POS[id];
                       const isExit=!!EXIT_POS[id];
                       const isFirst=i===0;
-                      const isLast=i===activeRoute.length-1;
+                      const isLast=i===displayRoute.length-1;
                       return(
                         <div key={id} style={{display:"flex",alignItems:"center",gap:5}}>
                           <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,
@@ -1468,6 +1569,8 @@ export default function App() {
                       );
                     })}
                   </div>
+                    );
+                  })()}
                   <div style={{marginTop:5,display:"flex",gap:4}}>
                     <div style={{flex:1,fontSize:9,padding:"3px 6px",borderRadius:4,
                       background:rsetSafe?palette.successLight:palette.dangerLight}}>
@@ -2116,7 +2219,20 @@ export default function App() {
                         // House emoji removed per feedback — blue coloring already communicates
                         // shelter status clearly enough; keep showing the hazard-type
                         // icon regardless so it's still clear WHAT the hazard is.
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        // Prefer perNodeRoutes' event_type over n?.hazard — the
+                        // latter is per-frontend-node state that can drift out
+                        // of sync during multi-hazard sessions (seen: a fallen
+                        // node showing the fallback triangle instead of 🧍
+                        // because n.hazard wasn't "fall" at render time, even
+                        // though perNodeRoutes correctly still listed it as
+                        // event_type "fallen"). perNodeRoutes is populated
+                        // directly from the backend's active_hazard_nodes list,
+                        // a more authoritative source for "what hazard is this."
+                        const _hazardEntry = perNodeRoutes.find(nr=>nr.node_id===id);
+                        const _effectiveHazard = _hazardEntry
+                          ? (_hazardEntry.event_type==="fire"?"thermal":_hazardEntry.event_type==="fallen"?"fall":_hazardEntry.event_type==="crowd"?"crowd":n?.hazard)
+                          : n?.hazard;
+                        const icon=_effectiveHazard==="thermal"?"🔥":_effectiveHazard==="fall"?"🧍":_effectiveHazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
@@ -2187,6 +2303,49 @@ export default function App() {
             <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10}}>
               <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
+                {perNodeRoutes.length>1 ? (
+                  // Multiple simultaneous hazards — group the chip rows by
+                  // hazard instead of showing one ambiguous chain with no
+                  // indication of which hazard it belongs to.
+                  <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:90,overflowY:"auto"}}>
+                    {perNodeRoutes.map(nr=>{
+                      const hazardIcon = nr.event_type==="fire"?"🔥":nr.event_type==="fallen"?"🧍":nr.event_type==="crowd"?"👥":"⚠";
+                      const noRoute = !nr.best_path || nr.best_path.length===0;
+                      return(
+                        <div key={nr.node_id}>
+                          <div style={{fontSize:8,fontWeight:700,color:palette.textMuted,marginBottom:2}}>
+                            {hazardIcon} {nr.node_id}
+                          </div>
+                          {noRoute ? (
+                            <span style={{fontSize:9,fontWeight:600,color:palette.infoDark,
+                              background:palette.infoLight,padding:"1px 6px",borderRadius:4}}>
+                              🏠 No route — shelter in place
+                            </span>
+                          ) : (
+                            <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                              {nr.best_path.map((id,i)=>{
+                                const n=nodes.find(x=>x.id===id);
+                                const blocked=n?.status==="quarantine"||n?.status==="alert";
+                                return(
+                                  <span key={id} style={{display:"flex",alignItems:"center",gap:3}}>
+                                    <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:4,
+                                      background:statusBg(n?.status??"normal"),
+                                      color:blocked?statusColor(n.status):statusColor(n?.status??"normal"),
+                                      border:`1px solid ${statusColor(n?.status??"normal")}33`,
+                                      opacity:blocked?0.7:1}}>
+                                      {blocked?`[${id}]`:id}
+                                    </span>
+                                    {i<nr.best_path.length-1&&<span style={{color:palette.textMuted,fontSize:10}}>→</span>}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
                 <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
                   {activeRoute.map((id,i)=>{
                     const n=nodes.find(x=>x.id===id);
@@ -2205,6 +2364,7 @@ export default function App() {
                     );
                   })}
                 </div>
+                )}
                 <div>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:9,marginBottom:3}}>
                     <span style={{color:palette.textMuted}}>RSET</span>
