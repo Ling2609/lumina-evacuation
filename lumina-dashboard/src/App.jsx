@@ -1214,9 +1214,9 @@ export default function App() {
                             style={{fontSize:6,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>{vi}</text>
                         </g>);
                       })()}
-                      {/* Crowd count */}
+                      {/* Crowd count — offset below the ID label so they don't overlap */}
                       {(n?.crowd??0)>0&&(
-                        <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                        <text x={pos.x} y={pos.y+r+17} textAnchor="middle"
                           style={{fontSize:6.5,fill:n.crowd>85?palette.danger:n.crowd>50?palette.warning:"#94A3B8",
                             fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.crowd}p</text>
                       )}
@@ -1886,9 +1886,9 @@ export default function App() {
                             style={{fontSize:6,fontWeight:800,fill:"#fff",fontFamily:"Inter,sans-serif"}}>{vi}</text>
                         </g>);
                       })()}
-                      {/* Crowd count */}
+                      {/* Crowd count — offset below the ID label so they don't overlap */}
                       {(n?.crowd??0)>0&&(
-                        <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
+                        <text x={pos.x} y={pos.y+r+17} textAnchor="middle"
                           style={{fontSize:6.5,fill:n.crowd>85?palette.danger:n.crowd>50?palette.warning:"#94A3B8",
                             fontFamily:"Inter,sans-serif",fontWeight:600}}>{n.crowd}p</text>
                       )}
