@@ -1301,7 +1301,10 @@ export default function App() {
                       {/* Hazard emoji — shelter shows a distinct "stay put" icon
                           instead of the alarm icon, since the message is different */}
                       {(isAlert||isCrowd||isShelter)&&(()=>{
-                        const icon=isShelter?"🏠":n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        // House emoji removed per feedback — blue coloring already communicates
+                        // shelter status clearly enough; keep showing the hazard-type
+                        // icon regardless so it's still clear WHAT the hazard is.
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
@@ -2081,7 +2084,10 @@ export default function App() {
                       {/* Hazard emoji — shelter shows a distinct "stay put" icon
                           instead of the alarm icon, since the message is different */}
                       {(isAlert||isCrowd||isShelter)&&(()=>{
-                        const icon=isShelter?"🏠":n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                        // House emoji removed per feedback — blue coloring already communicates
+                        // shelter status clearly enough; keep showing the hazard-type
+                        // icon regardless so it's still clear WHAT the hazard is.
+                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
