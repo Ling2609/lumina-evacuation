@@ -308,6 +308,14 @@ export default function App() {
   // such request with a sequence number at send time; a response is only
   // applied if it's still the most recent request issued when it arrives.
   const perNodeRoutesSeqRef = useRef(0);
+  // Browsers fire the regular click event TWICE as part of every
+  // double-click, before dblclick itself fires. Without disambiguation,
+  // double-clicking a node to cancel a hazard would ALSO fire the
+  // single-click trigger handler twice first — potentially creating or
+  // consuming an armed trigger as an unwanted side effect of the cancel
+  // action itself, right before the actual cancel goes through. This ref
+  // holds a pending click's timeout so onDoubleClick can cancel it.
+  const clickTimeoutRef = useRef(null);
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);   // CAM-01 live YOLO track count (lobby only)
   const [totalFootfall, setTotalFootfall] = useState(0);   // building-wide total across all nodes
@@ -722,8 +730,24 @@ export default function App() {
   };
 
   const fireSimTriggerAtNode=async(nodeId)=>{
-    if(!simTriggerType) return false;
-    if(systemMode!=="simulation") return false;
+    if(!simTriggerType){
+      // Completely silent before this fix — if the trigger button (Fire/
+      // Fallen/Crowd) wasn't actually armed when a node got clicked, NOTHING
+      // happened at all: no error, no console log, no visible feedback of
+      // any kind. This matches exactly the "I click and nothing comes out,
+      // I click again and still nothing" symptom — the click was correctly
+      // registering, but silently doing nothing because simTriggerType had
+      // already been cleared (e.g. by a previous trigger's own cleanup) by
+      // the time this second click landed.
+      console.warn(`[SIM] Ignored click on ${nodeId} — no trigger type armed (simTriggerType is null). Click Fire/Fallen/Crowd first.`);
+      pushEvent(`Click ignored at ${nodeId} — select Fire/Fallen/Crowd first`,"danger");
+      return false;
+    }
+    if(systemMode!=="simulation"){
+      console.warn(`[SIM] Ignored trigger at ${nodeId} — systemMode is "${systemMode}", not "simulation"`);
+      pushEvent(`Trigger ignored — system is in ${systemMode} mode, not simulation`,"danger");
+      return false;
+    }
     const labels={"fire":"🔥 Fire","fallen":"🧍 Fallen Person","crowd":"👥 Crowd Density"};
     pushEvent(`SIM: ${labels[simTriggerType]} triggered at ${nodeId}`,"danger","REACTIVE");
     const _mySeq = ++perNodeRoutesSeqRef.current;
@@ -755,6 +779,7 @@ export default function App() {
             });
           } else {
             console.warn(`[SIM] Discarded stale trigger response for ${nodeId} — a newer request was issued since`);
+            pushEvent(`Trigger at ${nodeId} discarded — a newer action happened first (this is normal if you clicked quickly)`,"danger");
           }
         }
       } else {
@@ -1451,7 +1476,21 @@ export default function App() {
                     isOnRoute?palette.success:nodeColor;
                   const r=isOnRoute||isAlert||isShelter||isBlocked?7:isCrowd?6:4;
                   return(
-                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={()=>{
+                      // Delay the single-click action — if a second click
+                      // arrives within the double-click window, onDoubleClick
+                      // cancels this pending timeout so the trigger action
+                      // never fires as an accidental side effect of cancelling.
+                      if(clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                      clickTimeoutRef.current = setTimeout(async()=>{
+                        clickTimeoutRef.current = null;
+                        if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);}
+                      }, 250);
+                    }} onDoubleClick={async(e)=>{
+                      e.stopPropagation();
+                      if(clickTimeoutRef.current){ clearTimeout(clickTimeoutRef.current); clickTimeoutRef.current=null; }
+                      if(systemMode==="simulation")await cancelSimTriggerAtNode(id);
+                    }}>
                       {isShelter&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.info} opacity="0.2"
                         style={{animation:"pulse 1.4s ease-in-out infinite"}}/>}
@@ -2349,7 +2388,21 @@ export default function App() {
                     isOnRoute?palette.success:nodeColor;
                   const r=isOnRoute||isAlert||isShelter||isBlocked?7:isCrowd?6:4;
                   return(
-                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
+                    <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={()=>{
+                      // Delay the single-click action — if a second click
+                      // arrives within the double-click window, onDoubleClick
+                      // cancels this pending timeout so the trigger action
+                      // never fires as an accidental side effect of cancelling.
+                      if(clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+                      clickTimeoutRef.current = setTimeout(async()=>{
+                        clickTimeoutRef.current = null;
+                        if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);}
+                      }, 250);
+                    }} onDoubleClick={async(e)=>{
+                      e.stopPropagation();
+                      if(clickTimeoutRef.current){ clearTimeout(clickTimeoutRef.current); clickTimeoutRef.current=null; }
+                      if(systemMode==="simulation")await cancelSimTriggerAtNode(id);
+                    }}>
                       {isShelter&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.info} opacity="0.2"
                         style={{animation:"pulse 1.4s ease-in-out infinite"}}/>}
