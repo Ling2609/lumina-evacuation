@@ -478,7 +478,20 @@ def calculate_dynamic_cost(node_id: str) -> float:
     vel    = get_crowd_velocity(node_id)
 
     # Hazard penalties
-    if hazard == "thermal" or status == "alert":
+    # BUG FIX: this previously read `hazard=="thermal" or status=="alert"`.
+    # Fallen-person nodes ALSO get status="alert" (set by the sim trigger),
+    # so that condition was silently applying the full 5000-point THERMAL
+    # penalty to fallen hazards too, stacking on top of their own correct
+    # 300-point fallen penalty — 5300 total, nearly as severe as fire
+    # itself. This directly contradicted the intended design (fire = hard
+    # block, fallen = mild soft penalty) without ever showing up as an
+    # obviously wrong number anywhere — it just quietly made routes through
+    # a fallen-person node cross the 9000 "too risky to count" threshold far
+    # more easily than intended, showing up as unexplained "no route"
+    # results. Checking hazard=="thermal" alone is correct and sufficient —
+    # a genuinely on-fire node always has hazard=="thermal" set alongside
+    # its status, so nothing is lost by removing the status=="alert" branch.
+    if hazard == "thermal":
         cost += PENALTY["thermal"]
     if status == "quarantine":
         cost += PENALTY["quarantine"]

@@ -948,15 +948,26 @@ def _process_ai_cycle(cap, state):
                 _per = []
                 for _h in active_hazard_nodes:
                     _h_routes = get_all_exit_routes(_h["node_id"])
-                    if _h_routes:
-                        _per.append({
-                            "node_id":    _h["node_id"],
-                            "event_type": _h["event_type"],
-                            "best_path":  _h_routes[0]["path"],
-                            "best_exit":  _h_routes[0]["exit"],
-                            "best_cost":  _h_routes[0]["cost"],
-                            "all_exits":  _h_routes,
-                        })
+                    # ALWAYS keep the hazard tracked, even with zero routes —
+                    # same fix as sim_trigger() below. A hazard that BECOMES
+                    # stranded later (e.g. a second block made after this
+                    # hazard was already triggered) was silently vanishing
+                    # from current_per_node_routes right here, on this
+                    # periodic tick, because this only appended when
+                    # _h_routes was non-empty. The node's red/icon styling
+                    # persisted (driven separately by live_node_status,
+                    # untouched by this loop), but its tab and "no route"
+                    # shelter message disappeared with zero trace.
+                    _per.append({
+                        "node_id":    _h["node_id"],
+                        "event_type": _h["event_type"],
+                        "best_path":  _h_routes[0]["path"] if _h_routes else [],
+                        "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
+                        "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
+                        "all_exits":  _h_routes,
+                    })
+                    if not _h_routes and _h["node_id"] in live_node_status:
+                        live_node_status[_h["node_id"]]["shelter_in_place"] = True
                 if _per:
                     current_per_node_routes[:] = _per
                     current_route[:] = _per[-1]["best_path"]
@@ -1114,15 +1125,18 @@ def cancel_sim_trigger():
         _per = []
         for _h in active_hazard_nodes:
             _h_routes = get_all_exit_routes(_h["node_id"])
-            if _h_routes:
-                _per.append({
-                    "node_id":    _h["node_id"],
-                    "event_type": _h["event_type"],
-                    "best_path":  _h_routes[0]["path"],
-                    "best_exit":  _h_routes[0]["exit"],
-                    "best_cost":  _h_routes[0]["cost"],
-                    "all_exits":  _h_routes,
-                })
+            # Same fix as sim_trigger() and the periodic loop above — never
+            # silently drop a hazard just because it's currently stranded.
+            _per.append({
+                "node_id":    _h["node_id"],
+                "event_type": _h["event_type"],
+                "best_path":  _h_routes[0]["path"] if _h_routes else [],
+                "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
+                "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
+                "all_exits":  _h_routes,
+            })
+            if not _h_routes and _h["node_id"] in live_node_status:
+                live_node_status[_h["node_id"]]["shelter_in_place"] = True
         current_per_node_routes[:] = _per
         if _per:
             current_route[:] = _per[-1]["best_path"]
@@ -1381,6 +1395,17 @@ def reset_system():
         current_pull_signals = {}
         current_rset         = {}
         current_per_node_routes.clear()
+        # Before clearing tracking, reset the crowd count for any node that
+        # was an explicit crowd-type sim hazard — that number was synthetic
+        # (set by the trigger, not real occupancy), unlike general ambient
+        # crowd drift which correctly stays untouched by reset. Without
+        # this, active_hazard_nodes.clear() below removes the node from
+        # tracking (no more tab) while its crowd count stays stuck at
+        # whatever it was mid-hazard — showing crowd styling on the map
+        # with no way to explain why, since it's no longer tracked anywhere.
+        for _h in active_hazard_nodes:
+            if _h.get("event_type") == "crowd" and _h["node_id"] in live_node_status:
+                update_crowd(_h["node_id"], 0)
         active_hazard_nodes.clear()   # clear sim triggers so DYN-A* stops repopulating
         reset_hysteresis()            # clear cached route so fresh calc on next tick
         sim_trigger_type = None
@@ -1513,6 +1538,13 @@ def set_system_mode(mode):
             manual_override  = False
             sim_trigger_type = None
             sim_trigger_node = None
+            # Same reasoning as /reset — these counts were synthetic (set by
+            # a sim trigger), not real occupancy, so they should go back to
+            # baseline when their tracking is cleared, not stay stuck
+            # showing stale crowd styling with no active tracking behind it.
+            for _h in active_hazard_nodes:
+                if _h.get("event_type") == "crowd" and _h["node_id"] in live_node_status:
+                    update_crowd(_h["node_id"], 0)
             active_hazard_nodes.clear()
     print(f"[MODE] System mode switched to: {mode.upper()}")
     return jsonify({"status": "success", "system_mode": mode})
@@ -1604,15 +1636,27 @@ def sim_trigger():
         _per_node_routes = []
         for _h in active_hazard_nodes:
             _h_routes = get_all_exit_routes(_h["node_id"])
-            if _h_routes:
-                _per_node_routes.append({
-                    "node_id":    _h["node_id"],
-                    "event_type": _h["event_type"],
-                    "best_path":  _h_routes[0]["path"],
-                    "best_exit":  _h_routes[0]["exit"],
-                    "best_cost":  _h_routes[0]["cost"],
-                    "all_exits":  _h_routes,
-                })
+            # ALWAYS track the hazard, even with zero routes — a hazard that's
+            # immediately stranded the moment it's triggered (e.g. residual
+            # blocks from an earlier, since-cancelled hazard still cutting
+            # off its only path) previously got silently OMITTED here
+            # entirely, since this only appended when _h_routes was
+            # non-empty. That meant no tab, no shelter-in-place marking,
+            # nothing — the node showed its hazard icon (driven separately
+            # by live_node_status) but never appeared in per-hazard
+            # tracking at all, with no way for the frontend to know it
+            # needed rescue. Empty best_path is the correct signal for
+            # "stranded," not "doesn't exist."
+            _per_node_routes.append({
+                "node_id":    _h["node_id"],
+                "event_type": _h["event_type"],
+                "best_path":  _h_routes[0]["path"] if _h_routes else [],
+                "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
+                "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
+                "all_exits":  _h_routes,
+            })
+            if not _h_routes and _h["node_id"] in live_node_status:
+                live_node_status[_h["node_id"]]["shelter_in_place"] = True
         # Primary route = best route from most recently triggered node
         _path = _per_node_routes[-1]["best_path"] if _per_node_routes else []
         # Always assign, even when empty — previously this only updated
@@ -1692,6 +1736,12 @@ def bomba_override():
             fire_sim_active       = False
             sim_trigger_type      = None
             sim_trigger_node      = None
+            # Same reasoning as /reset and set_system_mode(live) — reset
+            # crowd counts for nodes that were explicit sim-triggered crowd
+            # hazards (synthetic numbers) before clearing their tracking.
+            for _h in active_hazard_nodes:
+                if _h.get("event_type") == "crowd" and _h["node_id"] in live_node_status:
+                    update_crowd(_h["node_id"], 0)
             active_hazard_nodes.clear()
             for nid, d in live_node_status.items():
                 d["status"]           = "normal"

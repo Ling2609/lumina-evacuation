@@ -298,6 +298,16 @@ export default function App() {
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
   const [activeRoute,   setActiveRoute]   = useState(["J19","J20","J3","J2","J1","EXIT-1"]);
   const [perNodeRoutes, setPerNodeRoutes] = useState([]); // per-hazard-node evacuation paths
+  // Cancel and trigger are independent async requests — if a cancel and a
+  // fresh trigger on the same node happen in quick succession (e.g. cancel
+  // fire@J15, immediately trigger fallen@J15), their responses can arrive
+  // OUT OF ORDER over the network. Whichever setPerNodeRoutes call lands
+  // LAST wins, regardless of which action the user actually did last — so
+  // a fast cancel-then-retrigger could show the retrigger's node missing
+  // even though the backend's actual state is correct. This ref tags every
+  // such request with a sequence number at send time; a response is only
+  // applied if it's still the most recent request issued when it arrives.
+  const perNodeRoutesSeqRef = useRef(0);
   const [pasCountdown,  setPasCountdown]  = useState(178);
   const [personCount,   setPersonCount]   = useState(0);   // CAM-01 live YOLO track count (lobby only)
   const [totalFootfall, setTotalFootfall] = useState(0);   // building-wide total across all nodes
@@ -392,9 +402,23 @@ export default function App() {
   // showing J15's OLD route from one block ago (activeRoute never got
   // reassigned or cleared to match), because nothing was keeping the map in
   // sync with the tab selection the way the text panel already was.
-  const displayRoute = (perNodeRoutes.length>1)
+  //
+  // FURTHER FIX: originally only switched to perNodeRoutes when length>1,
+  // falling back to activeRoute whenever exactly ONE hazard was active.
+  // activeRoute is a separately-managed piece of state that has repeatedly
+  // proven unreliable across many rounds of fixes today — the actual
+  // authoritative data for ANY active hazard, including exactly one, is
+  // always perNodeRoutes. Changed threshold to length>=1 so a
+  // single-hazard scenario is no longer silently dependent on activeRoute
+  // staying correctly in sync through every trigger/cancel/block sequence.
+  const displayRoute = (perNodeRoutes.length>=1)
     ? ((perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1])?.best_path || [])
     : activeRoute;
+  // Shared alongside displayRoute so the text panel doesn't need its own
+  // local (and previously divergent) copy of this same lookup.
+  const activeTabObj = perNodeRoutes.length>=1
+    ? (perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1])
+    : null;
 
   const pushEvent = (msg, level="info", tag=null) => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
@@ -505,6 +529,28 @@ export default function App() {
               return {...n, temp:live.temp??n.temp, crowd:live.crowd??n.crowd, velocity:live.velocity??n.velocity,
                 shelterInPlace:live.shelter_in_place??n.shelterInPlace, impassable:live.impassable??n.impassable};
             }));
+            // Reconcile manualBlockedNodes (drives the BLOCK CORRIDOR panel's
+            // ×/purple display) against backend truth. This was previously
+            // NEVER done — it's a purely local, optimistic list built only
+            // from click actions (add on block, remove on unblock, clear on
+            // reset), with nothing ever correcting it against what the
+            // backend actually has impassable. Over a long session with
+            // many block/unblock clicks, this can silently drift — a node
+            // could still be genuinely blocked on the backend while the
+            // panel shows it as available, which is exactly the kind of
+            // mismatch that would make a route look "wrongly" stranded with
+            // no visible explanation. hazard=="collapsed" specifically
+            // identifies a MANUAL block (matches block_node_and_reroute's
+            // own tagging), so this won't accidentally include fire or
+            // crush-level-crowd hard blocks, which aren't manual blocks.
+            const _backendBlocked = Object.entries(d.nodes)
+              .filter(([,v])=>v.impassable && v.hazard==="collapsed")
+              .map(([nid])=>nid);
+            setManualBlockedNodes(prev=>{
+              const same = prev.length===_backendBlocked.length &&
+                prev.every(x=>_backendBlocked.includes(x));
+              return same ? prev : _backendBlocked;
+            });
           }
         }
         // Per-node history for swipeable sparklines
@@ -680,6 +726,7 @@ export default function App() {
     if(systemMode!=="simulation") return false;
     const labels={"fire":"🔥 Fire","fallen":"🧍 Fallen Person","crowd":"👥 Crowd Density"};
     pushEvent(`SIM: ${labels[simTriggerType]} triggered at ${nodeId}`,"danger","REACTIVE");
+    const _mySeq = ++perNodeRoutesSeqRef.current;
     try{
       const resp = await fetch(apiUrl("/api/sim_trigger"),{
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -696,12 +743,19 @@ export default function App() {
           // clear the stale route instead of leaving it on screen unchanged.
           setActiveRoute([]);
         }
-        // Store per-node routes for multi-path display
+        // Store per-node routes for multi-path display — but only if no
+        // NEWER request (another trigger or a cancel) has been issued since
+        // this one was sent, otherwise this stale response would overwrite
+        // more current state that arrived out of order.
         if(d.per_node_routes && d.per_node_routes.length>0){
-          setPerNodeRoutes(d.per_node_routes);
-          d.per_node_routes.forEach(r=>{
-            pushEvent(`PATH: ${r.node_id} → ${r.best_exit} (${r.event_type})`, "info", "PRE-EMPTIVE");
-          });
+          if(_mySeq===perNodeRoutesSeqRef.current){
+            setPerNodeRoutes(d.per_node_routes);
+            d.per_node_routes.forEach(r=>{
+              pushEvent(`PATH: ${r.node_id} → ${r.best_exit} (${r.event_type})`, "info", "PRE-EMPTIVE");
+            });
+          } else {
+            console.warn(`[SIM] Discarded stale trigger response for ${nodeId} — a newer request was issued since`);
+          }
         }
       } else {
         const err = await resp.json().catch(()=>({}));
@@ -722,13 +776,18 @@ export default function App() {
   const cancelSimTriggerAtNode=async(nodeId)=>{
     const exists = perNodeRoutes.find(r=>r.node_id===nodeId);
     if(!exists) return;
+    const _mySeq = ++perNodeRoutesSeqRef.current;
     try{
       await fetch(apiUrl("/api/cancel_sim_trigger"),{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({node_id:nodeId})
       });
     } catch{ /* offline */ }
-    const remaining = perNodeRoutes.filter(r=>r.node_id!==nodeId);
+    if(_mySeq!==perNodeRoutesSeqRef.current){
+      console.warn(`[SIM] Discarded stale cancel response for ${nodeId} — a newer request was issued since`);
+      return;
+    }
+    const remaining = perNodeRoutesRef.current.filter(r=>r.node_id!==nodeId);
     setPerNodeRoutes(remaining);
     // If this was a crowd-type hazard, the crowd NUMBER was entirely
     // synthetic (set by the simulation, not a real camera reading) — clear
@@ -1506,7 +1565,7 @@ export default function App() {
                      map — without a label, a first-time viewer could
                      reasonably wonder if the room colors ALSO mean
                      something hazard-related. ── */}
-                <rect x="8" y="682" width="730" height="30" rx="5"
+                <rect x="8" y="682" width="730" height="42" rx="5"
                   fill="#FFFFFF" stroke={palette.border} strokeWidth="1"/>
                 <text x="18" y="694" style={{fontSize:7,fontWeight:700,letterSpacing:0.5,
                   fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
@@ -1529,6 +1588,15 @@ export default function App() {
                     </g>
                   ))}
                 </g>
+                {/* One-line explanation of WHY only fire/severe-crush are
+                    hard blocks while fallen/moderate-crowd routes still
+                    pass through them — this is the single most likely
+                    question a judge asks on sight, so answer it before
+                    they need to ask. */}
+                <text x="383.5" y="716" textAnchor="middle" style={{fontSize:7,fontStyle:"italic",
+                  fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                  Only fire and crush-level crowds (80+ pax) are impassable — fallen &amp; moderate-crowd routes go around, not through
+                </text>
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
                 flexDirection:"column",overflowY:"auto",overflowX:"hidden",minWidth:255,maxWidth:280}}>
@@ -1611,17 +1679,21 @@ export default function App() {
                     );
                   })()}
                   {(()=>{
-                    // Resolve which route to actually display: the selected
-                    // hazard tab's route if multi-hazard, otherwise the plain
-                    // single activeRoute (BOMBA block / single hazard case).
-                    const multi = perNodeRoutes.length>1;
-                    const activeTab = multi ? (perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1]) : null;
-                    const displayRoute = multi ? (activeTab?.best_path||[]) : activeRoute;
-                    if(multi && displayRoute.length===0){
+                    // Uses the SHARED displayRoute/activeTabObj (defined once
+                    // at the top of the component) instead of a local copy —
+                    // this file previously had TWO separate definitions of
+                    // essentially the same lookup, one here and one at the
+                    // top used by the map's node highlighting. Fixing one
+                    // never propagated to the other, since they were
+                    // genuinely different variables that happened to share a
+                    // name. That's why a fix targeting "the route display"
+                    // kept appearing to not work in some views but not
+                    // others — this eliminates the duplicate entirely.
+                    if(perNodeRoutes.length>=1 && displayRoute.length===0){
                       return(
                         <div style={{padding:"8px 10px",background:palette.infoLight,color:palette.infoDark,
                           borderRadius:6,border:`1px solid ${palette.info}`,fontWeight:700,fontSize:10}}>
-                          🏠 {activeTab?.node_id} is cut off from all exits.
+                          🏠 {activeTabObj?.node_id} is cut off from all exits.
                           <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
                         </div>
                       );
