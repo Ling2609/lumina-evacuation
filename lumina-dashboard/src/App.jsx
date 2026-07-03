@@ -323,6 +323,7 @@ export default function App() {
   const [occupancyExpandedCat, setOccupancyExpandedCat] = useState(null); // null | "High Traffic" | "HVAC Reduce" | "HVAC Increase"
   const [manualOverride,  setManualOverride]  = useState(false);
   const [manualBlockedNodes, setManualBlockedNodes] = useState([]); // array for multi-block
+  const [shelterAlert, setShelterAlert] = useState(null); // node id stranded with no viable route, or null
 
   // ── System mode & simulation trigger ────────────────────────────────────
   // systemMode: "simulation" | "live"
@@ -435,7 +436,7 @@ export default function App() {
               // Backend cleared per-node routes (reset) — clear frontend too
               setPerNodeRoutes([]);
             }
-            if (d.current_route?.length && !manualOverrideRef.current) setActiveRoute(d.current_route);
+            if (d.current_route!==undefined && !manualOverrideRef.current) setActiveRoute(d.current_route);
           }
           if (d.pull_signals) setPullSignals(d.pull_signals);
           if (d.rset) setRset(d.rset);
@@ -450,6 +451,7 @@ export default function App() {
               id, zone:pm[id]?.zone??DOOR_POS[id]?.label??id, x:pm[id]?.x??DOOR_POS[id]?.x??50, y:pm[id]?.y??DOOR_POS[id]?.y??50,
               temp:v.temp??27, status:v.status, hazard:v.hazard,
               crowd:v.crowd, velocity:v.velocity, pull:v.pull,
+              shelterInPlace:v.shelter_in_place??false, impassable:v.impassable??false,
             }));
             setNodes(merged);
             setSelectedNode(p=>merged.find(n=>n.id===p?.id)??null);
@@ -460,7 +462,8 @@ export default function App() {
           if (d.nodes) {
             setNodes(prev=>prev.map(n=>{
               const live=d.nodes[n.id]; if(!live) return n;
-              return {...n, temp:live.temp??n.temp, crowd:live.crowd??n.crowd, velocity:live.velocity??n.velocity};
+              return {...n, temp:live.temp??n.temp, crowd:live.crowd??n.crowd, velocity:live.velocity??n.velocity,
+                shelterInPlace:live.shelter_in_place??n.shelterInPlace, impassable:live.impassable??n.impassable};
             }));
           }
         }
@@ -611,7 +614,8 @@ export default function App() {
     setPullSignals({});
     setPerNodeRoutes([]);
     setSimTriggerType(null);
-    setNodes(prev=>prev.map(n=>({...n,status:"normal",hazard:null})));
+    setShelterAlert(null);
+    setNodes(prev=>prev.map(n=>({...n,status:"normal",hazard:null,shelterInPlace:false,impassable:false})));
     pushEvent("RESET — all hazards cleared, returning to AUTO mode","info");
   };
 
@@ -643,9 +647,13 @@ export default function App() {
       if(resp.ok){
         const d = await resp.json();
         // Set primary route (most recent hazard node → best exit)
-        if(d.route && d.route.length>1){
+        if(d.route && d.route.length>0){
           const fullPath = d.route[0]===nodeId ? d.route : [nodeId,...d.route];
           setActiveRoute(fullPath);
+        } else if(d.route){
+          // Empty array is a genuine "no route" result, not "nothing to do" —
+          // clear the stale route instead of leaving it on screen unchanged.
+          setActiveRoute([]);
         }
         // Store per-node routes for multi-path display
         if(d.per_node_routes && d.per_node_routes.length>0){
@@ -704,7 +712,7 @@ export default function App() {
   const overridePath=async()=>{
     // Allow blocking in any state — Bomba may need to pre-emptively block
     // Start from current hazard origin or active route start
-    const rawTarget=selectedNode?.id??activeRoute[0]??"J19";
+    const rawTarget=selectedNode?.id??activeRoute[0]??shelterAlert??"J19";
     // Defensive normalization: if a door ID (B1-B16) is ever selected,
     // convert to its junction so manualBlockedNodes matches room rid keys
     // and the Digital Twin actually highlights purple on quarantine.
@@ -717,15 +725,52 @@ export default function App() {
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({node_id:target, start:activeRoute[0]||"J4"})});
+        body:JSON.stringify({node_id:target, start:activeRoute[0]||shelterAlert||"J4"})});
       const d=await r.json();
-      if(d.new_route){
-        setManualBlockedNodes(prev=>[...prev.filter(x=>x!==target), target]);
-        setNodes(prev=>prev.map(n=>n.id===target?{...n,status:"quarantine",hazard:"crowd"}:n));
-        setSelectedNode(null);
+      // Always register the block itself — it succeeded (the node IS
+      // quarantined) regardless of whether a route still exists from
+      // wherever "start" was.
+      setManualBlockedNodes(prev=>[...prev.filter(x=>x!==target), target]);
+      setNodes(prev=>prev.map(n=>n.id===target?{...n,status:"quarantine",hazard:"crowd"}:n));
+      setSelectedNode(null);
+      if(d.no_route){
+        // Genuinely no path exists — Area of Refuge situation. Don't show
+        // a route (there isn't one); flag the stranded node for shelter-
+        // in-place instead so BOMBA can dispatch rescue there directly.
+        // NEVER flag the node we JUST blocked (target) — a closed passage
+        // isn't a place people are sheltering, it's just gone.
+        const strandedId = (d.start && d.start !== target) ? d.start
+                          : (activeRoute[0] && activeRoute[0] !== target) ? activeRoute[0]
+                          : null;
+        if(strandedId){
+          setShelterAlert(strandedId);
+          setNodes(prev=>prev.map(n=>n.id===strandedId?{...n,shelterInPlace:true}:n));
+        }
+        setActiveRoute([]);
+        // Update the banner immediately from this response rather than
+        // waiting for the MQTT round-trip to echo it back — the MQTT path
+        // works too, but relying on it alone means the banner can sit stale
+        // for however long the broker round-trip takes (or arrive out of
+        // order relative to whichever block happened most recently).
+        setIsHazard(true);
+        setHazardType("NO ROUTE — RESCUE REQUIRED");
+        pushEvent(`NO ROUTE${strandedId?` from ${strandedId}`:""} — SHELTER IN PLACE, rescue required`,"danger","REACTIVE");
+      } else if(d.new_route){
+        setShelterAlert(null);
+        setHazardType("MANUAL OVERRIDE");
         pushEvent(`BOMBA override: ${target} quarantined — route locked. Auto-routing PAUSED.`,"warning","REACTIVE");
+        // Always update activeRoute — the "ACTIVE ROUTE" panel reads this
+        // directly. Previously this was skipped whenever perNodeRoutes was
+        // active (multi-hazard mode), leaving the panel permanently stuck
+        // showing the route from BEFORE any block happened, even though the
+        // map's node colors (driven by status, not activeRoute) correctly
+        // updated — creating a silent mismatch between the two displays.
+        setActiveRoute(d.new_route);
         if(perNodeRoutes.length>0){
-          // Multi-hazard mode — recalculate each per-node route avoiding the blocked node
+          // Multi-hazard mode — ALSO recalculate every other hazard node's
+          // own route avoiding the newly-blocked node, so the map's per-
+          // hazard route lines stay consistent too.
+          const newlyStranded = [];
           const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
             try{
               const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
@@ -735,13 +780,25 @@ export default function App() {
                 const dd=await rr.json();
                 const best=dd.routes?.find(rt=>!rt.path?.includes(target))||dd.routes?.[0];
                 if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+                // No route found for THIS hazard node either — it's now
+                // genuinely stranded by the block we just made, even though
+                // it wasn't the node this particular block was tested from.
+                // Previously this fell through to `return nr` unchanged,
+                // silently keeping a stale route that no longer exists.
+                // Defensive: never flag the just-blocked node itself.
+                if(nr.node_id !== target) newlyStranded.push(nr.node_id);
+                return {...nr, best_path:[], best_exit:null};
               }
             } catch{ /* offline */ }
             return nr;
           }));
           setPerNodeRoutes(updated);
-        } else {
-          setActiveRoute(d.new_route);
+          if(newlyStranded.length>0){
+            setNodes(prev=>prev.map(n=>newlyStranded.includes(n.id)?{...n,shelterInPlace:true}:n));
+            // Surface the most recently-discovered stranded node as the
+            // primary shelter alert if nothing else is already showing.
+            if(!shelterAlert) setShelterAlert(newlyStranded[newlyStranded.length-1]);
+          }
         }
       } else {
         pushEvent(`Override failed — no alternate route found from ${target}`,"danger");
@@ -1004,7 +1061,18 @@ export default function App() {
                 {/* ── Room polygons with zone colors ── */}
                 {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
-                  const hazardFill = n?.status==="alert"?"#FEE2E2":
+                  // Match this room to its door by label, so shelter-in-place
+                  // (set on a DOOR id like "B9") highlights the right room even
+                  // though r.rid points at a JUNCTION (e.g. "J4") for routing
+                  // purposes, not the door itself.
+                  const roomLabel = (r.l1+(r.l2?(" "+r.l2):"")).trim();
+                  // Same absolute guard as the junction nodes — never highlight a room as
+                  // shelter if shelterAlert is (or resolves to) a manually-blocked node.
+                  const isShelterRoom = shelterAlert && !manualBlockedNodes.includes(shelterAlert) &&
+                    !manualBlockedNodes.includes(DOOR_TO_J[shelterAlert]||shelterAlert) &&
+                    DOOR_POS[shelterAlert]?.label===roomLabel;
+                  const hazardFill = isShelterRoom?palette.infoLight:
+                                     n?.status==="alert"?"#FEE2E2":
                                      manualBlockedNodes.includes(n?.id)?"#E9D5FF":
                                      n?.status==="quarantine"?"#FEF3C7":null;
                   const fillColor = hazardFill || r.fill || "white";
@@ -1023,8 +1091,15 @@ export default function App() {
                               stroke="#94A3B8" strokeWidth="1.5"/>)}
                           </g>
                         : <polygon points={r.pts} fill={fillColor}
-                            stroke="#94A3B8" strokeWidth="1.5"/>
+                            stroke={isShelterRoom?palette.info:"#94A3B8"}
+                            strokeWidth={isShelterRoom?3:1.5}
+                            style={isShelterRoom?{animation:"restrictedBlink 2s ease-in-out infinite"}:{}}/>
                       }
+                      {isShelterRoom&&<text x={r.cx} y={(r.l2?r.cy-5:r.cy)-14} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:7,fill:palette.info,fontFamily:"Inter,sans-serif",fontWeight:800}}>
+                        🏠 SHELTER — AWAIT RESCUE
+                      </text>}
                       <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
                         dominantBaseline="central"
                         style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
@@ -1057,18 +1132,21 @@ export default function App() {
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
                   const aNode=nodes.find(x=>x.id===a);
                   const bNode=nodes.find(x=>x.id===b);
-                  // Tiered corridor coloring: RED = alert/quarantine (fire, fallen
-                  // person, or crowd over CORRIDOR_CAPACITY — genuinely blocked).
-                  // YELLOW = warning (moderate crowd — still passable, just dense).
-                  // GREY = normal.
-                  const isSevere=(aNode?.status==="alert"||bNode?.status==="alert"||
+                  // Tiered corridor coloring: BLUE = shelter-in-place (no route
+                  // exists — overrides red, since "flee" is no longer the correct
+                  // message once there's genuinely nowhere to flee to). RED =
+                  // alert/quarantine (fire, fallen person, or crowd over
+                  // CORRIDOR_CAPACITY — genuinely blocked). YELLOW = warning
+                  // (moderate crowd — still passable, just dense). GREY = normal.
+                  const edgeShelter=(aNode?.shelterInPlace||bNode?.shelterInPlace);
+                  const isSevere=!edgeShelter&&(aNode?.status==="alert"||bNode?.status==="alert"||
                     aNode?.status==="quarantine"||bNode?.status==="quarantine");
-                  const isModerate=!isSevere&&(aNode?.status==="warning"||bNode?.status==="warning");
-                  const edgeStroke=isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
+                  const isModerate=!isSevere&&!edgeShelter&&(aNode?.status==="warning"||bNode?.status==="warning");
+                  const edgeStroke=edgeShelter?palette.info:isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
                     stroke={edgeStroke}
-                    strokeWidth={(isSevere||isModerate)?2:1.5} strokeDasharray={(isSevere||isModerate)?"none":"6 4"}
-                    opacity={(isSevere||isModerate)?0.8:0.5}/>;
+                    strokeWidth={(isSevere||isModerate||edgeShelter)?2:1.5} strokeDasharray={(isSevere||isModerate||edgeShelter)?"none":"6 4"}
+                    opacity={(isSevere||isModerate||edgeShelter)?0.8:0.5}/>;
                 })}
 
                 {/* ── Active route — hidden when perNodeRoutes is active ── */}
@@ -1151,26 +1229,55 @@ export default function App() {
                   const isOnRoute=activeRoute.includes(id);
                   const isBlocked=manualBlockedNodes.includes(id);
                   const isPending=false; // kept for compat
-                  const isAlert=n?.status==="alert";
+                  const rawIsAlert=n?.status==="alert";
+                  // Shelter-in-place OVERRIDES the red "danger, flee" signal with
+                  // calm blue — once there's genuinely no route, red is the wrong
+                  // message (it says "run"); blue says "stay put, help is coming".
+                  // Exception: if this exact spot still has an active fire/fall
+                  // sensor reading (not just "no route away from it"), keep it red —
+                  // sheltering IN an active fire zone would be actively misleading.
+                  // A manually-blocked node must NEVER show shelter styling — it's a closed
+                  // passage, not a location where people are waiting for rescue. This
+                  // guard is absolute: purple (blocked) always wins over blue (shelter),
+                  // regardless of how/why shelterInPlace got set on it.
+                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && n?.hazard!=="fall" && !isBlocked;
+                  const isAlert=rawIsAlert && !isShelter;
                   const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
                   const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
-                  const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
+                  // Priority: shelter (blue) > active hazard (red) > manual block
+                  // (purple) > tier2 crowd (amber) > on-route (green) > default.
+                  //
+                  // A manual BOMBA block sets status="quarantine" on the backend —
+                  // the SAME status a naturally over-capacity crowd gets. isTier2
+                  // matches both. Checking isTier2 before isBlocked (as an earlier
+                  // fix mistakenly did) made every manually-blocked node show amber
+                  // instead of purple, because a block always implies quarantine
+                  // status. Checking isBlocked first fixes that, while a node that's
+                  // BOTH on fire AND blocked still reads red (isAlert is checked
+                  // even earlier), so the purple ring layers on top without hiding
+                  // the fire — same intent as before, correctly ordered this time.
+                  const dotColor=isPending?"#94A3B8":
+                    isShelter?palette.info:
                     isAlert?palette.danger:
+                    isBlocked?palette.purple:
                     isTier2?palette.warning:
                     isOnRoute?palette.success:nodeColor;
-                  const r=isOnRoute||isAlert?7:isCrowd?6:4;
+                  const r=isOnRoute||isAlert||isShelter||isBlocked?7:isCrowd?6:4;
                   return(
                     <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
+                      {isShelter&&<circle cx={pos.x} cy={pos.y} r={r+5}
+                        fill={palette.info} opacity="0.2"
+                        style={{animation:"pulse 1.4s ease-in-out infinite"}}/>}
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
                       {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
                         fill={palette.warning} opacity="0.2"
                         style={{animation:"pulse 1.4s linear infinite"}}/>}
-                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+7}
+                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill="none" stroke={palette.purple} strokeWidth="2"
-                        strokeDasharray="4 3" opacity="0.85"
+                        strokeDasharray="4 3" opacity="0.9"
                         style={{animation:"restrictedBlink 2s ease-in-out infinite"}}>
                         <title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>
                       </circle>}
@@ -1180,14 +1287,15 @@ export default function App() {
                       </circle>
                       {/* Show ID only on route or alert */}
                       <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
-                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd?8:6.5,
-                          fontWeight:isOnRoute||isAlert||isBlocked?700:400,
-                          fill:isOnRoute||isAlert||isBlocked||isCrowd?dotColor:"#94A3B8",
-                          opacity:isOnRoute||isAlert||isBlocked||isCrowd?1:0.7,
+                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?8:6.5,
+                          fontWeight:isOnRoute||isAlert||isBlocked||isShelter?700:400,
+                          fill:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?dotColor:"#94A3B8",
+                          opacity:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?1:0.7,
                           fontFamily:"Inter,sans-serif"}}>{id}</text>
-                      {/* Hazard emoji */}
-                      {(isAlert||isCrowd)&&(()=>{
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                      {/* Hazard emoji — shelter shows a distinct "stay put" icon
+                          instead of the alarm icon, since the message is different */}
+                      {(isAlert||isCrowd||isShelter)&&(()=>{
+                        const icon=isShelter?"🏠":n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
@@ -1225,10 +1333,17 @@ export default function App() {
                 })}
 
                 {activeRoute.length<=1&&(
-                  <text x="383" y="340" textAnchor="middle" dominantBaseline="central"
-                    style={{fontSize:12,fontWeight:700,fill:palette.danger,fontFamily:"Inter,sans-serif"}}>
-                    ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
-                  </text>
+                  <g>
+                    <text x="383" y="330" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:12,fontWeight:700,
+                        fill:shelterAlert?palette.info:palette.danger,fontFamily:"Inter,sans-serif"}}>
+                      {shelterAlert?"NO VIABLE ROUTE — SHELTER IN PLACE":"ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED"}
+                    </text>
+                    {shelterAlert&&<text x="383" y="346" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:9,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
+                      Area of Refuge: {shelterAlert} — dispatch rescue directly
+                    </text>}
+                  </g>
                 )}
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
@@ -1348,11 +1463,30 @@ export default function App() {
                                   body:JSON.stringify({node_id:n.id})});
                                 const remaining = manualBlockedNodes.filter(x=>x!==n.id);
                                 setManualBlockedNodes(remaining);
-                                setNodes(prev=>prev.map(x=>x.id===n.id?{...x,status:"normal",hazard:null}:x));
+                                setNodes(prev=>prev.map(x=>x.id===n.id?{...x,status:"normal",hazard:null,shelterInPlace:false}:x));
                                 pushEvent(`BOMBA: ${n.id} unblocked`,"info","PRE-EMPTIVE");
+                                // Release the shelter-in-place hold and try to get a fresh
+                                // route now that the block is gone — otherwise activeRoute
+                                // stays permanently empty ("forever trapped") even though
+                                // the backend already has a valid path again.
+                                if(shelterAlert){
+                                  const strandedOrigin = shelterAlert;
+                                  setShelterAlert(null);
+                                  try{
+                                    const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
+                                      headers:{"Content-Type":"application/json"},
+                                      body:JSON.stringify({start:strandedOrigin})});
+                                    if(rr.ok){
+                                      const dd=await rr.json();
+                                      const best=dd.routes?.[0];
+                                      if(best?.path) setActiveRoute(best.path);
+                                    }
+                                  } catch{ /* offline — will pick up on next poll */ }
+                                }
                                 if(remaining.length===0) setManualOverride(false);
                                 // Recalculate all per-node routes now that node is unblocked
                                 if(perNodeRoutes.length>0){
+                                  const stillStranded = [];
                                   const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
                                     try{
                                       const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
@@ -1362,11 +1496,16 @@ export default function App() {
                                         const dd=await rr.json();
                                         const best=dd.routes?.find(rt=>rt.safe)||dd.routes?.[0];
                                         if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+                                        if(nr.node_id !== n.id) stillStranded.push(nr.node_id);
+                                        return {...nr, best_path:[], best_exit:null};
                                       }
                                     } catch{ /* offline */ }
                                     return nr;
                                   }));
                                   setPerNodeRoutes(updated);
+                                  if(stillStranded.length>0){
+                                    setNodes(prev=>prev.map(x=>stillStranded.includes(x.id)?{...x,shelterInPlace:true}:x));
+                                  }
                                 } else {
                                   // Single route mode — fetch updated route from backend
                                   try{
@@ -1394,16 +1533,35 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <button onClick={overridePath} style={{width:"100%",
-                    background:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warningLight:"transparent",
-                    border:`1px solid ${selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warning:palette.border}`,
-                    borderRadius:5,padding:"5px",fontSize:10,fontWeight:700,
-                    color:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?palette.warningDark:palette.textMuted,
-                    cursor:selectedNode&&!manualBlockedNodes.includes(selectedNode.id)?"pointer":"not-allowed"}}>
-                    {selectedNode&&!manualBlockedNodes.includes(selectedNode.id)
-                      ?`② REROUTE AROUND ${selectedNode.id}`
-                      :"② BLOCK + REROUTE (BOMBA)"}
-                  </button>
+                  {(()=>{
+                    // Mirror overridePath()'s exact target-resolution logic so the
+                    // label always tells the truth about which node WILL be blocked
+                    // if clicked — previously this showed a generic label whenever
+                    // selectedNode was null (e.g. clicking a room polygon, which has
+                    // no click handler), silently falling back to activeRoute[0]
+                    // with no visual indication of what was actually about to happen.
+                    const rawTarget = selectedNode?.id ?? activeRoute[0] ?? shelterAlert ?? "J19";
+                    const resolvedTarget = DOOR_TO_J[rawTarget] || rawTarget;
+                    const alreadyBlocked = manualBlockedNodes.includes(resolvedTarget);
+                    const hasValidTarget = !!(selectedNode || activeRoute[0] || shelterAlert);
+                    return(
+                      <button onClick={overridePath} disabled={!hasValidTarget || alreadyBlocked}
+                        style={{width:"100%",
+                        background:hasValidTarget&&!alreadyBlocked?palette.warningLight:"transparent",
+                        border:`1px solid ${hasValidTarget&&!alreadyBlocked?palette.warning:palette.border}`,
+                        borderRadius:5,padding:"5px",fontSize:10,fontWeight:700,
+                        color:hasValidTarget&&!alreadyBlocked?palette.warningDark:palette.textMuted,
+                        cursor:hasValidTarget&&!alreadyBlocked?"pointer":"not-allowed"}}>
+                        {!hasValidTarget
+                          ?"② SELECT A NODE FIRST"
+                          :alreadyBlocked
+                          ?`${resolvedTarget} ALREADY BLOCKED`
+                          :selectedNode
+                          ?`② REROUTE AROUND ${resolvedTarget}`
+                          :`② BLOCK ${resolvedTarget} (from active route)`}
+                      </button>
+                    );
+                  })()}
                 </div>
                 <div style={{padding:"8px 12px",borderBottom:`1px solid ${palette.border}`,flexShrink:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:palette.purple,marginBottom:5}}>
@@ -1423,7 +1581,7 @@ export default function App() {
                     const rankLabel = rank===0?"BEST":rank===1?"2nd":rank===2?"3rd":`${rank+1}th`;
                     return(
                       <button key={exitId} onClick={()=>{
-                        const origin = activeRoute[0] || "J4";
+                        const origin = activeRoute[0] || shelterAlert || "J4";
                         fetch(apiUrl("/api/force_exit"),{
                           method:"POST",
                           headers:{"Content-Type":"application/json"},
@@ -1431,6 +1589,7 @@ export default function App() {
                         }).then(r=>r.json()).then(d=>{
                           if(d.route?.length) {
                             setActiveRoute(d.route);
+                            setShelterAlert(null);
                             setManualOverride(true);
                             setManualBlockedNodes([]);
                           }
@@ -1676,7 +1835,18 @@ export default function App() {
                 {/* ── Room polygons with zone colors ── */}
                 {ROOM_POLYGONS.map((r,i)=>{
                   const n = r.rid ? nodes.find(x=>x.id===r.rid) : null;
-                  const hazardFill = n?.status==="alert"?"#FEE2E2":
+                  // Match this room to its door by label, so shelter-in-place
+                  // (set on a DOOR id like "B9") highlights the right room even
+                  // though r.rid points at a JUNCTION (e.g. "J4") for routing
+                  // purposes, not the door itself.
+                  const roomLabel = (r.l1+(r.l2?(" "+r.l2):"")).trim();
+                  // Same absolute guard as the junction nodes — never highlight a room as
+                  // shelter if shelterAlert is (or resolves to) a manually-blocked node.
+                  const isShelterRoom = shelterAlert && !manualBlockedNodes.includes(shelterAlert) &&
+                    !manualBlockedNodes.includes(DOOR_TO_J[shelterAlert]||shelterAlert) &&
+                    DOOR_POS[shelterAlert]?.label===roomLabel;
+                  const hazardFill = isShelterRoom?palette.infoLight:
+                                     n?.status==="alert"?"#FEE2E2":
                                      manualBlockedNodes.includes(n?.id)?"#E9D5FF":
                                      n?.status==="quarantine"?"#FEF3C7":null;
                   const fillColor = hazardFill || r.fill || "white";
@@ -1695,8 +1865,15 @@ export default function App() {
                               stroke="#94A3B8" strokeWidth="1.5"/>)}
                           </g>
                         : <polygon points={r.pts} fill={fillColor}
-                            stroke="#94A3B8" strokeWidth="1.5"/>
+                            stroke={isShelterRoom?palette.info:"#94A3B8"}
+                            strokeWidth={isShelterRoom?3:1.5}
+                            style={isShelterRoom?{animation:"restrictedBlink 2s ease-in-out infinite"}:{}}/>
                       }
+                      {isShelterRoom&&<text x={r.cx} y={(r.l2?r.cy-5:r.cy)-14} textAnchor="middle"
+                        dominantBaseline="central"
+                        style={{fontSize:7,fill:palette.info,fontFamily:"Inter,sans-serif",fontWeight:800}}>
+                        🏠 SHELTER — AWAIT RESCUE
+                      </text>}
                       <text x={r.cx} y={r.l2?r.cy-5:r.cy} textAnchor="middle"
                         dominantBaseline="central"
                         style={{fontSize:fs,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>{r.l1}</text>
@@ -1729,18 +1906,21 @@ export default function App() {
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
                   const aNode=nodes.find(x=>x.id===a);
                   const bNode=nodes.find(x=>x.id===b);
-                  // Tiered corridor coloring: RED = alert/quarantine (fire, fallen
-                  // person, or crowd over CORRIDOR_CAPACITY — genuinely blocked).
-                  // YELLOW = warning (moderate crowd — still passable, just dense).
-                  // GREY = normal.
-                  const isSevere=(aNode?.status==="alert"||bNode?.status==="alert"||
+                  // Tiered corridor coloring: BLUE = shelter-in-place (no route
+                  // exists — overrides red, since "flee" is no longer the correct
+                  // message once there's genuinely nowhere to flee to). RED =
+                  // alert/quarantine (fire, fallen person, or crowd over
+                  // CORRIDOR_CAPACITY — genuinely blocked). YELLOW = warning
+                  // (moderate crowd — still passable, just dense). GREY = normal.
+                  const edgeShelter=(aNode?.shelterInPlace||bNode?.shelterInPlace);
+                  const isSevere=!edgeShelter&&(aNode?.status==="alert"||bNode?.status==="alert"||
                     aNode?.status==="quarantine"||bNode?.status==="quarantine");
-                  const isModerate=!isSevere&&(aNode?.status==="warning"||bNode?.status==="warning");
-                  const edgeStroke=isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
+                  const isModerate=!isSevere&&!edgeShelter&&(aNode?.status==="warning"||bNode?.status==="warning");
+                  const edgeStroke=edgeShelter?palette.info:isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
                     stroke={edgeStroke}
-                    strokeWidth={(isSevere||isModerate)?2:1.5} strokeDasharray={(isSevere||isModerate)?"none":"6 4"}
-                    opacity={(isSevere||isModerate)?0.8:0.5}/>;
+                    strokeWidth={(isSevere||isModerate||edgeShelter)?2:1.5} strokeDasharray={(isSevere||isModerate||edgeShelter)?"none":"6 4"}
+                    opacity={(isSevere||isModerate||edgeShelter)?0.8:0.5}/>;
                 })}
 
                 {/* ── Active route — hidden when perNodeRoutes is active ── */}
@@ -1823,26 +2003,55 @@ export default function App() {
                   const isOnRoute=activeRoute.includes(id);
                   const isBlocked=manualBlockedNodes.includes(id);
                   const isPending=false; // kept for compat
-                  const isAlert=n?.status==="alert";
+                  const rawIsAlert=n?.status==="alert";
+                  // Shelter-in-place OVERRIDES the red "danger, flee" signal with
+                  // calm blue — once there's genuinely no route, red is the wrong
+                  // message (it says "run"); blue says "stay put, help is coming".
+                  // Exception: if this exact spot still has an active fire/fall
+                  // sensor reading (not just "no route away from it"), keep it red —
+                  // sheltering IN an active fire zone would be actively misleading.
+                  // A manually-blocked node must NEVER show shelter styling — it's a closed
+                  // passage, not a location where people are waiting for rescue. This
+                  // guard is absolute: purple (blocked) always wins over blue (shelter),
+                  // regardless of how/why shelterInPlace got set on it.
+                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && n?.hazard!=="fall" && !isBlocked;
+                  const isAlert=rawIsAlert && !isShelter;
                   const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
                   const nodeColor=LUMINA_NODE_DEFS[J_TO_NODE[id]]?.color||"#94A3B8";
-                  const dotColor=isPending?"#94A3B8":isBlocked?palette.purple:
+                  // Priority: shelter (blue) > active hazard (red) > manual block
+                  // (purple) > tier2 crowd (amber) > on-route (green) > default.
+                  //
+                  // A manual BOMBA block sets status="quarantine" on the backend —
+                  // the SAME status a naturally over-capacity crowd gets. isTier2
+                  // matches both. Checking isTier2 before isBlocked (as an earlier
+                  // fix mistakenly did) made every manually-blocked node show amber
+                  // instead of purple, because a block always implies quarantine
+                  // status. Checking isBlocked first fixes that, while a node that's
+                  // BOTH on fire AND blocked still reads red (isAlert is checked
+                  // even earlier), so the purple ring layers on top without hiding
+                  // the fire — same intent as before, correctly ordered this time.
+                  const dotColor=isPending?"#94A3B8":
+                    isShelter?palette.info:
                     isAlert?palette.danger:
+                    isBlocked?palette.purple:
                     isTier2?palette.warning:
                     isOnRoute?palette.success:nodeColor;
-                  const r=isOnRoute||isAlert?7:isCrowd?6:4;
+                  const r=isOnRoute||isAlert||isShelter||isBlocked?7:isCrowd?6:4;
                   return(
                     <g key={id} style={{cursor:simTriggerType?(SIM_CURSORS[simTriggerType]||"crosshair"):perNodeRoutes.find(r=>r.node_id===id)?"context-menu":"pointer"}} onClick={async()=>{if(simTriggerType){await fireSimTriggerAtNode(id);}else{setSelectedNode(n??null);} }} onDoubleClick={async(e)=>{e.stopPropagation();if(systemMode==="simulation")await cancelSimTriggerAtNode(id);}}>
+                      {isShelter&&<circle cx={pos.x} cy={pos.y} r={r+5}
+                        fill={palette.info} opacity="0.2"
+                        style={{animation:"pulse 1.4s ease-in-out infinite"}}/>}
                       {isAlert&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill={palette.danger} opacity="0.18"
                         style={{animation:"pulse 1.2s infinite"}}/>}
                       {isCrowd&&<circle cx={pos.x} cy={pos.y} r={r+4}
                         fill={palette.warning} opacity="0.2"
                         style={{animation:"pulse 1.4s linear infinite"}}/>}
-                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+7}
+                      {isBlocked&&<circle cx={pos.x} cy={pos.y} r={r+5}
                         fill="none" stroke={palette.purple} strokeWidth="2"
-                        strokeDasharray="4 3" opacity="0.85"
+                        strokeDasharray="4 3" opacity="0.9"
                         style={{animation:"restrictedBlink 2s ease-in-out infinite"}}>
                         <title>Status: Restricted{`\n`}Reason: Precautionary Block{`\n`}Impact: Evacuation routing will avoid this node</title>
                       </circle>}
@@ -1852,14 +2061,15 @@ export default function App() {
                       </circle>
                       {/* Show ID only on route or alert */}
                       <text x={pos.x} y={pos.y+r+8} textAnchor="middle"
-                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd?8:6.5,
-                          fontWeight:isOnRoute||isAlert||isBlocked?700:400,
-                          fill:isOnRoute||isAlert||isBlocked||isCrowd?dotColor:"#94A3B8",
-                          opacity:isOnRoute||isAlert||isBlocked||isCrowd?1:0.7,
+                        style={{fontSize:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?8:6.5,
+                          fontWeight:isOnRoute||isAlert||isBlocked||isShelter?700:400,
+                          fill:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?dotColor:"#94A3B8",
+                          opacity:isOnRoute||isAlert||isBlocked||isCrowd||isShelter?1:0.7,
                           fontFamily:"Inter,sans-serif"}}>{id}</text>
-                      {/* Hazard emoji */}
-                      {(isAlert||isCrowd)&&(()=>{
-                        const icon=n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
+                      {/* Hazard emoji — shelter shows a distinct "stay put" icon
+                          instead of the alarm icon, since the message is different */}
+                      {(isAlert||isCrowd||isShelter)&&(()=>{
+                        const icon=isShelter?"🏠":n?.hazard==="thermal"?"🔥":n?.hazard==="fall"?"🧍":n?.hazard==="crowd"?"👥":"⚠";
                         return(<g>
                           <circle cx={pos.x} cy={pos.y-r-18} r={12}
                             fill="white" opacity="1" stroke="#E2E8F0" strokeWidth="1"/>
@@ -1897,10 +2107,17 @@ export default function App() {
                 })}
 
                 {activeRoute.length<=1&&(
-                  <text x="383" y="340" textAnchor="middle" dominantBaseline="central"
-                    style={{fontSize:12,fontWeight:700,fill:palette.danger,fontFamily:"Inter,sans-serif"}}>
-                    ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED
-                  </text>
+                  <g>
+                    <text x="383" y="330" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:12,fontWeight:700,
+                        fill:shelterAlert?palette.info:palette.danger,fontFamily:"Inter,sans-serif"}}>
+                      {shelterAlert?"NO VIABLE ROUTE — SHELTER IN PLACE":"ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED"}
+                    </text>
+                    {shelterAlert&&<text x="383" y="346" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:9,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
+                      Area of Refuge: {shelterAlert} — dispatch rescue directly
+                    </text>}
+                  </g>
                 )}
                 </svg>
                 {selectedNode&&(

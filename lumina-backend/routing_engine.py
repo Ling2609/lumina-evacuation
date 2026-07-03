@@ -126,6 +126,10 @@ def facp_store_alert(door_id: str, hazard_type: str = "thermal"):
         return None
     live_node_status[junction_id]["status"] = "alert"
     live_node_status[junction_id]["hazard"] = hazard_type
+    # Thermal (fire) hard-blocks, consistent with the thermal sensor thread
+    # and sim-triggered fire — a real fire genuinely can't be walked through.
+    # Fall stays soft (people can step around someone on the ground).
+    live_node_status[junction_id]["impassable"] = (hazard_type == "thermal")
     return junction_id
 
 def facp_store_clear(door_id: str):
@@ -135,6 +139,8 @@ def facp_store_clear(door_id: str):
         return None
     live_node_status[junction_id]["status"] = "normal"
     live_node_status[junction_id]["hazard"] = None
+    live_node_status[junction_id]["impassable"] = False
+    live_node_status[junction_id]["shelter_in_place"] = False
     return junction_id
 
 def route_from_store(door_id: str, verbose: bool = True) -> tuple:
@@ -322,13 +328,25 @@ ASET_SECONDS           = 600
 # =============================================================================
 def _make_junction():
     return {
-        "status":        "normal",  # normal | warning | alert | quarantine
-        "hazard":        None,      # thermal | crowd | fall | smoke
-        "crowd":         0,
-        "crowd_history": deque([0]*10, maxlen=10),
-        "velocity":      0.0,       # m/s crowd flow
-        "pull_signal":   "GREEN",   # GREEN | AMBER | RED
-        "tier":          1,         # 1=normal, 2=pre_crush, 3=critical
+        "status":           "normal",  # normal | warning | alert | quarantine
+        "hazard":           None,      # thermal | crowd | fall | smoke | collapsed
+        "impassable":       False,     # TRUE physical block (structural collapse) —
+                                        # excluded from the graph entirely, unlike
+                                        # "quarantine" which is a heavy but finite
+                                        # penalty (crowded/dangerous but still walkable
+                                        # if there's truly no other way).
+        "shelter_in_place": False,     # TRUE when no route exists at all from here —
+                                        # occupants should stay put (Area of Refuge)
+                                        # and wait for rescue rather than attempt a
+                                        # route that doesn't exist. Independent of
+                                        # "status" so it doesn't collide with the
+                                        # existing normal/warning/alert/quarantine
+                                        # color logic already used throughout the UI.
+        "crowd":            0,
+        "crowd_history":    deque([0]*10, maxlen=10),
+        "velocity":         0.0,       # m/s crowd flow
+        "pull_signal":      "GREEN",   # GREEN | AMBER | RED
+        "tier":             1,         # 1=normal, 2=pre_crush, 3=critical
     }
 
 DOOR_IDS = [f"B{i}" for i in range(1, 17)]
@@ -468,6 +486,15 @@ def heuristic(a: str, b: str) -> float:
 def calculate_safest_route(start_junction: str, target: str = None,
                             verbose: bool = True) -> tuple:
     global _current_route, _current_route_cost
+    # NOTE: deliberately does NOT reject an impassable start_junction here.
+    # Computing "how does someone standing at the hazard itself escape" is a
+    # normal, essential operation (every fire/fallen/crowd trigger needs
+    # this) — the hazard's own location is legitimately impassable for
+    # OTHER routes passing through it, but the person actually there still
+    # needs an escape path computed FROM there. The specific edge case this
+    # would have caught (blocking a node that's also the pre-existing route's
+    # origin) is instead handled at the caller level in
+    # block_node_and_reroute(), where it can be distinguished correctly.
     targets = [target] if target in EXITS else EXITS
     best_path, best_cost = [], float("inf")
 
@@ -485,7 +512,7 @@ def calculate_safest_route(start_junction: str, target: str = None,
                     best_path = path
                 break
             for nbr, dist in FACILITY_GRAPH.get(node, {}).items():
-                if nbr not in visited:
+                if nbr not in visited and not live_node_status.get(nbr, {}).get("impassable", False):
                     nc = cost + dist + calculate_dynamic_cost(nbr)
                     heapq.heappush(queue, (nc + heuristic(nbr, exit_id), nbr, path+[nbr]))
 
@@ -525,6 +552,9 @@ def route_to_specific_exit(start: str, exit_id: str, verbose: bool = False) -> t
     """BOMBA forces route to a specific exit. Bypasses hysteresis."""
     if exit_id not in EXITS:
         return [], float("inf")
+    # NOTE: no blanket impassable-start check here — same reasoning as
+    # calculate_safest_route above. See block_node_and_reroute() for the
+    # correctly-scoped fix to the actual bug this was meant to catch.
     queue = [(calculate_dynamic_cost(start), start, [start])]
     visited = set()
     while queue:
@@ -534,7 +564,7 @@ def route_to_specific_exit(start: str, exit_id: str, verbose: bool = False) -> t
         if node == exit_id:
             return path, round(cost, 1)
         for nbr, dist in FACILITY_GRAPH.get(node, {}).items():
-            if nbr not in visited:
+            if nbr not in visited and not live_node_status.get(nbr, {}).get("impassable", False):
                 nc = cost + dist + calculate_dynamic_cost(nbr)
                 heapq.heappush(queue, (nc + heuristic(nbr, exit_id), nbr, path + [nbr]))
     return [], float("inf")
@@ -560,26 +590,65 @@ def get_all_exit_routes(start: str) -> list:
             r["safe"] = (r["cost"] - best_cost) < 500
     return routes
 
-def block_node_and_reroute(blocked_id: str, start: str) -> dict:
+def block_node_and_reroute(blocked_id: str, start: str, impassable: bool = True) -> dict:
     """
     BOMBA blocks a node. Sets it to quarantine, recalculates route avoiding it.
-    Returns the new route and blocked node info.
+
+    impassable=True (default): genuine physical block — structural collapse,
+    active fire fully engulfing the corridor, etc. The node is HARD-EXCLUDED
+    from the route graph. If no path exists without it, this returns an empty
+    route (["blocked_no_route"]) rather than silently routing evacuees through
+    a collapsed area with just a cost penalty attached. A BOMBA manual block
+    defaults to this — if a human is deliberately marking a node as blocked,
+    assume they mean "impassable," not "merely undesirable."
+
+    impassable=False: soft block — still routable as a last resort (heavy
+    finite penalty), matching crowd_over_capacity's "always find a path"
+    philosophy. Use this for things like "avoid if possible" advisories that
+    aren't a literal physical obstruction.
+
+    Returns the new route and blocked node info. If impassable=True and no
+    route exists, "new_route" is [] and "no_route" is True — the caller
+    (frontend/dashboard) MUST handle this by alerting operators to send
+    rescue, not by silently showing a stale or nonsensical path.
     """
     global _current_route, _current_route_cost
     # Mark blocked
     if blocked_id in live_node_status:
         live_node_status[blocked_id]["status"] = "quarantine"
-        live_node_status[blocked_id]["hazard"] = "crowd"
+        live_node_status[blocked_id]["hazard"] = "collapsed" if impassable else "crowd"
+        live_node_status[blocked_id]["impassable"] = impassable
     # Reset hysteresis so new route is forced
     _current_route = []
     _current_route_cost = float("inf")
-    # Recalculate
-    path, cost = calculate_safest_route(start, verbose=False)
+    # If the node being blocked IS the exact node we're computing a route
+    # from, that's the specific degenerate case (not the general "compute an
+    # escape route from a hazard's own location" case, which is normal and
+    # must keep working) — it means we just marked someone's current position
+    # as structurally impassable, which can't have a meaningful route "from"
+    # it. Short-circuit straight to no_route rather than letting the
+    # traversal trivially succeed by starting at (i.e. already "escaping")
+    # the very spot just deemed impassable.
+    if impassable and start == blocked_id:
+        path, cost = [], float("inf")
+    else:
+        path, cost = calculate_safest_route(start, verbose=False)
+    no_route = impassable and not path
+    # Mark the stranded origin as needing shelter-in-place — an Area of
+    # Refuge, not a routing failure. Clear it on any successful route calc
+    # from that same node so it doesn't stick around after the block lifts.
+    # NEVER mark the blocked node itself — a closed passage isn't a place
+    # anyone is waiting for rescue, it's just a route that no longer exists
+    # (this matters for the start==blocked_id self-referential case).
+    if start in live_node_status and start != blocked_id:
+        live_node_status[start]["shelter_in_place"] = no_route
     return {
         "blocked": blocked_id,
         "new_route": path,
         "cost": cost,
         "start": start,
+        "impassable": impassable,
+        "no_route": no_route,
     }
 
 def unblock_node(node_id: str):
@@ -587,6 +656,8 @@ def unblock_node(node_id: str):
     if node_id in live_node_status:
         live_node_status[node_id]["status"] = "normal"
         live_node_status[node_id]["hazard"] = None
+        live_node_status[node_id]["impassable"] = False
+        live_node_status[node_id]["shelter_in_place"] = False
 
 # =============================================================================
 # 9. 3-TIER PULL POLICY (AMBER divert, not RED stop)

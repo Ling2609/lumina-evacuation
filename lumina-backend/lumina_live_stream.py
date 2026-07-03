@@ -425,6 +425,10 @@ def _thermal_thread():
                 system_state = "HAZARD"
                 live_node_status["J4"]["status"] = "alert"
                 live_node_status["J4"]["hazard"] = "thermal"
+                # Real fire hard-blocks the corridor, not just a soft cost
+                # penalty — a burning junction genuinely can't be walked
+                # through, same as a manual BOMBA collapse block.
+                live_node_status["J4"]["impassable"] = True
                 _publish_alert = True
             else:
                 _publish_alert = False
@@ -1076,9 +1080,11 @@ def cancel_sim_trigger():
     with state_lock:
         active_hazard_nodes[:] = [h for h in active_hazard_nodes if h["node_id"] != node_id]
         if node_id in live_node_status:
-            live_node_status[node_id]["status"]      = "normal"
-            live_node_status[node_id]["hazard"]      = None
-            live_node_status[node_id]["pull_signal"] = "GREEN"
+            live_node_status[node_id]["status"]           = "normal"
+            live_node_status[node_id]["hazard"]            = None
+            live_node_status[node_id]["pull_signal"]       = "GREEN"
+            live_node_status[node_id]["impassable"]        = False
+            live_node_status[node_id]["shelter_in_place"]  = False
         # If no more active hazards, return to normal
         if not active_hazard_nodes:
             system_state    = "NORMAL"
@@ -1183,12 +1189,14 @@ def api_status():
         "baseline_rset":      estimate_baseline_rset(_route) if _route else {},
         "nodes": {
             nid: {
-                "status":   d["status"],
-                "hazard":   d["hazard"],
-                "crowd":    d["crowd"],
-                "velocity": round(get_crowd_velocity(nid), 3),  # outside lock — safe read
-                "pull":     d["pull_signal"],
-                "temp":     _latest_temps.get(nid, 27.0),
+                "status":     d["status"],
+                "hazard":     d["hazard"],
+                "impassable":       d.get("impassable", False),
+                "shelter_in_place": d.get("shelter_in_place", False),
+                "crowd":      d["crowd"],
+                "velocity":   round(get_crowd_velocity(nid), 3),  # outside lock — safe read
+                "pull":       d["pull_signal"],
+                "temp":       _latest_temps.get(nid, 27.0),
             }
             for nid, d in _nodes_snapshot.items()
         },
@@ -1233,6 +1241,7 @@ def trigger_hazard():
         fire_sim_active = True   # thermal + FFT threads begin fire simulation
         live_node_status["J7"]["status"] = "alert"
         live_node_status["J7"]["hazard"] = "thermal"
+        live_node_status["J7"]["impassable"] = True
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()
     mqtt_client.publish(TOPIC, json.dumps({
@@ -1328,9 +1337,11 @@ def reset_system():
         sim_trigger_type = None
         sim_trigger_node = None
         for nid, data in live_node_status.items():
-            data["status"]      = "normal"
-            data["hazard"]      = None
-            data["pull_signal"] = "GREEN"
+            data["status"]           = "normal"
+            data["hazard"]           = None
+            data["pull_signal"]      = "GREEN"
+            data["impassable"]       = False
+            data["shelter_in_place"] = False
         # Reset clears hazard state, NOT actual occupancy — people don't
         # vanish from the building just because the alarm cleared.
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
@@ -1356,13 +1367,30 @@ def block_node():
     start   = (body.get("start")
                or request.args.get("start")
                or (current_route[0] if current_route else "J4"))
-    # If start is a door (Bx), get its junction
+    # Keep the ORIGINAL id (e.g. "B9") for anything sent back to the frontend —
+    # room-polygon highlighting matches against door IDs, not junctions, so if
+    # this got silently resolved to "J4" before being echoed back, the room
+    # would never actually light up blue even though the backend logic was
+    # otherwise correct.
+    start_original = start
+    # If start is a door (Bx), get its junction for the ROUTING calculation only
     from routing_engine import DOOR_TO_JUNCTION
     if start in DOOR_TO_JUNCTION:
         start = DOOR_TO_JUNCTION[start]
+    # impassable=True (default) means a genuine physical block — structural
+    # collapse, etc. Set impassable=False explicitly for a soft "avoid if
+    # possible" advisory instead.
+    impassable = body.get("impassable", True)
     with state_lock:
-        result = block_node_and_reroute(node_id, start)
-        current_route = result["new_route"]
+        result = block_node_and_reroute(node_id, start, impassable=impassable)
+        # Echo back the ORIGINAL id, not the resolved junction
+        result["start"] = start_original
+        # If the block is impassable and truly no route exists, do NOT
+        # silently keep serving the stale previous route — an evacuee
+        # following it could be walked into a collapsed area. Clear it and
+        # flag the situation so the dashboard shows "NO ROUTE — SEND RESCUE"
+        # instead of a route that quietly still worked before the block.
+        current_route = result["new_route"] if not result.get("no_route") else []
         manual_override = True
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()
@@ -1370,11 +1398,16 @@ def block_node():
     # heartbeat to see the diorama lights react to a manual block.
     mqtt_client.publish(TOPIC, json.dumps({
         "status": "CRITICAL", "system_state": system_state,
-        "hazard_type": "MANUAL OVERRIDE", "manual_override": True,
+        "hazard_type": "NO ROUTE — RESCUE REQUIRED" if result.get("no_route") else "MANUAL OVERRIDE",
+        "manual_override": True, "no_route": result.get("no_route", False),
+        "shelter_node": start_original if result.get("no_route") else None,
         "stealth_mode": False, "person_count": _total_pax,
         "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
     }))
-    print(f"[BOMBA] Blocked {node_id}, new route: {' → '.join(result['new_route'])}")
+    if result.get("no_route"):
+        print(f"[BOMBA] Blocked {node_id} (IMPASSABLE) — NO ROUTE EXISTS. Rescue required.")
+    else:
+        print(f"[BOMBA] Blocked {node_id}, new route: {' → '.join(result['new_route'])}")
     return jsonify(result)
 
 
@@ -1386,8 +1419,24 @@ def api_unblock():
     node_id = body.get("node_id") or request.args.get("node_id", "J4")
     with state_lock:
         unblock_node(node_id)
+        # unblock_node() only clears shelter_in_place on node_id itself, but
+        # the flag may have been set on a DIFFERENT node (e.g. B9, if J4 was
+        # the block that stranded it). Clear broadly here — anything still
+        # genuinely stranded will get re-flagged on the next route calc.
+        for _nid, _d in live_node_status.items():
+            _d["shelter_in_place"] = False
         reset_hysteresis()
-        manual_override = False
+        # Only release manual override if THIS was the last remaining manual
+        # block. Previously this cleared unconditionally, which could hand
+        # control back to the background auto-reroute loop while other
+        # BOMBA blocks were still active — the frontend already has this
+        # exact conditional check (only clear when `remaining.length===0`),
+        # but the backend disagreed with it, so the two could desync.
+        _other_blocks_remain = any(
+            d.get("impassable", False) for nid, d in live_node_status.items() if nid != node_id
+        )
+        if not _other_blocks_remain:
+            manual_override = False
     return jsonify({"status": "unblocked", "node_id": node_id})
 
 
@@ -1468,6 +1517,10 @@ def sim_trigger():
             fire_sim_active = True
             live_node_status[node_id]["status"] = "alert"
             live_node_status[node_id]["hazard"] = "thermal"
+            # Same hard-block treatment as the real thermal sensor thread —
+            # a simulated fire should behave identically to a real one for
+            # routing purposes, not just carry a soft cost penalty.
+            live_node_status[node_id]["impassable"] = True
             hazard_label = "FIRE (Simulation)"
         elif event_type == "fallen":
             live_node_status[node_id]["status"] = "alert"
@@ -1508,8 +1561,12 @@ def sim_trigger():
                 })
         # Primary route = best route from most recently triggered node
         _path = _per_node_routes[-1]["best_path"] if _per_node_routes else []
-        if _path:
-            current_route[:] = _path
+        # Always assign, even when empty — previously this only updated
+        # current_route when _path was truthy, so a genuine no-route result
+        # (nowhere for the most recent hazard to go) left current_route
+        # permanently stuck on whatever stale route existed before, instead
+        # of correctly reflecting that the building is now trapped.
+        current_route[:] = _path
         _corridors = _build_corridor_states()
 
     mqtt_client.publish(TOPIC, json.dumps({
@@ -1583,9 +1640,11 @@ def bomba_override():
             sim_trigger_node      = None
             active_hazard_nodes.clear()
             for nid, d in live_node_status.items():
-                d["status"]      = "normal"
-                d["hazard"]      = None
-                d["pull_signal"] = "GREEN"
+                d["status"]           = "normal"
+                d["hazard"]           = None
+                d["pull_signal"]      = "GREEN"
+                d["impassable"]       = False
+                d["shelter_in_place"] = False
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 

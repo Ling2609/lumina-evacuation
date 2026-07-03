@@ -251,24 +251,26 @@ def run_tests():
     get("/reset")
     time.sleep(0.5)
 
-    # J4 is a KNOWN single point of failure for B9/B10 (Mamadini, Public
-    # Recipe) — both connect directly to J4 now (J16 was removed entirely;
-    # no physical hardware node exists there in the real installation).
-    # Blocking J4 is EXPECTED to still return a route through J4
-    # (quarantine-penalized, not blocked outright) since no alternate path
-    # exists for B9/B10. This is a documented design tradeoff, not a bug —
-    # see routing_engine.py comments on the J16 removal.
+    # B9/B10 (Mamadini, Public Recipe) connect ONLY to J4 — no alternate path
+    # exists (J16 was removed entirely; no physical hardware node there).
+    # Blocking J4 as impassable (the default) should now correctly produce
+    # a genuine no_route / shelter-in-place result, NOT a route that still
+    # walks through the blocked node — that soft-block behavior was the
+    # pre-Area-of-Refuge design, superseded once impassable blocks were added.
     block_resp = post("/api/block_node", {"node_id": "J4", "start": "B9"}, "POST /api/block_node")
     if not block_resp:
         fail("/api/block_node not responding")
     else:
+        no_route  = block_resp.get("no_route", False)
         new_route = block_resp.get("new_route", [])
-        if new_route and "J4" in new_route:
-            ok("J4 block: route still passes through J4 (expected — single point of failure for B9/B10 Mamadini/Public Recipe, which connect directly to J4)")
+        if no_route and not new_route:
+            ok("J4 block (impassable): correctly reports no_route — B9/B10 have no alternate path (Area of Refuge)")
+        elif new_route and "J4" in new_route:
+            fail("J4 block: route still passes through the blocked node — impassable exclusion not applied", str(new_route))
         elif new_route and "J4" not in new_route:
-            warn("J4 block: route avoided J4 — unexpected given current topology, verify B9/B10 still connect to J4")
+            warn("J4 block: found a route avoiding J4 — unexpected, check whether B9/B10 gained a new connection", str(new_route))
         else:
-            warn("No route returned from block_node (J4)")
+            warn("No route and no no_route flag returned from block_node (J4) — response shape may have changed")
 
     # ── TEST 5: RESET ─────────────────────────────────────────────────────────
     section("5. System Reset")
