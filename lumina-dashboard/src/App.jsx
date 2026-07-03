@@ -1240,7 +1240,13 @@ export default function App() {
                   // passage, not a location where people are waiting for rescue. This
                   // guard is absolute: purple (blocked) always wins over blue (shelter),
                   // regardless of how/why shelterInPlace got set on it.
-                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && n?.hazard!=="fall" && !isBlocked;
+                  // Only fire is excluded from shelter styling — sheltering IN an active
+                  // fire is genuinely dangerous, so that stays red regardless. A
+                  // fallen/injured person's own location isn't a hazard to others
+                  // the way flames are — if THAT spot becomes cut off from every
+                  // exit, "stay here, help is coming" is correct guidance, not
+                  // misleading, so fallen nodes SHOULD get full shelter styling.
+                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && !isBlocked;
                   const isAlert=rawIsAlert && !isShelter;
                   const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
@@ -2014,7 +2020,13 @@ export default function App() {
                   // passage, not a location where people are waiting for rescue. This
                   // guard is absolute: purple (blocked) always wins over blue (shelter),
                   // regardless of how/why shelterInPlace got set on it.
-                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && n?.hazard!=="fall" && !isBlocked;
+                  // Only fire is excluded from shelter styling — sheltering IN an active
+                  // fire is genuinely dangerous, so that stays red regardless. A
+                  // fallen/injured person's own location isn't a hazard to others
+                  // the way flames are — if THAT spot becomes cut off from every
+                  // exit, "stay here, help is coming" is correct guidance, not
+                  // misleading, so fallen nodes SHOULD get full shelter styling.
+                  const isShelter=n?.shelterInPlace===true && n?.hazard!=="thermal" && !isBlocked;
                   const isAlert=rawIsAlert && !isShelter;
                   const isCrowd=n?.status==="warning"&&n?.hazard==="crowd";
                   const isTier2=n?.status==="quarantine"||n?.status==="warning";
