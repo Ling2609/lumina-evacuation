@@ -1129,7 +1129,7 @@ def get_route():
     return jsonify({
         "status":       "success",
         "route":        route,
-        "cost_score":   current_route_cost,
+        "cost_score":   current_route_cost if current_route_cost != float("inf") else None,
         "pull_signals": pull_list,
     })
 
@@ -1242,6 +1242,12 @@ def trigger_hazard():
         live_node_status["J7"]["status"] = "alert"
         live_node_status["J7"]["hazard"] = "thermal"
         live_node_status["J7"]["impassable"] = True
+        # Force a clean reroute immediately rather than waiting for the next
+        # periodic tick — this legacy endpoint didn't do this previously,
+        # unlike /api/sim_trigger which already recalculates on every call.
+        reset_hysteresis()
+        _path, _ = calculate_safest_route("J4", verbose=False)
+        current_route[:] = _path
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()
     mqtt_client.publish(TOPIC, json.dumps({
@@ -1285,7 +1291,7 @@ def api_facp_alert():
         "door_id":   door_id,
         "junction":  junction_id,
         "route":     path,
-        "cost":      cost,
+        "cost":      cost if cost != float("inf") else None,
         "message":   f"FACP: {store_label} fire detected — evacuating via {' → '.join(path)}",
     })
 
@@ -1726,7 +1732,7 @@ def api_force_exit():
         force_route(path)
         manual_override = True
     print(f"[BOMBA] Forced route to {exit_id}: {' → '.join(path)}")
-    return jsonify({"route": path, "cost": cost, "exit": exit_id})
+    return jsonify({"route": path, "cost": cost if cost != float("inf") else None, "exit": exit_id})
 
 
 @app.route("/download_log")

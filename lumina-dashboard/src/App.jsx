@@ -356,6 +356,45 @@ export default function App() {
   const perNodeRoutesRef  = useRef([]);    // ref so poll closure always sees current perNodeRoutes
   useEffect(()=>{ perNodeRoutesRef.current = perNodeRoutes; }, [perNodeRoutes]);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
+  // Keep selectedHazardTab valid whenever the actual hazard list changes.
+  // This follows React's officially-recommended "adjusting state when a
+  // prop changes" pattern (https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // — comparing against a ref-tracked previous value and calling setState
+  // DURING render, not inside useEffect. Two earlier attempts both had real
+  // problems: the original setTimeout-in-render version was a genuine race
+  // (a poll-triggered re-render could silently reset the tab selection
+  // right as the user clicked, so overridePath() would test the wrong
+  // hazard); the useEffect version fixed that race but is the specific
+  // "setState synchronously within an effect" anti-pattern React warns
+  // about, since it re-derives state FROM state on every list change,
+  // triggering a cascading extra render. This version is the pattern React
+  // itself documents for exactly this situation — synchronous, no race,
+  // no separate effect needed.
+  const [_prevPerNodeRoutes, _setPrevPerNodeRoutes] = useState(perNodeRoutes);
+  if(perNodeRoutes !== _prevPerNodeRoutes){
+    _setPrevPerNodeRoutes(perNodeRoutes);
+    if(perNodeRoutes.length===0){
+      if(selectedHazardTab!==null) setSelectedHazardTab(null);
+    } else if(!perNodeRoutes.some(nr=>nr.node_id===selectedHazardTab)){
+      setSelectedHazardTab(perNodeRoutes[perNodeRoutes.length-1].node_id);
+    }
+  }
+
+  // SINGLE shared source of truth for "which route is currently being
+  // shown" — used by BOTH the text panel (ACTIVE ROUTE list) AND the map's
+  // node highlighting (isOnRoute, the green sequence badges). Previously
+  // these two consumers read DIFFERENT data: the text panel correctly
+  // resolved to the selected hazard tab's own best_path (via perNodeRoutes),
+  // but the map's node/badge coloring read the raw activeRoute variable
+  // directly — which only gets updated by whichever block/trigger happened
+  // MOST RECENTLY, not by which tab is currently selected. Concretely: J15
+  // became stranded, cleared correctly in the text panel, but the map kept
+  // showing J15's OLD route from one block ago (activeRoute never got
+  // reassigned or cleared to match), because nothing was keeping the map in
+  // sync with the tab selection the way the text panel already was.
+  const displayRoute = (perNodeRoutes.length>1)
+    ? ((perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1])?.best_path || [])
+    : activeRoute;
 
   const pushEvent = (msg, level="info", tag=null) => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
@@ -734,9 +773,15 @@ export default function App() {
   // while viewing an already-no-route hazard silently skipped checking
   // whether anyone ELSE was newly affected by that same block.
   const refreshOtherHazardRoutes = async(blockedTarget)=>{
-    if(perNodeRoutes.length===0) return;
+    // Read from the REF, not the closure-captured perNodeRoutes variable —
+    // perNodeRoutesRef exists specifically to avoid stale-closure reads
+    // (already used for exactly this reason in the polling logic), but this
+    // function was reading the closure value instead, which is only ever as
+    // fresh as whatever render created this function instance.
+    const currentPerNodeRoutes = perNodeRoutesRef.current;
+    if(currentPerNodeRoutes.length===0) return;
     const newlyStranded = [];
-    const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
+    const updated = await Promise.all(currentPerNodeRoutes.map(async(nr)=>{
       if(nr.node_id === blockedTarget){
         newlyStranded.push(nr.node_id);
         return {...nr, best_path:[], best_exit:null};
@@ -797,9 +842,11 @@ export default function App() {
     // hazard. Previously these could mismatch: you'd view J9's tab, click
     // block, but the backend call would silently test some other hazard's
     // origin, updating the banner for a result unrelated to what you saw.
-    const blockStart = (perNodeRoutes.length>1 && selectedHazardTab)
+    const blockStart = (perNodeRoutesRef.current.length>1 && selectedHazardTab)
       ? selectedHazardTab
       : (activeRoute[0]||shelterAlert||"J4");
+    console.log("[overridePath] target:", target, "blockStart:", blockStart,
+      "selectedHazardTab:", selectedHazardTab, "perNodeRoutesRef:", perNodeRoutesRef.current.map(nr=>nr.node_id));
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -1248,7 +1295,7 @@ export default function App() {
 
                 {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
-                  const isOnRoute=activeRoute.includes(id);
+                  const isOnRoute=displayRoute.includes(id);
                   const bw=36, bh=14;
                   const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
                   const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
@@ -1295,7 +1342,7 @@ export default function App() {
                 {/* ── Junction nodes — routing decision points ── */}
                 {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
-                  const isOnRoute=activeRoute.includes(id);
+                  const isOnRoute=displayRoute.includes(id);
                   const isBlocked=manualBlockedNodes.includes(id);
                   const isPending=false; // kept for compat
                   const rawIsAlert=n?.status==="alert";
@@ -1402,7 +1449,7 @@ export default function App() {
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(x=>!manualBlockedNodes.includes(x));
+                        const rv=displayRoute.filter(x=>!manualBlockedNodes.includes(x));
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
                         const isL=vi===rv.length;
@@ -1423,19 +1470,47 @@ export default function App() {
                   );
                 })}
 
-                {activeRoute.length<=1&&(
+                {/* This overlay is now REDUNDANT with the tab panel's own
+                    "🏠 X is cut off from all exits" message once multiple
+                    hazards are active (perNodeRoutes.length>1) — showing
+                    both was cluttering the map with a large floating text
+                    block that landed directly on top of store labels. Only
+                    show this fallback when there's no tab panel to rely on
+                    (single-hazard / plain BOMBA-block case), and keep it
+                    smaller and positioned to avoid overlapping room labels. */}
+                {activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
-                    <text x="383" y="330" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:12,fontWeight:700,
+                    <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:11,fontWeight:700,
                         fill:shelterAlert?palette.info:palette.danger,fontFamily:"Inter,sans-serif"}}>
                       {shelterAlert?"NO VIABLE ROUTE — SHELTER IN PLACE":"ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED"}
                     </text>
-                    {shelterAlert&&<text x="383" y="346" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:9,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
+                    {shelterAlert&&<text x="383" y="219" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:8,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
                       Area of Refuge: {shelterAlert} — dispatch rescue directly
                     </text>}
                   </g>
                 )}
+                {/* ── Colour legend — sits in the empty margin below the floor
+                     plan (outer wall ends ~y=676, viewBox extends to ~730),
+                     so it never overlaps any room or corridor. ── */}
+                <g>
+                  {[
+                    [palette.success, "Safe route"],
+                    [palette.danger,  "Fire / hazard"],
+                    [palette.info,    "Shelter — no route"],
+                    [palette.warning, "Moderate crowd"],
+                    [palette.purple,  "Blocked"],
+                  ].map(([color,label],i)=>(
+                    <g key={label} transform={`translate(${-20 + i*155}, 700)`}>
+                      <circle cx="4" cy="0" r="4" fill={color}/>
+                      <text x="12" y="0" dominantBaseline="central"
+                        style={{fontSize:9,fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                        {label}
+                      </text>
+                    </g>
+                  ))}
+                </g>
               </svg>
               <div style={{borderLeft:`1px solid ${palette.border}`,display:"flex",
                 flexDirection:"column",overflowY:"auto",overflowX:"hidden",minWidth:255,maxWidth:280}}>
@@ -1495,12 +1570,9 @@ export default function App() {
                     // which one's route is shown below, instead of an
                     // ambiguous single route with no indication of which
                     // hazard it belongs to, or a bulky stacked list.
+                    // Correction of selectedHazardTab now happens in a real
+                    // useEffect (see above), not here — this just reads it.
                     const activeTab = perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1];
-                    if(selectedHazardTab!==activeTab.node_id){
-                      // Keep selection valid if the previously-picked hazard
-                      // was cancelled/resolved — fall back to most recent.
-                      setTimeout(()=>setSelectedHazardTab(activeTab.node_id),0);
-                    }
                     return(
                       <div style={{display:"flex",gap:3,marginBottom:6,flexWrap:"wrap"}}>
                         {perNodeRoutes.map(nr=>{
@@ -2095,7 +2167,7 @@ export default function App() {
 
                 {/* ── Exit badges — outside walls ── */}
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
-                  const isOnRoute=activeRoute.includes(id);
+                  const isOnRoute=displayRoute.includes(id);
                   const bw=36, bh=14;
                   const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
                   const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
@@ -2142,7 +2214,7 @@ export default function App() {
                 {/* ── Junction nodes — routing decision points ── */}
                 {Object.entries(JUNCTIONS).map(([id,pos])=>{
                   const n=nodes.find(x=>x.id===id);
-                  const isOnRoute=activeRoute.includes(id);
+                  const isOnRoute=displayRoute.includes(id);
                   const isBlocked=manualBlockedNodes.includes(id);
                   const isPending=false; // kept for compat
                   const rawIsAlert=n?.status==="alert";
@@ -2249,7 +2321,7 @@ export default function App() {
                       })()}
                       {/* Route sequence badge */}
                       {isOnRoute&&!isBlocked&&(()=>{
-                        const rv=activeRoute.filter(x=>!manualBlockedNodes.includes(x));
+                        const rv=displayRoute.filter(x=>!manualBlockedNodes.includes(x));
                         const vi=rv.indexOf(id)+1;
                         if(vi<=0) return null;
                         const isL=vi===rv.length;
@@ -2270,19 +2342,44 @@ export default function App() {
                   );
                 })}
 
-                {activeRoute.length<=1&&(
+                {/* This overlay is now REDUNDANT with the tab panel's own
+                    "🏠 X is cut off from all exits" message once multiple
+                    hazards are active (perNodeRoutes.length>1) — showing
+                    both was cluttering the map with a large floating text
+                    block that landed directly on top of store labels. Only
+                    show this fallback when there's no tab panel to rely on
+                    (single-hazard / plain BOMBA-block case), and keep it
+                    smaller and positioned to avoid overlapping room labels. */}
+                {activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
-                    <text x="383" y="330" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:12,fontWeight:700,
+                    <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:11,fontWeight:700,
                         fill:shelterAlert?palette.info:palette.danger,fontFamily:"Inter,sans-serif"}}>
                       {shelterAlert?"NO VIABLE ROUTE — SHELTER IN PLACE":"ALL PATHS BLOCKED — MANUAL OVERRIDE REQUIRED"}
                     </text>
-                    {shelterAlert&&<text x="383" y="346" textAnchor="middle" dominantBaseline="central"
-                      style={{fontSize:9,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
+                    {shelterAlert&&<text x="383" y="219" textAnchor="middle" dominantBaseline="central"
+                      style={{fontSize:8,fontWeight:600,fill:palette.info,fontFamily:"Inter,sans-serif"}}>
                       Area of Refuge: {shelterAlert} — dispatch rescue directly
                     </text>}
                   </g>
                 )}
+                <g>
+                  {[
+                    [palette.success, "Safe route"],
+                    [palette.danger,  "Fire / hazard"],
+                    [palette.info,    "Shelter — no route"],
+                    [palette.warning, "Moderate crowd"],
+                    [palette.purple,  "Blocked"],
+                  ].map(([color,label],i)=>(
+                    <g key={label} transform={`translate(${-20 + i*155}, 700)`}>
+                      <circle cx="4" cy="0" r="4" fill={color}/>
+                      <text x="12" y="0" dominantBaseline="central"
+                        style={{fontSize:9,fill:palette.textMuted,fontFamily:"Inter,sans-serif"}}>
+                        {label}
+                      </text>
+                    </g>
+                  ))}
+                </g>
                 </svg>
                 {selectedNode&&(
                   <div style={{padding:"7px 12px",borderTop:`1px solid ${palette.border}`,flexShrink:0,

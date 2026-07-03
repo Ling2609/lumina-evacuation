@@ -175,7 +175,7 @@ def get_store_evacuation_info(door_id: str) -> dict:
         "junction":   junction_id,
         "route":      [door_id] + path,
         "exit":       path[-1] if path else None,
-        "cost":       cost,
+        "cost":       cost if cost != float("inf") else None,
         "rset":       estimate_rset(path) if path else None,
     }
 
@@ -299,6 +299,15 @@ J_CORRIDOR_RANK = {
 # Fruin LOS D capacity per corridor segment (pax)
 CORRIDOR_CAPACITY = 80
 
+# Genuine crowd crush (at/above CORRIDOR_CAPACITY) is now a HARD block,
+# same as fire — real crowd crushes are lethal (Itaewon, Hillsborough), not
+# just "undesirable." Debounced with a streak requirement + release margin,
+# same dead-zone pattern already used for the crowd icon/status flicker fix,
+# so a count wobbling right at 80 doesn't cause the corridor to flicker
+# open/blocked every reading.
+CORRIDOR_CAPACITY_HARD_BLOCK_STREAK = 3   # consecutive over-capacity readings before hard-blocking
+CORRIDOR_CAPACITY_RELEASE_MARGIN    = 10  # pax below capacity required before releasing the block
+
 # =============================================================================
 # 3. 3-TIER ESCALATION CONSTANTS
 # =============================================================================
@@ -344,6 +353,8 @@ def _make_junction():
                                         # color logic already used throughout the UI.
         "crowd":            0,
         "crowd_history":    deque([0]*10, maxlen=10),
+        "capacity_streak":  0,          # consecutive readings >= CORRIDOR_CAPACITY,
+                                         # used to debounce the crowd-crush hard block
         "velocity":         0.0,       # m/s crowd flow
         "pull_signal":      "GREEN",   # GREEN | AMBER | RED
         "tier":             1,         # 1=normal, 2=pre_crush, 3=critical
@@ -386,6 +397,12 @@ def update_crowd(junction_id: str, count: int):
     vel = get_crowd_velocity(junction_id)
     node["velocity"] = vel
 
+    # Capture this BEFORE the tier-escalation block below potentially
+    # clears node["hazard"] to None within this same call — otherwise the
+    # release check further down would never match, and a crowd-caused hard
+    # block would stay stuck True forever once hazard cleared first.
+    _hazard_was_crowd = (node["hazard"] == "crowd")
+
     # 3-Tier escalation
     if node["status"] in ("alert",) and node["hazard"] in ("thermal","fall"):
         node["tier"] = 3
@@ -405,6 +422,25 @@ def update_crowd(junction_id: str, count: int):
         # whatever state we're already in. Prevents flicker from minor
         # camera-count jitter right at the boundary.
         node["tier"] = 2 if node["hazard"] == "crowd" else 1
+
+    # Sustained crush-level crowd (>= CORRIDOR_CAPACITY) escalates to a HARD
+    # block, same treatment as fire — a genuine crush is dangerous enough
+    # that routing should stop sending MORE people into it, not just add a
+    # cost penalty. Debounced via a streak counter so a count wobbling at
+    # the boundary doesn't flicker the block on/off every reading. Scoped
+    # strictly to a crowd-caused block (via _hazard_was_crowd, captured
+    # BEFORE the block above could clear it) so this never touches or
+    # releases a block caused by fire or a manual BOMBA block — those are
+    # managed entirely by their own separate code paths.
+    if count >= CORRIDOR_CAPACITY:
+        node["capacity_streak"] = node.get("capacity_streak", 0) + 1
+        if node["capacity_streak"] >= CORRIDOR_CAPACITY_HARD_BLOCK_STREAK and not node["impassable"]:
+            node["impassable"] = True
+    else:
+        node["capacity_streak"] = 0
+        if node["impassable"] and _hazard_was_crowd \
+           and count < (CORRIDOR_CAPACITY - CORRIDOR_CAPACITY_RELEASE_MARGIN):
+            node["impassable"] = False
 
 # =============================================================================
 # 6. DYNAMIC COST FUNCTION (capacity-constrained)
@@ -645,7 +681,14 @@ def block_node_and_reroute(blocked_id: str, start: str, impassable: bool = True)
     return {
         "blocked": blocked_id,
         "new_route": path,
-        "cost": cost,
+        # Infinity is NOT valid JSON — Python's json module will happily
+        # write the literal token `Infinity`, but the browser's strict
+        # JSON.parse (used internally by fetch().json()) rejects it outright
+        # with a SyntaxError. That error was being thrown and silently
+        # swallowing EVERY state update downstream of it in the frontend —
+        # this is the actual root cause of "clicking block does nothing" in
+        # every no-route scenario, since cost is always float('inf') there.
+        "cost": cost if cost != float("inf") else None,
         "start": start,
         "impassable": impassable,
         "no_route": no_route,
