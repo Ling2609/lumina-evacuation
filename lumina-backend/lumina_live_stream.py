@@ -54,6 +54,7 @@ from routing_engine import (
     DOOR_LABELS,
     run_pull_policy,
     update_crowd,
+    TIER1_CROWD,
     live_node_status,
     get_crowd_velocity,
     estimate_rset,
@@ -191,7 +192,7 @@ def _on_sensor_message(client, userdata, msg):
             if status == "BLOCKED":
                 print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → blocking {junction}, recalculating route")
                 with state_lock:
-                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J16")
+                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J4")
                     current_route   = result["new_route"]
                     manual_override = True
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
@@ -308,7 +309,7 @@ _last_drift_tick = -1
 
 # Live temperature readings per node — populated by thermal thread,
 # read by /api/status so the React sparkline shows real escalating values.
-_latest_temps = {nid: 27.0 for nid in ["J16","J4","J7","J8","J18","J12"]}
+_latest_temps = {nid: 27.0 for nid in ["J4","J7","J8","J18","J12"]}
 
 # Classifier latency readings — float writes are GIL-atomic, no lock needed.
 # Updated by bg threads every cycle, read by /api/status for display.
@@ -388,7 +389,7 @@ cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # always read latest frame, no stale queue
 #    In DIORAMA mode: feeds simulated temperature readings (demo without sensor)
 #    In ENTERPRISE mode: replace _read_thermal_sensor() with your real sensor
 # =============================================================================
-thermal_clf = ThermalClassifier("J16")   # Lobby node
+thermal_clf = ThermalClassifier("J4")   # Lobby node (was J16 — no physical hardware there; merged into J4)
 _thermal_tick = 0                          # frame counter for simulated signal
 
 def _read_thermal_sensor_simulated() -> float:
@@ -410,21 +411,20 @@ def _thermal_thread():
             in_fire = fire_sim_active
         # Only update temps with fire simulation during active fire trigger
         # During fall hazard (fire_sim_active=False), temps remain ambient
-        _latest_temps["J16"] = round(result["temp_c"], 1)
+        # J4 IS the sensor location now (merged from J16) — direct read, no scaling
+        _latest_temps["J4"] = round(result["temp_c"], 1)
         if in_fire:
             _latest_temps["J7"] = round(min(150, result["temp_c"] * 1.8), 1)
-            _latest_temps["J4"] = round(min(80,  result["temp_c"] * 1.1), 1)
         else:
             _latest_temps["J7"] = round(27.0 + random.uniform(-0.5, 0.5), 1)
-            _latest_temps["J4"] = round(27.0 + random.uniform(-0.3, 0.3), 1)
 
         with state_lock:
             thermal_state = result["state"]
             # In simulation mode, thermal sensor cannot override sim state
             if result["state"] == "ALERT" and system_state == "NORMAL" and system_mode == "live":
                 system_state = "HAZARD"
-                live_node_status["J16"]["status"] = "alert"
-                live_node_status["J16"]["hazard"] = "thermal"
+                live_node_status["J4"]["status"] = "alert"
+                live_node_status["J4"]["hazard"] = "thermal"
                 _publish_alert = True
             else:
                 _publish_alert = False
@@ -451,7 +451,7 @@ print("[INIT] Thermal classifier thread started")
 # =============================================================================
 # 4. FFT ACOUSTIC CLASSIFIER — background thread
 # =============================================================================
-fft_clf = FFTAlarmClassifier("J16")
+fft_clf = FFTAlarmClassifier("J4")
 
 def _read_audio_frame_simulated() -> np.ndarray:
     with state_lock:
@@ -837,27 +837,29 @@ def _process_ai_cycle(cap, state):
     # Locked: update_crowd/get_crowd_velocity mutate live_node_status,
     # which /reset and other Flask threads also touch concurrently.
     with state_lock:
-        # Only update J16 crowd from camera if it's not a sim-triggered hazard node
+        # Only update J4 crowd from camera if it's not a sim-triggered hazard node
+        # (J4 is now the lobby node — merged from J16, which had no physical hardware)
         # Otherwise the camera count (0 in demo) would immediately overwrite the sim
-        _j16_is_sim = any(h["node_id"]=="J16" for h in active_hazard_nodes)
-        if not _j16_is_sim:
-            update_crowd("J16", person_count)
-        vel = get_crowd_velocity("J16")
+        _lobby_is_sim = any(h["node_id"]=="J4" for h in active_hazard_nodes)
+        if not _lobby_is_sim:
+            update_crowd("J4", person_count)
+        vel = get_crowd_velocity("J4")
         current_person_count = person_count
         current_track_ids    = track_ids_this_frame
         crowd_velocity_lobby = round(vel, 3)
 
     # --- STOCHASTIC SENSOR MODEL — secondary nodes ---
     # Skip any node that's currently a sim-triggered hazard — same protection
-    # J16 already has above. Without this, the drift values here (all below
-    # TIER1_CROWD) would force-clear a crowd sim trigger on J4/J7/J8/J12/J18
-    # within ~2 seconds of it firing — the icon/route would blink once then
-    # vanish, even though J16-triggered sims looked fine.
+    # J4 (lobby, merged from J16) already has above. Without this, the drift
+    # values here (all below TIER1_CROWD) would force-clear a crowd sim trigger
+    # on J7/J8/J12/J18 within ~2 seconds of it firing — the icon/route would
+    # blink once then vanish. J4 itself is excluded from this dict entirely —
+    # it's camera-driven now, not stochastic, same reason J16 never was.
     if not manual_override and int(t_now) % 2 == 0 and int(t_now) != _last_drift_tick:
         _last_drift_tick = int(t_now)
         _in_hazard = (cur_state == "HAZARD")
         _sensor_model = {
-            "J4": (15, 40), "J7": (20, 45 if not _in_hazard else 99),
+            "J7": (20, 45 if not _in_hazard else 99),
             "J8": (10, 38), "J18": (5, 20), "J12": (8, 30),
         }
         with state_lock:
@@ -873,7 +875,7 @@ def _process_ai_cycle(cap, state):
     if vel > 5 and cur_state == "NORMAL" and system_mode == "live":
         print(f"[CROWD] Velocity spike {vel:+.2f} — pre-emptive reroute")
         with state_lock:
-            live_node_status["J16"]["status"] = "warning"
+            live_node_status["J4"]["status"] = "warning"
 
     # --- FALL ESCALATION ---
     # In simulation mode, camera fall detection is suppressed — manual triggers only
@@ -884,9 +886,9 @@ def _process_ai_cycle(cap, state):
         if t_now - state["fall_timer_start"] >= 3.0 and cur_state == "NORMAL":
             with state_lock:
                 system_state = "HAZARD"
-                live_node_status["J16"]["hazard"] = "fall"
-                live_node_status["J16"]["status"] = "alert"
-                live_node_status["J16"]["pull_signal"] = "RED"
+                live_node_status["J4"]["hazard"] = "fall"
+                live_node_status["J4"]["status"] = "alert"
+                live_node_status["J4"]["pull_signal"] = "RED"
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -901,7 +903,7 @@ def _process_ai_cycle(cap, state):
     else:
         state["fall_timer_start"] = 0
         with state_lock:
-            _n011_hazard = live_node_status["J16"]["hazard"]
+            _n011_hazard = live_node_status["J4"]["hazard"]
         # Only auto-recover fall in live mode — simulation handles its own state
         if system_mode == "live" and cur_state == "HAZARD" and _n011_hazard == "fall":
             if state["recovery_timer_start"] == 0:
@@ -910,9 +912,9 @@ def _process_ai_cycle(cap, state):
                 with state_lock:
                     system_state   = "NORMAL"
                     facp_confirmed = False
-                    live_node_status["J16"]["hazard"]      = None
-                    live_node_status["J16"]["status"]      = "normal"
-                    live_node_status["J16"]["pull_signal"] = "GREEN"
+                    live_node_status["J4"]["hazard"]      = None
+                    live_node_status["J4"]["status"]      = "normal"
+                    live_node_status["J4"]["pull_signal"] = "GREEN"
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
@@ -955,12 +957,12 @@ def _process_ai_cycle(cap, state):
                     current_per_node_routes[:] = _per
                     current_route[:] = _per[-1]["best_path"]
             else:
-                lobby_hazard = live_node_status.get("J16", {}).get("hazard")
-                start_node = "J7" if lobby_hazard == "fall" else "J16"
+                lobby_hazard = live_node_status.get("J4", {}).get("hazard")
+                start_node = "J7" if lobby_hazard == "fall" else "J4"
                 path, score = calculate_safest_route(start_node, verbose=False)
                 if path:
                     if start_node == "J7":
-                        path = ["J16"] + path
+                        path = ["J4"] + path
                     current_route[:] = path
                     current_route_cost = score
                     current_per_node_routes.clear()
@@ -1353,7 +1355,7 @@ def block_node():
     # start: caller sends the hazard origin (activeRoute[0]); fallback to current_route
     start   = (body.get("start")
                or request.args.get("start")
-               or (current_route[0] if current_route else "J16"))
+               or (current_route[0] if current_route else "J4"))
     # If start is a door (Bx), get its junction
     from routing_engine import DOOR_TO_JUNCTION
     if start in DOOR_TO_JUNCTION:
@@ -1476,6 +1478,16 @@ def sim_trigger():
             live_node_status[node_id]["status"] = "warning"
             live_node_status[node_id]["hazard"] = "crowd"
             live_node_status[node_id]["pull_signal"] = "AMBER"
+            # calculate_dynamic_cost() only reacts to the raw crowd COUNT
+            # crossing TIER1/TIER2 thresholds — it never checks hazard=="crowd"
+            # or status=="warning" directly. Without this, the sim flags looked
+            # right (icon, status) but the router genuinely saw a low, harmless
+            # pax count and didn't penalize the node — combined with no
+            # hysteresis in the multi-hazard per-node recompute, that let tiny
+            # background drift on neighboring junctions flip which exit looked
+            # cheapest tick to tick, showing up as the red route line blinking.
+            if live_node_status[node_id]["crowd"] < TIER1_CROWD:
+                update_crowd(node_id, TIER1_CROWD + 10)
             hazard_label = "CROWD DENSITY (Simulation)"
 
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
@@ -1598,7 +1610,7 @@ def api_quick_routes():
     Used by BOMBA quick route panel.
     """
     body  = request.get_json(silent=True) or {}
-    start = body.get("start") or request.args.get("start", "J16")
+    start = body.get("start") or request.args.get("start", "J4")
     from routing_engine import DOOR_TO_JUNCTION
     if start in DOOR_TO_JUNCTION:
         start_j = DOOR_TO_JUNCTION[start]
@@ -1619,7 +1631,7 @@ def api_force_exit():
     """
     global current_route, manual_override
     body     = request.get_json(silent=True) or {}
-    start    = body.get("start") or (current_route[0] if current_route else "J16")
+    start    = body.get("start") or (current_route[0] if current_route else "J4")
     exit_id  = body.get("exit_id") or request.args.get("exit_id", "EXIT-1")
     from routing_engine import DOOR_TO_JUNCTION
     start_j  = DOOR_TO_JUNCTION.get(start, start)

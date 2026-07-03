@@ -19,7 +19,6 @@ export const nodeData = [
   { id:"J13", zone:"Exit 4 Junction",                  status:"normal", hazard:null, temp:27, crowd:0, x:701.3, y:469.1 },
   { id:"J14", zone:"Bottom-Right Junction",            status:"normal", hazard:null, temp:27, crowd:0, x:475.1, y:469.1 },
   { id:"J15", zone:"South-Center Junction",            status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:469.1 },
-  { id:"J16", zone:"Center Vertical Junction",         status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:375.9 },
   { id:"J17", zone:"Bottom Corridor Right",            status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:576.9 },
   { id:"J18", zone:"South-West Lower Junction",        status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:576.9 },
   { id:"J19", zone:"South-West Junction",              status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:511.2 },
@@ -32,7 +31,7 @@ export const nodeData = [
 
 export const eventLog = [
   { time:"INIT", msg:"Lumina system online — all subsystems nominal",                    level:"success" },
-  { time:"INIT", msg:"DYN-A* engine loaded — 18 junctions, 3 exits, hysteresis ON",     level:"info"    },
+  { time:"INIT", msg:"DYN-A* engine loaded — 17 junctions, 3 exits, hysteresis ON",     level:"info"    },
   { time:"INIT", msg:"Capacity-constrained edges active — Fruin LOS D threshold: 80pax",level:"info"    },
   { time:"INIT", msg:"Thermal classifier ready — Z-score baseline calibrating",          level:"info"    },
   { time:"INIT", msg:"FFT classifier ready — 520Hz FACP failsafe listening",             level:"info"    },

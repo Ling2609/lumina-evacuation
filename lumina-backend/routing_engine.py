@@ -19,7 +19,8 @@
 #   Node A: J2/J3  → West corridor  (sees B1 Siew Later, B2 BawangTea)
 #   Node B: J4/J6  → Central cross  (sees B3 ChillZone, B4 Empty, B5 ThaiRelax)
 #   Node C: J8/J9  → East corridor  (sees B6 Female WR, B7 Male WR, B8 AliBarber)
-#   Node D: J15/J16→ South-Central  (sees B9 Mamadini, B10 Public Recipe)
+#   Node D: J15 → South-Central  (B9 Mamadini / B10 Public Recipe now connect
+#   directly to J4 — no physical J16 hardware node in the real installation)
 #   Node E: J18/J19→ South-West    (sees B11 Meating, B12 Baskin, B13 CustSvc)
 #   Node F: J12/J13→ East-South    (sees B14 MS.DIY, B15 SofaSoGood, B16 ReadMe)
 # =============================================================================
@@ -44,7 +45,7 @@ JUNCTION_COORDS = {
     "J7":  _s(740, 429), "J8":  _s(945, 429),  "J9":  _s(945, 272),
     "J10": _s(945, 141), "J11": _s(945, 580),  "J12": _s(945, 762),
     "J13": _s(1138,762), "J14": _s(771, 762),  "J15": _s(618, 762),
-    "J16": _s(618, 610), "J17": _s(618, 937),  "J18": _s(334, 937),
+    "J17": _s(618, 937),  "J18": _s(334, 937),
     "J19": _s(334, 830), "J20": _s(334, 754),
 }
 
@@ -91,7 +92,7 @@ JUNCTION_LABELS = {
     "J7":"Center-Right Junction","J8":"East Corridor Upper","J9":"East Corridor (Exit 3 branch)",
     "J10":"Exit 3 Junction","J11":"East Corridor Lower","J12":"East-South Junction",
     "J13":"Exit 4 Junction","J14":"Bottom-Right Junction","J15":"South-Center Junction",
-    "J16":"Center Vertical Junction","J17":"Bottom Corridor Right","J18":"South-West Lower Junction",
+    "J17":"Bottom Corridor Right","J18":"South-West Lower Junction",
     "J19":"South-West Junction","J20":"Left Lower Junction",
 }
 
@@ -105,7 +106,7 @@ def resolve_node_name(nid: str) -> str:
 DOOR_TO_JUNCTION = {
     "B1": "J2",  "B2": "J3",  "B3": "J4",  "B4": "J4",
     "B5": "J7",  "B6": "J10", "B7": "J9",  "B8": "J11",
-    "B9": "J16", "B10":"J16", "B11":"J20", "B12":"J18",
+    "B9": "J4", "B10":"J4", "B11":"J20", "B12":"J18",
     "B13":"J19", "B14":"J14", "B15":"J12", "B16":"J13",
 }
 
@@ -179,16 +180,16 @@ JUNCTION_TO_NODE = {
     "J4": "NODE-B",
     "J7": "NODE-B", "J8": "NODE-C", "J9": "NODE-C",
     "J10":"NODE-C", "J11":"NODE-C",
-    "J15":"NODE-D", "J16":"NODE-D",
+    "J15":"NODE-D",
     "J18":"NODE-E", "J19":"NODE-E", "J20":"NODE-E",
     "J12":"NODE-F", "J13":"NODE-F", "J14":"NODE-F", "J17":"NODE-F",
 }
 
 LUMINA_NODES = {
     "NODE-A": {"label":"West Corridor",    "junctions":["J1","J2","J3"],          "stores":["B1","B2"]},
-    "NODE-B": {"label":"Central Crossroad","junctions":["J4","J7"],                "stores":["B3","B4","B5"]},
+    "NODE-B": {"label":"Central Crossroad","junctions":["J4","J7"],                "stores":["B3","B4","B5","B9","B10"]},
     "NODE-C": {"label":"East Corridor",    "junctions":["J8","J9","J10","J11"],    "stores":["B6","B7","B8"]},
-    "NODE-D": {"label":"South-Central",    "junctions":["J15","J16"],              "stores":["B9","B10"]},
+    "NODE-D": {"label":"South-Central",    "junctions":["J15"],                    "stores":[]},
     "NODE-E": {"label":"South-West",       "junctions":["J18","J19","J20"],        "stores":["B11","B12","B13"]},
     "NODE-F": {"label":"East-South",       "junctions":["J12","J13","J14","J17"], "stores":["B14","B15","B16"]},
 }
@@ -226,7 +227,7 @@ FACILITY_GRAPH = {
     "J2":  {"J1":_dist("J2","J1"),         "J3":_dist("J2","J3"),   "B1":_dist("B1","J2")},
     # Main horizontal corridor
     "J3":  {"J2":_dist("J3","J2"),   "J4":_dist("J3","J4"),   "J20":_dist("J3","J20"), "B2":_dist("B2","J3")},
-    "J4":  {"J3":_dist("J4","J3"),   "J7":_dist("J4","J7"),  "J16":_dist("J4","J16"), "B4":_dist("B4","J4")},
+    "J4":  {"J3":_dist("J4","J3"),   "J7":_dist("J4","J7"),  "B4":_dist("B4","J4"), "B9":_dist("B9","J4"), "B10":_dist("B10","J4")},
     # Main horizontal continued
     "J7":  {"J4":_dist("J7","J4"),   "J8":_dist("J7","J8"),  "B5":_dist("B5","J7")},
     "J8":  {"J7":_dist("J8","J7"),   "J9":_dist("J8","J9"),   "J11":_dist("J8","J11")},
@@ -239,10 +240,9 @@ FACILITY_GRAPH = {
     "J13": {"J12":_dist("J13","J12"),"EXIT-4":_dist("J13","EXIT-4"), "B16":_dist("B16","J13")},
     # Bottom horizontal
     "J14": {"J12":_dist("J14","J12"),"J15":_dist("J14","J15"), "B14":_dist("B14","J14")},
-    # NOTE: J15↔J16 link removed — physical wall added between them (per floor plan update)
+    # NOTE: J16 removed entirely — no physical hardware node there. B9 (Mamadini)
+    # and B10 (Public Recipe) now connect directly to J4.
     "J15": {"J14":_dist("J15","J14"),"J17":_dist("J15","J17")},
-    # Center vertical — J16 now only reachable via J4 (wall blocks J15 side)
-    "J16": {"J4":_dist("J16","J4"),  "B9":_dist("B9","J16"), "B10":_dist("B10","J16")},
     # Bottom corridor (J17→J18)
     "J17": {"J15":_dist("J17","J15"),"J18":_dist("J17","J18")},
     "J18": {"J17":_dist("J18","J17"),"J19":_dist("J18","J19"), "B12":_dist("B12","J18")},
@@ -256,7 +256,7 @@ FACILITY_GRAPH = {
     "B3":{"J4":_dist("B4_stub","J4")},   "B4":{"J4":_dist("B4_stub","J4")},
     "B5":{"J7":_dist("B5_stub","J7")},   "B6":{"J10":_dist("B6_stub","J10")},
     "B7":{"J9":_dist("B7_stub","J9")},   "B8":{"J11":_dist("B8_stub","J11")},
-    "B9":{"J16":_dist("B9_stub","J16")}, "B10":{"J16":_dist("B10_stub","J16")},
+    "B9":{"J4":_dist("B9_stub","J4")}, "B10":{"J4":_dist("B10_stub","J4")},
     "B11":{"J20":_dist("B11_stub","J20")},"B12":{"J18":_dist("B12_stub","J18")},
     "B13":{"J19":_dist("B13_stub","J19")},"B14":{"J14":_dist("B14_stub","J14")},
     "B15":{"J12":_dist("B15_stub","J12")},"B16":{"J13":_dist("B16_stub","J13")},
@@ -275,9 +275,6 @@ EXIT_TO_CORRIDOR = {
 J_TO_CORRIDOR = {
     "J1":"C-001","J2":"C-001","J3":"C-001","J18":"C-001","J19":"C-001","J20":"C-001",
     "J4":"C-003","J7":"C-003","J8":"C-003","J9":"C-003","J10":"C-003",
-    "J16":"C-003",  # NOTE: straight-line nearest exit is EXIT-1, but the J15 wall means
-                     # J16's only physical path out is through J4 — grouped with J4's
-                     # corridor so chase-direction logic stays consistent with real reachability.
     "J11":"C-004","J12":"C-004","J13":"C-004","J14":"C-004","J15":"C-004","J17":"C-004",
 }
 
@@ -289,7 +286,7 @@ J_TO_CORRIDOR = {
 # the chase must reverse (dir=-1) so the LEDs don't point the wrong way.
 J_CORRIDOR_RANK = {
     "J1":1, "J2":2, "J3":3, "J20":4, "J19":5, "J18":6,   # C-001, EXIT-1 side = J1
-    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5, "J16":6,    # C-003, EXIT-3 side = J10
+    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5,             # C-003, EXIT-3 side = J10
     "J13":1, "J12":2, "J11":3, "J14":4, "J15":5, "J17":6,# C-004, EXIT-4 side = J13
 }
 

@@ -36,7 +36,7 @@ const DOOR_POS = {
 // Store door → nearest corridor junction (matches routing_engine.py DOOR_TO_JUNCTION)
 const DOOR_TO_J = {
   B1:"J2", B2:"J3", B3:"J4", B4:"J4", B5:"J7", B6:"J10",
-  B7:"J9", B8:"J11", B9:"J16", B10:"J16", B11:"J20", B12:"J18",
+  B7:"J9", B8:"J11", B9:"J4", B10:"J4", B11:"J20", B12:"J18",
   B13:"J19", B14:"J14", B15:"J12", B16:"J13",
 };
 
@@ -61,7 +61,7 @@ const J_TO_NODE = {
   J1:"NODE-A",J2:"NODE-A",J3:"NODE-A",
   J4:"NODE-B",J7:"NODE-B",
   J8:"NODE-C",J9:"NODE-C",J10:"NODE-C",J11:"NODE-C",
-  J15:"NODE-D",J16:"NODE-D",
+  J15:"NODE-D",
   J18:"NODE-E",J19:"NODE-E",J20:"NODE-E",
   J12:"NODE-F",J13:"NODE-F",J14:"NODE-F",J17:"NODE-F",
 };
@@ -78,8 +78,8 @@ const ROOM_POLYGONS = [
   {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
   {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
   {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
-  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J16"},
-  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J16"},
+  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J4"},
+  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J4"},
   {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
   {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
   {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
@@ -88,9 +88,9 @@ const ROOM_POLYGONS = [
 ];
 
 // Interior walls that aren't part of a room polygon outline — drawn as extra
-// segments across corridor gaps. Currently: the physical wall added between
-// Public Recipe and Mamadini at J16 (blocks the J16↔J15 walkway at the bottom
-// of the gap; J16 itself stays open from the top, connecting to J4).
+// segments across corridor gaps. Currently: the physical wall between Public
+// Recipe and Mamadini — both stores now route directly out through J4
+// (J16 removed entirely; no physical hardware node exists there).
 const WALL_SEGMENTS = [
   {x1:325.8, y1:432.0, x2:396.6, y2:432.0},
 ];
@@ -101,7 +101,7 @@ const JUNCTIONS = {
   J7:{x:455.8,y:264.0}, J8:{x:582.0,y:264.0}, J9:{x:582.0,y:167.4},
   J10:{x:582.0,y:86.8}, J11:{x:582.0,y:357.0}, J12:{x:582.0,y:469.0},
   J13:{x:700.9,y:469.0}, J14:{x:474.8,y:469.0}, J15:{x:380.6,y:469.0},
-  J16:{x:380.6,y:375.4}, J17:{x:380.6,y:576.7}, J18:{x:205.7,y:576.7},
+  J17:{x:380.6,y:576.7}, J18:{x:205.7,y:576.7},
   J19:{x:205.7,y:510.8}, J20:{x:205.7,y:464.1},
 };
 const EXIT_POS = {
@@ -141,13 +141,13 @@ const SIM_CURSORS = {
 const CORRIDOR_EDGES = [
   ["J1","EXIT-1"],["J1","J2"],["J2","J3"],
   ["J3","J4"],["J3","J20"],
-  ["J4","J7"],["J4","J16"],
+  ["J4","J7"],
   ["J7","J8"],["J8","J9"],["J8","J11"],
   ["J9","J10"],["J10","EXIT-3"],
   ["J11","J12"],["J12","J13"],["J12","J14"],
   ["J13","EXIT-4"],["J14","J15"],
   ["J15","J17"],
-  // NOTE: J15-J16 edge removed — physical wall added between them
+  // NOTE: J16 removed entirely — no physical hardware node; B9/B10 connect to J4
   ["J17","J18"],["J18","J19"],
   ["J19","J20"],["J20","J3"],
 ];
@@ -660,7 +660,8 @@ export default function App() {
         pushEvent(`Sim trigger rejected (${resp.status}) — check mode sync`,"danger");
       }
       setNodes(prev=>prev.map(n=>n.id===nodeId
-        ? {...n, status:"alert", hazard:simTriggerType==="fire"?"thermal":simTriggerType}
+        ? {...n, status:simTriggerType==="crowd"?"warning":"alert",
+                 hazard:simTriggerType==="fire"?"thermal":simTriggerType}
         : n));
       setIsHazard(true);
     } catch{ pushEvent("Sim trigger failed — backend offline","danger"); }
@@ -716,7 +717,7 @@ export default function App() {
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({node_id:target, start:activeRoute[0]||"J16"})});
+        body:JSON.stringify({node_id:target, start:activeRoute[0]||"J4"})});
       const d=await r.json();
       if(d.new_route){
         setManualBlockedNodes(prev=>[...prev.filter(x=>x!==target), target]);
@@ -1034,7 +1035,7 @@ export default function App() {
                   );
                 })}
 
-                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider at J16) ── */}
+                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider) ── */}
                 {WALL_SEGMENTS.map((w,i)=>(
                   <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
                     stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
@@ -1056,12 +1057,18 @@ export default function App() {
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
                   const aNode=nodes.find(x=>x.id===a);
                   const bNode=nodes.find(x=>x.id===b);
-                  const hazard=(aNode?.status==="alert"||bNode?.status==="alert"||
+                  // Tiered corridor coloring: RED = alert/quarantine (fire, fallen
+                  // person, or crowd over CORRIDOR_CAPACITY — genuinely blocked).
+                  // YELLOW = warning (moderate crowd — still passable, just dense).
+                  // GREY = normal.
+                  const isSevere=(aNode?.status==="alert"||bNode?.status==="alert"||
                     aNode?.status==="quarantine"||bNode?.status==="quarantine");
+                  const isModerate=!isSevere&&(aNode?.status==="warning"||bNode?.status==="warning");
+                  const edgeStroke=isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
-                    stroke={hazard?"#EF4444":"#94A3B8"}
-                    strokeWidth={hazard?2:1.5} strokeDasharray={hazard?"none":"6 4"}
-                    opacity={hazard?0.8:0.5}/>;
+                    stroke={edgeStroke}
+                    strokeWidth={(isSevere||isModerate)?2:1.5} strokeDasharray={(isSevere||isModerate)?"none":"6 4"}
+                    opacity={(isSevere||isModerate)?0.8:0.5}/>;
                 })}
 
                 {/* ── Active route — hidden when perNodeRoutes is active ── */}
@@ -1416,7 +1423,7 @@ export default function App() {
                     const rankLabel = rank===0?"BEST":rank===1?"2nd":rank===2?"3rd":`${rank+1}th`;
                     return(
                       <button key={exitId} onClick={()=>{
-                        const origin = activeRoute[0] || "J16";
+                        const origin = activeRoute[0] || "J4";
                         fetch(apiUrl("/api/force_exit"),{
                           method:"POST",
                           headers:{"Content-Type":"application/json"},
@@ -1700,7 +1707,7 @@ export default function App() {
                   );
                 })}
 
-                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider at J16) ── */}
+                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider) ── */}
                 {WALL_SEGMENTS.map((w,i)=>(
                   <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
                     stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
@@ -1722,12 +1729,18 @@ export default function App() {
                   const pb=JUNCTIONS[b]||EXIT_POS[b]||{x:0,y:0};
                   const aNode=nodes.find(x=>x.id===a);
                   const bNode=nodes.find(x=>x.id===b);
-                  const hazard=(aNode?.status==="alert"||bNode?.status==="alert"||
+                  // Tiered corridor coloring: RED = alert/quarantine (fire, fallen
+                  // person, or crowd over CORRIDOR_CAPACITY — genuinely blocked).
+                  // YELLOW = warning (moderate crowd — still passable, just dense).
+                  // GREY = normal.
+                  const isSevere=(aNode?.status==="alert"||bNode?.status==="alert"||
                     aNode?.status==="quarantine"||bNode?.status==="quarantine");
+                  const isModerate=!isSevere&&(aNode?.status==="warning"||bNode?.status==="warning");
+                  const edgeStroke=isSevere?"#EF4444":isModerate?"#F59E0B":"#94A3B8";
                   return <line key={i} x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y}
-                    stroke={hazard?"#EF4444":"#94A3B8"}
-                    strokeWidth={hazard?2:1.5} strokeDasharray={hazard?"none":"6 4"}
-                    opacity={hazard?0.8:0.5}/>;
+                    stroke={edgeStroke}
+                    strokeWidth={(isSevere||isModerate)?2:1.5} strokeDasharray={(isSevere||isModerate)?"none":"6 4"}
+                    opacity={(isSevere||isModerate)?0.8:0.5}/>;
                 })}
 
                 {/* ── Active route — hidden when perNodeRoutes is active ── */}

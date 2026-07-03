@@ -156,12 +156,12 @@ def run_tests():
             warn(f"system_state is {state}", "Run /reset before testing")
 
         nodes = status.get("nodes", {})
-        expected_nodes = 37  # 18 junctions + 16 store doors + 3 exits
+        expected_nodes = 36  # 17 junctions + 16 store doors + 3 exits
         j_count  = sum(1 for n in nodes if n.startswith("J"))
         b_count  = sum(1 for n in nodes if n.startswith("B"))
         ex_count = sum(1 for n in nodes if n.startswith("EXIT"))
-        if j_count == 18 and b_count == 16 and ex_count == 3:
-            ok(f"All {len(nodes)} nodes present (18J + 16B + 3EXIT)", f"{j_count}J {b_count}B {ex_count}EXIT")
+        if j_count == 17 and b_count == 16 and ex_count == 3:
+            ok(f"All {len(nodes)} nodes present (17J + 16B + 3EXIT)", f"{j_count}J {b_count}B {ex_count}EXIT")
         elif len(nodes) > 0:
             warn(f"Node count {len(nodes)} (expected {expected_nodes})", f"J={j_count} B={b_count} EXIT={ex_count}")
         else:
@@ -251,22 +251,22 @@ def run_tests():
     get("/reset")
     time.sleep(0.5)
 
-    # J4 is a KNOWN single point of failure for J16/B9/B10 (Mamadini, Public
-    # Recipe) — the J15-J16 corridor was walled off per the physical floor
-    # plan update, leaving J4 as the only way out of that cluster. Blocking
-    # J4 is EXPECTED to still return a route through J4 (quarantine-penalized,
-    # not blocked outright) since no alternate path exists. This is a
-    # documented design tradeoff, not a bug — see routing_engine.py comments
-    # on the J15-J16 edge removal.
-    block_resp = post("/api/block_node", {"node_id": "J4", "start": "J16"}, "POST /api/block_node")
+    # J4 is a KNOWN single point of failure for B9/B10 (Mamadini, Public
+    # Recipe) — both connect directly to J4 now (J16 was removed entirely;
+    # no physical hardware node exists there in the real installation).
+    # Blocking J4 is EXPECTED to still return a route through J4
+    # (quarantine-penalized, not blocked outright) since no alternate path
+    # exists for B9/B10. This is a documented design tradeoff, not a bug —
+    # see routing_engine.py comments on the J16 removal.
+    block_resp = post("/api/block_node", {"node_id": "J4", "start": "B9"}, "POST /api/block_node")
     if not block_resp:
         fail("/api/block_node not responding")
     else:
         new_route = block_resp.get("new_route", [])
         if new_route and "J4" in new_route:
-            ok("J4 block: route still passes through J4 (expected — single point of failure for J16/B9/B10, wall between J16-J15 is intentional)")
+            ok("J4 block: route still passes through J4 (expected — single point of failure for B9/B10 Mamadini/Public Recipe, which connect directly to J4)")
         elif new_route and "J4" not in new_route:
-            warn("J4 block: route avoided J4 — unexpected given current topology, verify J15-J16 wall is still in place")
+            warn("J4 block: route avoided J4 — unexpected given current topology, verify B9/B10 still connect to J4")
         else:
             warn("No route returned from block_node (J4)")
 
@@ -327,14 +327,14 @@ def run_tests():
         for nid in live_node_status:
             live_node_status[nid]["status"] = "normal"
             live_node_status[nid]["hazard"] = None
-        path, cost = calculate_safest_route("J16", verbose=False)
-        assert path and path[0] == "J16" and path[-1].startswith("EXIT"), "No path to exit"
+        path, cost = calculate_safest_route("J4", verbose=False)
+        assert path and path[0] == "J4" and path[-1].startswith("EXIT"), "No path to exit"
         ok("DYN-A* finds path in normal mode", " → ".join(path))
 
         # Fire path
         live_node_status["J7"]["status"] = "alert"
         live_node_status["J7"]["hazard"] = "thermal"
-        path2, cost2 = calculate_safest_route("J16", verbose=False)
+        path2, cost2 = calculate_safest_route("J4", verbose=False)
         assert "J7" not in path2, "Fire route passes through J7"
         ok("DYN-A* avoids fire node", " → ".join(path2))
 
