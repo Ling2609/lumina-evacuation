@@ -2190,7 +2190,7 @@ def download_log():
 
     # ══════════════════ SHEET 6: SYSTEM & COMPLIANCE ══════════════════
     ws = wb.create_sheet("System & Compliance")
-    set_widths(ws, [30, 14, 14, 12])
+    set_widths(ws, [32, 14, 46, 16])
     r = 1
     r = section_title(ws, r, "SYSTEM PERFORMANCE", 4)
     r = table_header(ws, r, ["Metric", "Value", "Target", "Status"])
@@ -2220,6 +2220,12 @@ def download_log():
         c3 = ws.cell(row=r, column=3, value=notes); style_data(c3)
         ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=4)
         style_data(ws.cell(row=r, column=4))
+        # Column is now wide enough that most notes fit on one line, but
+        # explicitly setting row height as a safety net for whatever still
+        # wraps to two lines — without this, wrap_text can cram multiple
+        # lines into a too-short default row height, causing text from
+        # adjacent rows to visually overlap (exactly what was happening here).
+        ws.row_dimensions[r].height = 30
         r += 1
 
     buf = io.BytesIO()
