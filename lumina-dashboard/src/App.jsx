@@ -307,7 +307,22 @@ export default function App() {
   // even though the backend's actual state is correct. This ref tags every
   // such request with a sequence number at send time; a response is only
   // applied if it's still the most recent request issued when it arrives.
-  const perNodeRoutesSeqRef = useRef(0);
+  // REPLACES a single global counter that was shared across EVERY action on
+  // EVERY node. That meant blocking J8 while triggering J15 (two completely
+  // unrelated nodes) would still bump the same shared counter, causing the
+  // trigger's own response to be wrongly discarded as "stale" even though
+  // nothing about it genuinely conflicted with the block. This is what
+  // produced the "only ever 2 hazards work" symptom — with 2 already
+  // active, there's more background activity for a 3rd trigger to
+  // accidentally collide with. Scoped per-node: an action on J15 can only
+  // ever be superseded by a LATER action on J15, never by something
+  // happening to J8 at the same time.
+  const perNodeSeqRef = useRef({});
+  const nextSeq = (nodeId) => {
+    perNodeSeqRef.current[nodeId] = (perNodeSeqRef.current[nodeId]||0) + 1;
+    return perNodeSeqRef.current[nodeId];
+  };
+  const isLatestSeq = (nodeId, seq) => perNodeSeqRef.current[nodeId] === seq;
   // Browsers fire the regular click event TWICE as part of every
   // double-click, before dblclick itself fires. Without disambiguation,
   // double-clicking a node to cancel a hazard would ALSO fire the
@@ -752,7 +767,7 @@ export default function App() {
     }
     const labels={"fire":"🔥 Fire","fallen":"🧍 Fallen Person","crowd":"👥 Crowd Density"};
     pushEvent(`SIM: ${labels[simTriggerType]} triggered at ${nodeId}`,"danger","REACTIVE");
-    const _mySeq = ++perNodeRoutesSeqRef.current;
+    const _mySeq = nextSeq(nodeId);
     try{
       const resp = await fetch(apiUrl("/api/sim_trigger"),{
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -774,7 +789,7 @@ export default function App() {
         // this one was sent, otherwise this stale response would overwrite
         // more current state that arrived out of order.
         if(d.per_node_routes && d.per_node_routes.length>0){
-          if(_mySeq===perNodeRoutesSeqRef.current){
+          if(isLatestSeq(nodeId, _mySeq)){
             setPerNodeRoutes(d.per_node_routes);
             d.per_node_routes.forEach(r=>{
               pushEvent(`PATH: ${r.node_id} → ${r.best_exit} (${r.event_type})`, "info", "PRE-EMPTIVE");
@@ -803,14 +818,14 @@ export default function App() {
   const cancelSimTriggerAtNode=async(nodeId)=>{
     const exists = perNodeRoutes.find(r=>r.node_id===nodeId);
     if(!exists) return;
-    const _mySeq = ++perNodeRoutesSeqRef.current;
+    const _mySeq = nextSeq(nodeId);
     try{
       await fetch(apiUrl("/api/cancel_sim_trigger"),{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({node_id:nodeId})
       });
     } catch{ /* offline */ }
-    if(_mySeq!==perNodeRoutesSeqRef.current){
+    if(!isLatestSeq(nodeId, _mySeq)){
       console.warn(`[SIM] Discarded stale cancel response for ${nodeId} — a newer request was issued since`);
       return;
     }
@@ -871,25 +886,18 @@ export default function App() {
     // fresh as whatever render created this function instance.
     const currentPerNodeRoutes = perNodeRoutesRef.current;
     if(currentPerNodeRoutes.length===0) return;
-    // THE ACTUAL MISSING PROTECTION: this function had NO sequence guard at
-    // all, even though fireSimTriggerAtNode/cancelSimTriggerAtNode both do.
-    // Every block action calls this at the end to refresh every OTHER
-    // active hazard's route — but if you block several nodes in quick
-    // succession (e.g. J3, J13, J8 back to back), each block fires its OWN
-    // independent refresh cycle (its own Promise.all of quick_routes calls).
-    // These can resolve in ANY order depending on network timing, and
-    // because none of them checked whether they were still the most recent
-    // one, whichever happened to finish LAST — not whichever was clicked
-    // last — would silently overwrite the screen. That's exactly the
-    // "flashes correctly for a second, then reverts" symptom: an earlier,
-    // now-stale block's slower refresh completing after a later, correct
-    // one, and blindly overwriting it.
-    const _mySeq = ++perNodeRoutesSeqRef.current;
+    // Each hazard gets its OWN per-node sequence number, checked
+    // independently — NOT one bulk check for the whole refresh. Otherwise,
+    // blocking J8 while J15's own refresh is mid-flight would tag them with
+    // the same batch, and a stale J8 result could discard an entirely
+    // unrelated, still-fresh J15 result (or vice versa). Scoping this
+    // properly is what actually fixes "only ever 2 hazards work."
     const newlyStranded = [];
     const updated = await Promise.all(currentPerNodeRoutes.map(async(nr)=>{
+      const _nrSeq = nextSeq(nr.node_id);
       if(nr.node_id === blockedTarget){
         newlyStranded.push(nr.node_id);
-        return {...nr, best_path:[], best_exit:null};
+        return {...nr, best_path:[], best_exit:null, _seq:_nrSeq};
       }
       try{
         const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
@@ -898,23 +906,33 @@ export default function App() {
         if(rr.ok){
           const dd=await rr.json();
           const best=dd.routes?.find(rt=>!rt.path?.includes(blockedTarget))||dd.routes?.[0];
-          if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit};
+          if(best?.path) return {...nr, best_path:best.path, best_exit:best.exit, _seq:_nrSeq};
           newlyStranded.push(nr.node_id);
-          return {...nr, best_path:[], best_exit:null};
+          return {...nr, best_path:[], best_exit:null, _seq:_nrSeq};
         } else {
           console.error(`[per-hazard refresh] quick_routes returned ${rr.status} for ${nr.node_id}`);
         }
       } catch(err){
         console.error(`[per-hazard refresh] failed for ${nr.node_id}:`, err);
       }
-      return nr;
+      return {...nr, _seq:_nrSeq};
     }));
-    if(_mySeq!==perNodeRoutesSeqRef.current){
-      console.warn(`[BLOCK] Discarded stale refresh triggered by blocking ${blockedTarget} — a newer action superseded it`);
-      pushEvent(`Refresh after blocking ${blockedTarget} discarded — a newer action happened first`,"danger");
-      return;
-    }
-    setPerNodeRoutes(updated);
+    // Apply via functional update, keeping each entry independently only if
+    // ITS OWN sequence is still current — a stale entry for one node simply
+    // keeps whatever is already in state for that node (which may already
+    // be more current, from a different concurrent operation), instead of
+    // discarding the ENTIRE batch because ONE entry happened to be stale.
+    setPerNodeRoutes(prev=>prev.map(existingNr=>{
+      const computed = updated.find(u=>u.node_id===existingNr.node_id);
+      if(!computed) return existingNr;
+      if(!isLatestSeq(existingNr.node_id, computed._seq)){
+        console.warn(`[BLOCK] Discarded stale per-hazard refresh for ${existingNr.node_id} — a newer action on that node superseded it`);
+        return existingNr;
+      }
+      const clean = {...computed};
+      delete clean._seq;
+      return clean;
+    }));
     if(newlyStranded.length>0){
       setNodes(prev=>prev.map(n=>newlyStranded.includes(n.id)?{...n,shelterInPlace:true}:n));
       // Never surface the just-blocked node itself as the shelter alert —
@@ -962,13 +980,13 @@ export default function App() {
     // in any order. Without this, an earlier block's slower-arriving
     // response could overwrite a later block's already-applied, correct
     // state, purely based on network timing rather than click order.
-    const _myBlockSeq = ++perNodeRoutesSeqRef.current;
+    const _myBlockSeq = nextSeq(target);
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({node_id:target, start:blockStart})});
       const d=await r.json();
-      if(_myBlockSeq!==perNodeRoutesSeqRef.current){
+      if(!isLatestSeq(target, _myBlockSeq)){
         console.warn(`[overridePath] Discarded stale block response for ${target} — a newer action superseded it`);
         pushEvent(`Block of ${target} discarded — a newer action happened first`,"danger");
         return;
