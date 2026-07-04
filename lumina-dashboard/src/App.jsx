@@ -330,12 +330,33 @@ export default function App() {
   // unconditionally, unlike /api/status's per_node_routes field which is
   // only reliably refreshed by a background loop that skips updating
   // during manual_override.
-  const reconcileHazards = async()=>{
+  //
+  // ORDERING BUG FIX: if you trigger multiple hazards in quick succession,
+  // EACH trigger schedules its own reconcile 300ms later. Without
+  // protection, an EARLIER-scheduled reconcile could resolve AFTER a
+  // LATER one (pure network timing), and silently overwrite the correct,
+  // up-to-date state with an older snapshot fetched before the later
+  // trigger had even been processed — which is exactly what "green route
+  // shows for a second then vanishes" looks like: the correct state
+  // briefly visible, then clobbered by a straggling earlier reconcile.
+  // scheduleReconcile() increments the generation at SCHEDULE time (not
+  // execution time), so reconcileHazards can tell whether it's still the
+  // most recently REQUESTED reconciliation by the time its fetch resolves.
+  const reconcileGenRef = useRef(0);
+  const scheduleReconcile = (delay=300)=>{
+    const myGen = ++reconcileGenRef.current;
+    setTimeout(()=>reconcileHazards(myGen), delay);
+  };
+  const reconcileHazards = async(myGen)=>{
     try{
       const r = await fetch(apiUrl("/api/active_hazards"));
       if(!r.ok) return;
       const d = await r.json();
       if(!d.per_node_routes) return;
+      if(myGen!==undefined && myGen!==reconcileGenRef.current){
+        console.warn(`[RECONCILE] Discarded stale reconciliation (gen ${myGen}, current ${reconcileGenRef.current}) — a newer action superseded it`);
+        return;
+      }
       setPerNodeRoutes(prev=>{
         const prevIds = prev.map(p=>p.node_id).sort().join(",");
         const freshIds = d.per_node_routes.map(p=>p.node_id).sort().join(",");
@@ -838,7 +859,7 @@ export default function App() {
       setIsHazard(true);
     } catch{ pushEvent("Sim trigger failed — backend offline","danger"); }
     setSimTriggerType(null);
-    setTimeout(reconcileHazards, 300);
+    scheduleReconcile();
     return true;
   };
 
@@ -887,7 +908,7 @@ export default function App() {
       const next = remaining[remaining.length-1];
       if(next?.best_path?.length) setActiveRoute(next.best_path);
     }
-    setTimeout(reconcileHazards, 300);
+    scheduleReconcile();
   };
 
 
@@ -1088,7 +1109,7 @@ export default function App() {
       console.error("[overridePath] failed:", err);
       pushEvent(`Override failed — ${err?.message||"unknown error"} (see console)`,"danger");
     }
-    setTimeout(reconcileHazards, 300);
+    scheduleReconcile();
   };
 
   // ── DERIVED ───────────────────────────────────────────────────────────────
@@ -1961,7 +1982,7 @@ export default function App() {
                                     }
                                   } catch{ /* offline */ }
                                 }
-                                setTimeout(reconcileHazards, 300);
+                                scheduleReconcile();
                               } catch{ pushEvent("Unblock failed — backend offline","danger"); }
                             } else {
                               setSelectedNode(p=>p?.id===n.id?null:n);
