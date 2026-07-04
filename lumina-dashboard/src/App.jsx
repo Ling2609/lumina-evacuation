@@ -532,6 +532,21 @@ export default function App() {
   const activeTabObj = perNodeRoutes.length>=1
     ? (perNodeRoutes.find(nr=>nr.node_id===selectedHazardTab) || perNodeRoutes[perNodeRoutes.length-1])
     : null;
+  // Banner text derived from whichever hazard tab is CURRENTLY selected,
+  // not just whatever the most recent action happened to set. Previously
+  // hazardType was purely manually-managed state — every action handler
+  // (trigger, cancel, block) had to remember to call setHazardType with
+  // the right text, and switching tabs did nothing to it, so the banner
+  // could show "FIRE" while you were actually looking at a fallen-person
+  // tab. Deriving it directly from activeTabObj means it's automatically
+  // correct for whichever hazard is on screen, matching displayRoute's
+  // same derived-not-managed approach.
+  const HAZARD_LABELS = {"fire":"FIRE","fallen":"PERSON FALLEN","crowd":"CROWD DENSITY"};
+  const derivedHazardType = activeTabObj
+    ? ((!activeTabObj.best_path || activeTabObj.best_path.length===0)
+        ? "NO ROUTE — RESCUE REQUIRED"
+        : (HAZARD_LABELS[activeTabObj.event_type] || hazardType))
+    : hazardType;
 
   const pushEvent = (msg, level="info", tag=null) => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
@@ -1413,7 +1428,7 @@ export default function App() {
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 {isHazard&&<span style={{fontSize:11,fontWeight:700,color:palette.danger,
                   background:palette.dangerLight,padding:"3px 10px",borderRadius:6}}>
-                  HAZARD ACTIVE — {hazardType}
+                  HAZARD ACTIVE — {derivedHazardType}
                 </span>}
                 {isHazard&&<span style={{fontSize:10,fontWeight:600,color:"#7C3AED",
                   background:"#EDE9FE",padding:"3px 8px",borderRadius:6,
@@ -2198,7 +2213,7 @@ export default function App() {
             background:isHazard?palette.danger:palette.successLight,
             color:isHazard?"#fff":palette.successDark,
             maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {isHazard?`CRITICAL — ${hazardType}`:"NORMAL"}
+            {isHazard?`CRITICAL — ${derivedHazardType}`:"NORMAL"}
           </span>
           <span style={{fontSize:9,fontWeight:600,flexShrink:0,
             color:backendOnline?palette.success:palette.danger}}>
