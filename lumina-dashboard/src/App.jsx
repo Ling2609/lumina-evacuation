@@ -372,6 +372,8 @@ export default function App() {
   const manualOverrideRef = useRef(false);
   const backendOnlineRef  = useRef(false); // tracks previous online state for transition logging
   const perNodeRoutesRef  = useRef([]);    // ref so poll closure always sees current perNodeRoutes
+  const manualBlockedNodesRef = useRef([]); // same reasoning — avoid stale-closure reads in async handlers
+  useEffect(()=>{ manualBlockedNodesRef.current = manualBlockedNodes; }, [manualBlockedNodes]);
   useEffect(()=>{ perNodeRoutesRef.current = perNodeRoutes; }, [perNodeRoutes]);
   useEffect(()=>{ manualOverrideRef.current = manualOverride; }, [manualOverride]);
   // Keep selectedHazardTab valid whenever the actual hazard list changes.
@@ -869,6 +871,20 @@ export default function App() {
     // fresh as whatever render created this function instance.
     const currentPerNodeRoutes = perNodeRoutesRef.current;
     if(currentPerNodeRoutes.length===0) return;
+    // THE ACTUAL MISSING PROTECTION: this function had NO sequence guard at
+    // all, even though fireSimTriggerAtNode/cancelSimTriggerAtNode both do.
+    // Every block action calls this at the end to refresh every OTHER
+    // active hazard's route — but if you block several nodes in quick
+    // succession (e.g. J3, J13, J8 back to back), each block fires its OWN
+    // independent refresh cycle (its own Promise.all of quick_routes calls).
+    // These can resolve in ANY order depending on network timing, and
+    // because none of them checked whether they were still the most recent
+    // one, whichever happened to finish LAST — not whichever was clicked
+    // last — would silently overwrite the screen. That's exactly the
+    // "flashes correctly for a second, then reverts" symptom: an earlier,
+    // now-stale block's slower refresh completing after a later, correct
+    // one, and blindly overwriting it.
+    const _mySeq = ++perNodeRoutesSeqRef.current;
     const newlyStranded = [];
     const updated = await Promise.all(currentPerNodeRoutes.map(async(nr)=>{
       if(nr.node_id === blockedTarget){
@@ -893,6 +909,11 @@ export default function App() {
       }
       return nr;
     }));
+    if(_mySeq!==perNodeRoutesSeqRef.current){
+      console.warn(`[BLOCK] Discarded stale refresh triggered by blocking ${blockedTarget} — a newer action superseded it`);
+      pushEvent(`Refresh after blocking ${blockedTarget} discarded — a newer action happened first`,"danger");
+      return;
+    }
     setPerNodeRoutes(updated);
     if(newlyStranded.length>0){
       setNodes(prev=>prev.map(n=>newlyStranded.includes(n.id)?{...n,shelterInPlace:true}:n));
@@ -936,11 +957,22 @@ export default function App() {
       : (activeRoute[0]||shelterAlert||"J4");
     console.log("[overridePath] target:", target, "blockStart:", blockStart,
       "selectedHazardTab:", selectedHazardTab, "perNodeRoutesRef:", perNodeRoutesRef.current.map(nr=>nr.node_id));
+    // Same protection as refreshOtherHazardRoutes below — if you block
+    // several nodes in quick succession, each block's response can arrive
+    // in any order. Without this, an earlier block's slower-arriving
+    // response could overwrite a later block's already-applied, correct
+    // state, purely based on network timing rather than click order.
+    const _myBlockSeq = ++perNodeRoutesSeqRef.current;
     try{
       const r=await fetch(apiUrl("/api/block_node"),{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({node_id:target, start:blockStart})});
       const d=await r.json();
+      if(_myBlockSeq!==perNodeRoutesSeqRef.current){
+        console.warn(`[overridePath] Discarded stale block response for ${target} — a newer action superseded it`);
+        pushEvent(`Block of ${target} discarded — a newer action happened first`,"danger");
+        return;
+      }
       // Always register the block itself — it succeeded (the node IS
       // quarantined) regardless of whether a route still exists from
       // wherever "start" was.
@@ -1804,7 +1836,16 @@ export default function App() {
                                 await fetch(apiUrl("/api/unblock_node"),{method:"POST",
                                   headers:{"Content-Type":"application/json"},
                                   body:JSON.stringify({node_id:n.id})});
-                                const remaining = manualBlockedNodes.filter(x=>x!==n.id);
+                                // Read from the REF, not the closure-captured
+                                // manualBlockedNodes — this handler makes
+                                // several async calls, and if multiple unblock
+                                // clicks happen in quick succession (e.g.
+                                // clearing several blocks back to back), each
+                                // click's closure could be working from a
+                                // snapshot taken BEFORE an earlier click's own
+                                // update landed, with the last one to finish
+                                // silently overwriting the others' work.
+                                const remaining = manualBlockedNodesRef.current.filter(x=>x!==n.id);
                                 setManualBlockedNodes(remaining);
                                 setNodes(prev=>prev.map(x=>x.id===n.id?{...x,status:"normal",hazard:null,shelterInPlace:false}:x));
                                 pushEvent(`BOMBA: ${n.id} unblocked`,"info","PRE-EMPTIVE");
@@ -1828,9 +1869,10 @@ export default function App() {
                                 }
                                 if(remaining.length===0) setManualOverride(false);
                                 // Recalculate all per-node routes now that node is unblocked
-                                if(perNodeRoutes.length>0){
+                                // — reading from the ref for the same reason as above.
+                                if(perNodeRoutesRef.current.length>0){
                                   const stillStranded = [];
-                                  const updated = await Promise.all(perNodeRoutes.map(async(nr)=>{
+                                  const updated = await Promise.all(perNodeRoutesRef.current.map(async(nr)=>{
                                     try{
                                       const rr=await fetch(apiUrl("/api/quick_routes"),{method:"POST",
                                         headers:{"Content-Type":"application/json"},
