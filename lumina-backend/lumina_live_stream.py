@@ -408,15 +408,23 @@ def _thermal_thread():
         result = thermal_clf.classify(temp)
         _thermal_latency_ms = result["latency_ms"]
         with state_lock:
-            in_fire = fire_sim_active
-        # Only update temps with fire simulation during active fire trigger
-        # During fall hazard (fire_sim_active=False), temps remain ambient
+            # Previously this always heated up J7 specifically, regardless
+            # of which node the fire was actually triggered at — clicking
+            # fire at J12 would correctly avoid J12 in routing, but the
+            # temperature dashboard would show J7 spiking instead. Find the
+            # actual fire node(s) so only those heat up.
+            fire_nodes = [h["node_id"] for h in active_hazard_nodes if h.get("event_type")=="fire"]
         # J4 IS the sensor location now (merged from J16) — direct read, no scaling
         _latest_temps["J4"] = round(result["temp_c"], 1)
-        if in_fire:
-            _latest_temps["J7"] = round(min(150, result["temp_c"] * 1.8), 1)
-        else:
-            _latest_temps["J7"] = round(27.0 + random.uniform(-0.5, 0.5), 1)
+        # Dynamically heat up whichever OTHER tracked nodes are actually on
+        # fire; everyone else in _latest_temps stays at ambient.
+        for _nid in _latest_temps:
+            if _nid == "J4":
+                continue
+            if _nid in fire_nodes:
+                _latest_temps[_nid] = round(min(150, result["temp_c"] * 1.8), 1)
+            else:
+                _latest_temps[_nid] = round(27.0 + random.uniform(-0.5, 0.5), 1)
 
         with state_lock:
             thermal_state = result["state"]
@@ -966,8 +974,8 @@ def _process_ai_cycle(cap, state):
                         "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                         "all_exits":  _h_routes,
                     })
-                    if not _h_routes and _h["node_id"] in live_node_status:
-                        live_node_status[_h["node_id"]]["shelter_in_place"] = True
+                    if _h["node_id"] in live_node_status:
+                        live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
                 if _per:
                     current_per_node_routes[:] = _per
                     current_route[:] = _per[-1]["best_path"]
@@ -1095,6 +1103,14 @@ def cancel_sim_trigger():
         _cancelled_entry = next((h for h in active_hazard_nodes if h["node_id"] == node_id), None)
         _was_crowd = _cancelled_entry is not None and _cancelled_entry.get("event_type") == "crowd"
         active_hazard_nodes[:] = [h for h in active_hazard_nodes if h["node_id"] != node_id]
+        # If that was the last remaining FIRE (even if fallen/crowd hazards
+        # are still active), turn off the thermal simulator specifically —
+        # previously fire_sim_active only ever got reset in the "ALL
+        # hazards cleared" branch further down, so cancelling a fire while
+        # a fallen-person hazard was still active left the dashboard
+        # showing a stuck 150°C reading with no active fire anywhere.
+        if not any(h.get("event_type")=="fire" for h in active_hazard_nodes):
+            fire_sim_active = False
         if node_id in live_node_status:
             live_node_status[node_id]["status"]           = "normal"
             live_node_status[node_id]["hazard"]            = None
@@ -1135,8 +1151,8 @@ def cancel_sim_trigger():
                 "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                 "all_exits":  _h_routes,
             })
-            if not _h_routes and _h["node_id"] in live_node_status:
-                live_node_status[_h["node_id"]]["shelter_in_place"] = True
+            if _h["node_id"] in live_node_status:
+                live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
         current_per_node_routes[:] = _per
         if _per:
             current_route[:] = _per[-1]["best_path"]
@@ -1144,13 +1160,28 @@ def cancel_sim_trigger():
             current_route[:] = []
         # If no more active hazards, return to normal
         if not active_hazard_nodes:
-            system_state    = "NORMAL"
-            manual_override = False
-            fire_sim_active = False
-            facp_confirmed  = False  # reset so next fire triggers FACP sequence cleanly
-            _total_pax      = sum(d["crowd"] for d in live_node_status.values())
-            _corridors      = _build_corridor_states()
-            _publish_resolve = True
+            # A manual BOMBA block lives in live_node_status (hazard=="collapsed"),
+            # completely separate from active_hazard_nodes (sim triggers only).
+            # Previously this branch unconditionally reset to NORMAL and
+            # published RESOLVED the moment the last SIM hazard was cancelled,
+            # even if a structural BOMBA block was still sitting on the map —
+            # incorrectly telling the UI and hardware "all clear" while a
+            # corridor was still physically blocked.
+            _blocks_remain = any(d.get("impassable", False) and d.get("hazard") == "collapsed"
+                                  for d in live_node_status.values())
+            if _blocks_remain:
+                system_state     = "HAZARD"
+                _total_pax       = sum(d["crowd"] for d in live_node_status.values())
+                _corridors       = _build_corridor_states()
+                _publish_resolve = False
+            else:
+                system_state    = "NORMAL"
+                manual_override = False
+                fire_sim_active = False
+                facp_confirmed  = False  # reset so next fire triggers FACP sequence cleanly
+                _total_pax      = sum(d["crowd"] for d in live_node_status.values())
+                _corridors      = _build_corridor_states()
+                _publish_resolve = True
         else:
             _publish_resolve = False
             _total_pax       = 0
@@ -1687,8 +1718,8 @@ def sim_trigger():
                 "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                 "all_exits":  _h_routes,
             })
-            if not _h_routes and _h["node_id"] in live_node_status:
-                live_node_status[_h["node_id"]]["shelter_in_place"] = True
+            if _h["node_id"] in live_node_status:
+                live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
         # Primary route = best route from most recently triggered node
         _path = _per_node_routes[-1]["best_path"] if _per_node_routes else []
         # Always assign, even when empty — previously this only updated

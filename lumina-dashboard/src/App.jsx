@@ -360,13 +360,16 @@ export default function App() {
       setPerNodeRoutes(prev=>{
         const prevIds = prev.map(p=>p.node_id).sort().join(",");
         const freshIds = d.per_node_routes.map(p=>p.node_id).sort().join(",");
-        // Only actually replace if the SET of tracked hazards differs —
-        // avoids clobbering in-flight per-node route data with a
-        // possibly-slightly-older snapshot when the hazard list itself
-        // hasn't changed (route freshness within an unchanged hazard set
-        // is already handled by the normal per-action update paths).
-        if(prevIds === freshIds) return prev;
-        console.warn("[RECONCILE] Hazard list drift detected — correcting:", prevIds, "→", freshIds);
+        // Build a comparable signature of each entry's actual route content
+        // too, not just which node IDs are tracked — this is what lets
+        // legitimate live route updates (e.g. a crowd shift changing the
+        // optimal path for an already-tracked hazard) still come through
+        // periodically, now that polling no longer independently writes
+        // this state. Sorted by node_id so ordering differences alone
+        // don't trigger an unnecessary replace.
+        const sig = (list)=>list.map(p=>`${p.node_id}:${(p.best_path||[]).join(">")}`).sort().join("|");
+        if(prevIds===freshIds && sig(prev)===sig(d.per_node_routes)) return prev;
+        console.warn("[RECONCILE] Hazard list or route content changed — correcting:", prevIds, "→", freshIds);
         return d.per_node_routes;
       });
     } catch{ /* offline — next poll cycle will eventually catch up */ }
@@ -602,14 +605,21 @@ export default function App() {
           // Split-brain fix: ignore stale NORMAL from REST poll if MQTT just said CRITICAL
           const stalePoll = d.system_state==="NORMAL" && (Date.now()-hazardLockRef.current < 2000);
           if (!stalePoll) {
-            // Only sync route from backend if not in manual override mode
-            if(d.per_node_routes?.length>0){
-              // Multi-hazard mode — update all per-node routes from backend real-time calc
-              setPerNodeRoutes(d.per_node_routes);
-            } else if(d.per_node_routes?.length===0 && perNodeRoutesRef.current.length>0){
-              // Backend cleared per-node routes (reset) — clear frontend too
-              setPerNodeRoutes([]);
-            }
+            // perNodeRoutes is now handled EXCLUSIVELY by explicit action
+            // responses (trigger/cancel/block) plus the periodic
+            // reconcileHazards safety net — NOT by this regular poll.
+            // This used to also call setPerNodeRoutes(d.per_node_routes)
+            // unconditionally on every poll tick, using /api/status's
+            // per_node_routes field. That field comes from a DIFFERENT
+            // backend computation than /api/active_hazards (used by
+            // reconcileHazards) and can disagree with it — meaning polling
+            // and reconciliation were two independent writers on similar
+            // timers, each capable of "correcting" the other back and
+            // forth indefinitely. That's what was causing the continuous
+            // blinking between old and new hazard data, not a one-time
+            // glitch. Removing this leaves exactly one authoritative
+            // periodic source (reconcileHazards) instead of two competing
+            // ones.
             if (d.current_route!==undefined && !manualOverrideRef.current) setActiveRoute(d.current_route);
           }
           if (d.pull_signals) setPullSignals(d.pull_signals);
@@ -881,7 +891,10 @@ export default function App() {
             });
           } else {
             console.warn(`[SIM] Discarded stale trigger response for ${nodeId} — a newer request was issued since`);
-            pushEvent(`Trigger at ${nodeId} discarded — a newer action happened first (this is normal if you clicked quickly)`,"danger");
+            // Deliberately no pushEvent here — this is an expected, harmless
+            // outcome of clicking quickly, not something worth a visible red
+            // banner during a live demo. console.warn stays for debugging;
+            // it's only visible if DevTools is deliberately opened.
           }
         }
       } else {
@@ -937,8 +950,20 @@ export default function App() {
     // now it also reassigns to whichever hazard IS still active.
     const wasPrimary = activeRoute[0]===nodeId;
     if(remaining.length===0){
-      setIsHazard(false);
-      setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
+      // Same reasoning as the backend fix — a manual BOMBA block is tracked
+      // separately (manualBlockedNodes) from sim hazards (perNodeRoutes).
+      // Previously this branch unconditionally dropped the UI out of hazard
+      // mode the moment the last sim hazard was cancelled, even if a
+      // structural block was still active — the banner would incorrectly
+      // say "all clear" while a purple blocked node sat right there on the map.
+      if(manualBlockedNodesRef.current.length>0){
+        setHazardType("MANUAL OVERRIDE");
+        // Leave isHazard true — the next poll/reconcile will supply the
+        // correct route avoiding the block, matching backend truth.
+      } else {
+        setIsHazard(false);
+        setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
+      }
     } else if(wasPrimary){
       // Reassign to the next most-recently-triggered remaining hazard,
       // matching the backend's own "last entry = primary" convention.
@@ -1057,7 +1082,11 @@ export default function App() {
     // hazard. Previously these could mismatch: you'd view J9's tab, click
     // block, but the backend call would silently test some other hazard's
     // origin, updating the banner for a result unrelated to what you saw.
-    const blockStart = (perNodeRoutesRef.current.length>1 && selectedHazardTab)
+    // Changed from >1 to >=1 for the same reason displayRoute was earlier —
+    // a single active hazard should still resolve blockStart from its own
+    // tracked tab, not fall back to the separately-managed activeRoute
+    // variable, which has proven unreliable across many fixes today.
+    const blockStart = (perNodeRoutesRef.current.length>=1 && selectedHazardTab)
       ? selectedHazardTab
       : (activeRoute[0]||shelterAlert||"J4");
     console.log("[overridePath] target:", target, "blockStart:", blockStart,
@@ -1075,7 +1104,8 @@ export default function App() {
       const d=await r.json();
       if(!isLatestSeq(target, _myBlockSeq)){
         console.warn(`[overridePath] Discarded stale block response for ${target} — a newer action superseded it`);
-        pushEvent(`Block of ${target} discarded — a newer action happened first`,"danger");
+        // Same reasoning as the trigger discard case — expected and
+        // harmless, not worth a visible banner during a live demo.
         return;
       }
       // Always register the block itself — it succeeded (the node IS
