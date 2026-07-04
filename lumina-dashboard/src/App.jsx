@@ -2740,7 +2740,7 @@ export default function App() {
             {/* Bottom strip */}
             <div style={{display:"grid",gridTemplateColumns:"1.4fr auto 1fr",gap:10}}>
               <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6,
-                height:260,overflowY:"auto"}}>
+                }}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
                 {perNodeRoutes.length>1 && (
                   // THE ACTUAL FIX: this used to be a scrollable STACKED LIST
@@ -2817,8 +2817,8 @@ export default function App() {
                       style={{position:"fixed",inset:0,zIndex:200,background:"rgba(15,23,42,0.45)",
                         display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
                       <div onClick={(e)=>e.stopPropagation()}
-                        style={{width:320,maxWidth:"100%",background:"#fff",borderRadius:10,
-                          padding:"16px 18px",boxShadow:"0 12px 40px rgba(0,0,0,0.25)"}}>
+                        style={{width:400,maxWidth:"100%",background:"#fff",borderRadius:10,
+                          padding:"18px 20px",boxShadow:"0 12px 40px rgba(0,0,0,0.25)",textAlign:"left"}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                           <span style={{fontSize:13,fontWeight:700,color:palette.text}}>
                             RSET breakdown{activeTabObj?.node_id?` — ${activeTabObj.node_id}`:""}
@@ -2833,7 +2833,7 @@ export default function App() {
                               ["T2 — Hesitation",effectiveRset.T2_hesitation_s,"Decision time before moving (lower = clearer guidance)"],
                               ["T3 — Travel",effectiveRset.T3_travel_s,"Walking time, using real crowd-aware speed per corridor"],
                             ].map(([label,val,desc])=>(
-                              <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                              <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,textAlign:"left"}}>
                                 <div style={{minWidth:0}}>
                                   <div style={{fontSize:11,fontWeight:600,color:palette.text}}>{label}</div>
                                   <div style={{fontSize:9,color:palette.textMuted,lineHeight:1.4}}>{desc}</div>
