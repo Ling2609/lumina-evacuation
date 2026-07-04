@@ -432,6 +432,7 @@ export default function App() {
   const [manualBlockedNodes, setManualBlockedNodes] = useState([]); // array for multi-block
   const [shelterAlert, setShelterAlert] = useState(null); // node id stranded with no viable route, or null
   const [selectedHazardTab, setSelectedHazardTab] = useState(null); // which hazard's route is shown, when multiple are active
+  const [showRsetDetail, setShowRsetDetail] = useState(false); // RSET breakdown popup — clickable instead of hover-only, since hover doesn't work on the iPad used for the demo
 
   // ── System mode & simulation trigger ────────────────────────────────────
   // systemMode: "simulation" | "live"
@@ -2739,7 +2740,7 @@ export default function App() {
             {/* Bottom strip */}
             <div style={{display:"grid",gridTemplateColumns:"1.4fr auto 1fr",gap:10}}>
               <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6,
-                height:290,overflowY:"auto"}}>
+                height:260,overflowY:"auto"}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
                 {perNodeRoutes.length>1 && (
                   // THE ACTUAL FIX: this used to be a scrollable STACKED LIST
@@ -2775,7 +2776,7 @@ export default function App() {
                     <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
                   </div>
                 ) : (
-                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",maxHeight:50,overflowY:"auto"}}>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
                   {displayRoute.map((id,i)=>{
                     const n=nodes.find(x=>x.id===id);
                     const blocked=n?.status==="quarantine"||n?.status==="alert";
@@ -2796,17 +2797,11 @@ export default function App() {
                 )}
                 <div style={{borderTop:`1px solid ${palette.border}`,paddingTop:6}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:9,marginBottom:3}}>
-                    <span style={{color:palette.textMuted,cursor:"help",borderBottom:`1px dotted ${palette.textMuted}`}}
-                      title={effectiveRset.T1_detection_s!=null
-                        ? `RSET breakdown for ${activeTabObj?.node_id || "this route"}:\n`
-                          + `T1 (detection): ${effectiveRset.T1_detection_s}s — sensor hazard confirmation time\n`
-                          + `T2 (hesitation): ${effectiveRset.T2_hesitation_s}s — decision time before moving (lower = clearer guidance)\n`
-                          + `T3 (travel): ${effectiveRset.T3_travel_s}s — walking time, using real crowd-aware speed per corridor\n`
-                          + `Total RSET = T1+T2+T3 = ${effectiveRset.RSET_s}s\n`
-                          + `Margin vs ASET: ${effectiveRset.margin_s}s spare before the ${effectiveRset.ASET_s}s safety budget runs out`
-                        : "RSET = Required Safe Egress Time (T1 detection + T2 hesitation + T3 travel). ASET = Available Safe Egress Time — the safety budget before conditions become unsafe."}>
+                    <button onClick={()=>setShowRsetDetail(v=>!v)}
+                      style={{color:palette.textMuted,cursor:"pointer",background:"none",border:"none",padding:0,
+                        borderBottom:`1px dotted ${palette.textMuted}`,fontSize:9,fontFamily:"inherit"}}>
                       RSET ⓘ
-                    </span>
+                    </button>
                     <span><b style={{color:rsetSafe?palette.success:palette.danger}}>{rsetTotal}s</b>
                       <span style={{color:palette.textMuted}}> / ASET </span>
                       <b style={{color:palette.info}}>{effectiveRset.ASET_s??600}s</b>
@@ -2817,6 +2812,55 @@ export default function App() {
                       width:`${Math.min(100,(rsetTotal/(effectiveRset.ASET_s??600))*100)}%`,
                       background:rsetSafe?palette.success:palette.danger,transition:"width 0.5s"}}/>
                   </div>
+                  {showRsetDetail && (
+                    <div onClick={()=>setShowRsetDetail(false)}
+                      style={{position:"fixed",inset:0,zIndex:200,background:"rgba(15,23,42,0.45)",
+                        display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+                      <div onClick={(e)=>e.stopPropagation()}
+                        style={{width:320,maxWidth:"100%",background:"#fff",borderRadius:10,
+                          padding:"16px 18px",boxShadow:"0 12px 40px rgba(0,0,0,0.25)"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                          <span style={{fontSize:13,fontWeight:700,color:palette.text}}>
+                            RSET breakdown{activeTabObj?.node_id?` — ${activeTabObj.node_id}`:""}
+                          </span>
+                          <button onClick={()=>setShowRsetDetail(false)}
+                            style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:palette.textMuted,padding:0,lineHeight:1}}>✕</button>
+                        </div>
+                        {effectiveRset.T1_detection_s!=null ? (
+                          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                            {[
+                              ["T1 — Detection",effectiveRset.T1_detection_s,"Sensor hazard confirmation time"],
+                              ["T2 — Hesitation",effectiveRset.T2_hesitation_s,"Decision time before moving (lower = clearer guidance)"],
+                              ["T3 — Travel",effectiveRset.T3_travel_s,"Walking time, using real crowd-aware speed per corridor"],
+                            ].map(([label,val,desc])=>(
+                              <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                                <div style={{minWidth:0}}>
+                                  <div style={{fontSize:11,fontWeight:600,color:palette.text}}>{label}</div>
+                                  <div style={{fontSize:9,color:palette.textMuted,lineHeight:1.4}}>{desc}</div>
+                                </div>
+                                <div style={{fontSize:13,fontWeight:700,color:palette.text,flexShrink:0}}>{val}s</div>
+                              </div>
+                            ))}
+                            <div style={{borderTop:`1px solid ${palette.border}`,marginTop:2,paddingTop:8,
+                              display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                              <span style={{fontSize:11,fontWeight:700,color:palette.text}}>Total RSET</span>
+                              <span style={{fontSize:14,fontWeight:700,color:rsetSafe?palette.success:palette.danger}}>
+                                {effectiveRset.RSET_s}s</span>
+                            </div>
+                            <div style={{fontSize:9,color:palette.textMuted,lineHeight:1.5}}>
+                              Margin vs ASET: <b style={{color:palette.info}}>{effectiveRset.margin_s}s</b> spare
+                              before the {effectiveRset.ASET_s}s safety budget runs out
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{fontSize:10,color:palette.textMuted,lineHeight:1.6}}>
+                            RSET = Required Safe Egress Time (T1 detection + T2 hesitation + T3 travel).
+                            ASET = Available Safe Egress Time — the safety budget before conditions become unsafe.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 {(()=>{
                   // Pull Policy is now global (scans every node), so filtering
@@ -2860,7 +2904,7 @@ export default function App() {
                 </div>
               </div>
               <div style={{...card(),padding:"8px 16px",display:"flex",flexDirection:"column",
-                alignItems:"center",justifyContent:"center",minWidth:130,height:290,
+                alignItems:"center",justifyContent:"center",minWidth:130,height:260,
                 background:isHazard?(pasCountdown<60?palette.dangerLight:palette.warningLight):palette.bgCard,
                 border:isHazard?`1px solid ${pasCountdown<60?palette.danger:palette.warning}`:card().border}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:2}}>FACP PAS</div>
@@ -2873,12 +2917,12 @@ export default function App() {
                   {fftConfirmed?"CONFIRMED":"STANDBY"}
                 </div>
               </div>
-              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden",height:290}}>
+              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden",height:260}}>
                 <div style={{padding:"6px 10px",borderBottom:`1px solid ${palette.border}`,
                   fontSize:9,fontWeight:600,color:palette.textMuted,flexShrink:0}}>EVENT LOG</div>
                 <div style={{flex:1,overflowY:"auto",padding:"2px 0"}}>
                   {liveEvents.map((e,i)=>(
-                    <div key={i} style={{padding:"4px 10px",display:"grid",
+                    <div key={i} style={{padding:"7px 10px",display:"grid",
                       gridTemplateColumns:"6px 58px 1fr",gap:6,alignItems:"start",
                       borderBottom:i<liveEvents.length-1?`1px solid ${palette.border}`:undefined}}>
                       <div style={{width:6,height:6,borderRadius:"50%",marginTop:3,
