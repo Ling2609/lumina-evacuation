@@ -367,7 +367,7 @@ export default function App() {
         // periodically, now that polling no longer independently writes
         // this state. Sorted by node_id so ordering differences alone
         // don't trigger an unnecessary replace.
-        const sig = (list)=>list.map(p=>`${p.node_id}:${(p.best_path||[]).join(">")}`).sort().join("|");
+        const sig = (list)=>list.map(p=>`${p.node_id}:${(p.best_path||[]).join(">")}:${p.rset?.RSET_s}`).sort().join("|");
         if(prevIds===freshIds && sig(prev)===sig(d.per_node_routes)) return prev;
         console.warn("[RECONCILE] Hazard list or route content changed — correcting:", prevIds, "→", freshIds);
         return d.per_node_routes;
@@ -1195,8 +1195,15 @@ export default function App() {
   };
 
   // ── DERIVED ───────────────────────────────────────────────────────────────
-  const rsetTotal   = rset.RSET_s ?? 142;
-  const rsetSafe    = rset.safe   ?? true;
+  // RSET now derived from whichever hazard tab is selected, same reasoning
+  // as displayRoute/derivedHazardType — previously this always showed the
+  // single global current_route's RSET regardless of which hazard tab you
+  // were actually looking at, which is exactly the "I don't understand this
+  // with multiple hazards" confusion. Falls back to the global rset state
+  // for single-hazard/manual-block cases where there's no per-hazard tab.
+  const effectiveRset = activeTabObj?.rset ?? rset;
+  const rsetTotal   = effectiveRset.RSET_s ?? 142;
+  const rsetSafe    = effectiveRset.safe   ?? true;
   // Confidence: low cost = high confidence. Baseline cost ~20 = 100%, fire penalty 5000 = ~0%
   // Capped 0-100. In normal state (no hazard) show 100%.
   const routeConfidence = isHazard
@@ -1960,7 +1967,7 @@ export default function App() {
                     <div style={{flex:1,fontSize:9,padding:"3px 6px",borderRadius:4,
                       background:rsetSafe?palette.successLight:palette.dangerLight}}>
                       RSET <b style={{color:rsetSafe?palette.success:palette.danger}}>{rsetTotal}s</b>
-                      {" / "}ASET <b style={{color:palette.info}}>{rset.ASET_s??600}s</b>
+                      {" / "}ASET <b style={{color:palette.info}}>{effectiveRset.ASET_s??600}s</b>
                     </div>
                     <div style={{fontSize:9,padding:"3px 8px",borderRadius:4,fontWeight:700,
                       background:confidenceColor+"18",border:`1px solid ${confidenceColor}40`,
@@ -2730,55 +2737,46 @@ export default function App() {
             </div>
 
             {/* Bottom strip */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10}}>
+            <div style={{display:"grid",gridTemplateColumns:"1.4fr auto 1fr",gap:10}}>
               <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6,
                 height:260,overflowY:"auto"}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
-                {perNodeRoutes.length>1 ? (
-                  // Multiple simultaneous hazards — group the chip rows by
-                  // hazard instead of showing one ambiguous chain with no
-                  // indication of which hazard it belongs to.
-                  <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:90,overflowY:"auto"}}>
+                {perNodeRoutes.length>1 && (
+                  // THE ACTUAL FIX: this used to be a scrollable STACKED LIST
+                  // of every hazard's route shown at once, with no way to
+                  // click and select one — so selectedHazardTab could never
+                  // change from within this panel at all, and RSET/Node
+                  // Status below just froze on whichever tab happened to be
+                  // selected elsewhere (e.g. the Digital Twin modal). These
+                  // are real clickable tabs now, matching the modal's own
+                  // pattern exactly, so you can actually switch between
+                  // hazards from this panel and see RSET genuinely update.
+                  <div style={{display:"flex",gap:3,marginBottom:2,flexWrap:"wrap"}}>
                     {perNodeRoutes.map(nr=>{
                       const hazardIcon = nr.event_type==="fire"?"🔥":nr.event_type==="fallen"?"🧍":nr.event_type==="crowd"?"👥":"⚠";
+                      const isActive = nr.node_id===activeTabObj?.node_id;
                       const noRoute = !nr.best_path || nr.best_path.length===0;
                       return(
-                        <div key={nr.node_id}>
-                          <div style={{fontSize:8,fontWeight:700,color:palette.textMuted,marginBottom:2}}>
-                            {hazardIcon} {nr.node_id}
-                          </div>
-                          {noRoute ? (
-                            <span style={{fontSize:9,fontWeight:600,color:palette.infoDark,
-                              background:palette.infoLight,padding:"1px 6px",borderRadius:4}}>
-                              🏠 No route — shelter in place
-                            </span>
-                          ) : (
-                            <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
-                              {nr.best_path.map((id,i)=>{
-                                const n=nodes.find(x=>x.id===id);
-                                const blocked=n?.status==="quarantine"||n?.status==="alert";
-                                return(
-                                  <span key={id} style={{display:"flex",alignItems:"center",gap:3}}>
-                                    <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:4,
-                                      background:statusBg(n?.status??"normal"),
-                                      color:blocked?statusColor(n.status):statusColor(n?.status??"normal"),
-                                      border:`1px solid ${statusColor(n?.status??"normal")}33`,
-                                      opacity:blocked?0.7:1}}>
-                                      {blocked?`[${id}]`:id}
-                                    </span>
-                                    {i<nr.best_path.length-1&&<span style={{color:palette.textMuted,fontSize:10}}>→</span>}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
+                        <button key={nr.node_id} onClick={()=>setSelectedHazardTab(nr.node_id)}
+                          style={{fontSize:9,fontWeight:700,padding:"3px 7px",borderRadius:5,cursor:"pointer",
+                            background:isActive?(noRoute?palette.infoLight:palette.warningLight):"transparent",
+                            border:`1px solid ${isActive?(noRoute?palette.info:palette.warning):palette.border}`,
+                            color:isActive?(noRoute?palette.infoDark:palette.warningDark):palette.textMuted}}>
+                          {hazardIcon} {nr.node_id}{noRoute?" 🏠":""}
+                        </button>
                       );
                     })}
                   </div>
+                )}
+                {perNodeRoutes.length>1 && activeTabObj && (!activeTabObj.best_path || activeTabObj.best_path.length===0) ? (
+                  <div style={{padding:"8px 10px",background:palette.infoLight,color:palette.infoDark,
+                    borderRadius:6,border:`1px solid ${palette.info}`,fontWeight:700,fontSize:10}}>
+                    🏠 {activeTabObj.node_id} is cut off from all exits.
+                    <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
+                  </div>
                 ) : (
                 <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",maxHeight:50,overflowY:"auto"}}>
-                  {activeRoute.map((id,i)=>{
+                  {displayRoute.map((id,i)=>{
                     const n=nodes.find(x=>x.id===id);
                     const blocked=n?.status==="quarantine"||n?.status==="alert";
                     return(
@@ -2790,23 +2788,33 @@ export default function App() {
                           opacity:blocked?0.7:1}}>
                           {blocked?`[${id}]`:id}
                         </span>
-                        {i<activeRoute.length-1&&<span style={{color:palette.textMuted,fontSize:10}}>→</span>}
+                        {i<displayRoute.length-1&&<span style={{color:palette.textMuted,fontSize:10}}>→</span>}
                       </span>
                     );
                   })}
                 </div>
                 )}
-                <div>
+                <div style={{borderTop:`1px solid ${palette.border}`,paddingTop:6}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:9,marginBottom:3}}>
-                    <span style={{color:palette.textMuted}}>RSET</span>
+                    <span style={{color:palette.textMuted,cursor:"help",borderBottom:`1px dotted ${palette.textMuted}`}}
+                      title={effectiveRset.T1_detection_s!=null
+                        ? `RSET breakdown for ${activeTabObj?.node_id || "this route"}:\n`
+                          + `T1 (detection): ${effectiveRset.T1_detection_s}s — sensor hazard confirmation time\n`
+                          + `T2 (hesitation): ${effectiveRset.T2_hesitation_s}s — decision time before moving (lower = clearer guidance)\n`
+                          + `T3 (travel): ${effectiveRset.T3_travel_s}s — walking time, using real crowd-aware speed per corridor\n`
+                          + `Total RSET = T1+T2+T3 = ${effectiveRset.RSET_s}s\n`
+                          + `Margin vs ASET: ${effectiveRset.margin_s}s spare before the ${effectiveRset.ASET_s}s safety budget runs out`
+                        : "RSET = Required Safe Egress Time (T1 detection + T2 hesitation + T3 travel). ASET = Available Safe Egress Time — the safety budget before conditions become unsafe."}>
+                      RSET ⓘ
+                    </span>
                     <span><b style={{color:rsetSafe?palette.success:palette.danger}}>{rsetTotal}s</b>
                       <span style={{color:palette.textMuted}}> / ASET </span>
-                      <b style={{color:palette.info}}>{rset.ASET_s??600}s</b>
+                      <b style={{color:palette.info}}>{effectiveRset.ASET_s??600}s</b>
                     </span>
                   </div>
                   <div style={{height:4,background:palette.grayLight,borderRadius:2}}>
                     <div style={{height:"100%",borderRadius:2,
-                      width:`${Math.min(100,(rsetTotal/(rset.ASET_s??600))*100)}%`,
+                      width:`${Math.min(100,(rsetTotal/(effectiveRset.ASET_s??600))*100)}%`,
                       background:rsetSafe?palette.success:palette.danger,transition:"width 0.5s"}}/>
                   </div>
                 </div>
@@ -2816,24 +2824,30 @@ export default function App() {
                   // noise. Only surface nodes that need attention (AMBER/RED)
                   // or are on the active evacuation route.
                   const interesting = Object.entries(pullSignals).filter(([nid,info])=>
-                    info.signal!=="GREEN" || activeRoute.includes(nid)
+                    info.signal!=="GREEN" || displayRoute.includes(nid)
                   );
                   if (interesting.length===0) return null;
                   return(
-                    <div style={{display:"flex",gap:4,flexWrap:"wrap",maxHeight:54,overflowY:"auto"}}>
-                      {interesting.map(([nid,info])=>(
-                        <span key={nid} style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,
-                          background:info.signal==="GREEN"?`${palette.success}18`:
-                            info.signal==="AMBER"?`${palette.warning}18`:`${palette.danger}18`,
-                          color:info.signal==="GREEN"?palette.success:
-                            info.signal==="AMBER"?palette.warning:palette.danger}}>
-                          {nid}: {info.signal}
-                        </span>
-                      ))}
+                    <div style={{borderTop:`1px solid ${palette.border}`,paddingTop:6}}>
+                      <div style={{fontSize:8,fontWeight:600,color:palette.textMuted,marginBottom:4}}>
+                        NODE STATUS ({interesting.length})
+                      </div>
+                      <div style={{display:"flex",gap:4,flexWrap:"wrap",maxHeight:44,overflowY:"auto"}}>
+                        {interesting.map(([nid,info])=>(
+                          <span key={nid} style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:3,
+                            background:info.signal==="GREEN"?`${palette.success}18`:
+                              info.signal==="AMBER"?`${palette.warning}18`:`${palette.danger}18`,
+                            color:info.signal==="GREEN"?palette.success:
+                              info.signal==="AMBER"?palette.warning:palette.danger}}>
+                            {nid}: {info.signal}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   );
                 })()}
-                <div style={{fontSize:9,color:palette.textMuted,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                <div style={{borderTop:`1px solid ${palette.border}`,paddingTop:6,
+                  fontSize:9,color:palette.textMuted,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                   <span style={{fontWeight:700,fontSize:11,color:confidenceColor}}>
                     ✦ Route Confidence: {routeConfidence}%
                   </span>

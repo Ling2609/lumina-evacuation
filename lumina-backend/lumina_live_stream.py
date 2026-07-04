@@ -973,6 +973,12 @@ def _process_ai_cycle(cap, state):
                         "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
                         "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                         "all_exits":  _h_routes,
+                        # Per-hazard RSET so the dashboard can show a correct
+                        # breakdown for WHICHEVER hazard tab is selected,
+                        # instead of only ever showing the single global
+                        # current_route's RSET regardless of which hazard
+                        # you're actually looking at.
+                        "rset":       estimate_rset(_h_routes[0]["path"]) if _h_routes else None,
                     })
                     if _h["node_id"] in live_node_status:
                         live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
@@ -1150,6 +1156,7 @@ def cancel_sim_trigger():
                 "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
                 "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                 "all_exits":  _h_routes,
+                "rset":       estimate_rset(_h_routes[0]["path"]) if _h_routes else None,
             })
             if _h["node_id"] in live_node_status:
                 live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
@@ -1231,6 +1238,7 @@ def api_active_hazards():
             "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
             "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
             "all_exits":  _h_routes,
+            "rset":       estimate_rset(_h_routes[0]["path"]) if _h_routes else None,
         })
     return jsonify({"per_node_routes": _per_node_routes})
 
@@ -1717,6 +1725,7 @@ def sim_trigger():
                 "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
                 "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
                 "all_exits":  _h_routes,
+                "rset":       estimate_rset(_h_routes[0]["path"]) if _h_routes else None,
             })
             if _h["node_id"] in live_node_status:
                 live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
