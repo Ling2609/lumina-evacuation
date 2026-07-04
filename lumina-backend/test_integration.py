@@ -295,11 +295,27 @@ def run_tests():
 
     # ── TEST 6: Download log ───────────────────────────────────────────────────
     section("6. Export Report (/download_log)")
-    log_resp = get("/download_log")
-    if log_resp is not None:
-        ok("/download_log responding", "CSV export ready")
-    else:
-        warn("/download_log not responding", "Export Report button will fail — check endpoint")
+    # NOT using the get() helper here — it always tries to .decode() the
+    # response as UTF-8 text, which throws on binary XLSX content and gets
+    # silently swallowed, making a genuinely working endpoint look "not
+    # responding." Fetching the raw bytes directly and checking for the ZIP
+    # file signature (XLSX is a ZIP archive — "PK" magic bytes) confirms a
+    # real, valid workbook without needing openpyxl installed just to test.
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{BASE}/download_log")
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            raw = r.read()
+            content_type = r.headers.get("Content-Type", "")
+        if raw[:2] == b"PK":
+            ok("/download_log responding with a valid XLSX file", f"{len(raw)} bytes")
+        elif "spreadsheet" in content_type or "excel" in content_type:
+            warn("/download_log responded but content doesn't look like a valid XLSX",
+                 f"content-type={content_type}, {len(raw)} bytes")
+        else:
+            warn("/download_log response type unexpected", f"content-type={content_type}")
+    except Exception as e:
+        warn("/download_log not responding", f"Export Report button will fail — {e}")
 
     # ── TEST 7: MQTT broker reachability ──────────────────────────────────────
     section("7. Network Connectivity")
@@ -364,6 +380,161 @@ def run_tests():
         fail("Routing assertion failed", str(e))
     except Exception as e:
         fail("Routing engine error", str(e))
+
+    # ── TEST 9: Multi-hazard simultaneous tracking ───────────────────────────
+    # Covers a real, previously-shipped bug: a global (not per-node) sequence
+    # counter meant any concurrent action on ANY node could wrongly discard a
+    # different node's genuine trigger response. Symptom was "only ever 2
+    # hazards work" — a 3rd trigger would silently vanish while 2 were
+    # already active. This test directly reproduces 3 simultaneous hazards
+    # and checks all 3 are actually tracked, not just the check that used to
+    # pass by accident with only 1-2 active.
+    section("9. Multi-Hazard Simultaneous Tracking")
+    get("/api/set_system_mode/simulation")
+    get("/reset")
+    time.sleep(0.3)
+
+    post("/api/sim_trigger", {"event_type": "fire", "node_id": "J7"})
+    time.sleep(0.3)
+    post("/api/sim_trigger", {"event_type": "fallen", "node_id": "J8"})
+    time.sleep(0.3)
+    post("/api/sim_trigger", {"event_type": "crowd", "node_id": "J14"})
+    time.sleep(0.3)
+
+    hazards = get("/api/active_hazards", "GET /api/active_hazards")
+    if hazards:
+        tracked = {p["node_id"] for p in hazards.get("per_node_routes", [])}
+        if {"J7", "J8", "J14"}.issubset(tracked):
+            ok("All 3 simultaneous hazards tracked", f"tracked={sorted(tracked)}")
+        else:
+            fail("Not all 3 hazards tracked — the 'only 2 hazards work' regression",
+                 f"expected J7,J8,J14 — got {sorted(tracked)}")
+
+    # Cancel the middle one, then trigger a fresh 4th — this is the exact
+    # "cancel then trigger" sequence that broke earlier this session.
+    post("/api/cancel_sim_trigger", {"node_id": "J8"})
+    time.sleep(0.3)
+    post("/api/sim_trigger", {"event_type": "fallen", "node_id": "J12"})
+    time.sleep(0.3)
+    hazards2 = get("/api/active_hazards")
+    if hazards2:
+        tracked2 = {p["node_id"] for p in hazards2.get("per_node_routes", [])}
+        if tracked2 == {"J7", "J14", "J12"}:
+            ok("Cancel-then-trigger-new correctly updates tracked set", f"tracked={sorted(tracked2)}")
+        elif "J8" in tracked2:
+            fail("Cancelled hazard J8 still appears in tracking", f"tracked={sorted(tracked2)}")
+        elif "J12" not in tracked2:
+            fail("Freshly triggered J12 missing — the exact 'trigger after cancel fails' regression",
+                 f"tracked={sorted(tracked2)}")
+        else:
+            warn("Unexpected tracked set after cancel+retrigger", f"tracked={sorted(tracked2)}")
+
+    get("/reset")
+    time.sleep(0.3)
+
+    # ── TEST 10: Hazard severity distinction (fallen vs thermal) ────────────
+    # Covers a real shipped bug: calculate_dynamic_cost checked
+    # `hazard=="thermal" or status=="alert"`, and fallen hazards ALSO set
+    # status="alert", so fallen nodes were silently getting the full 5000
+    # thermal penalty stacked on top of their own 300 fallen penalty —
+    # totally undermining "fire=hard block, fallen=soft penalty."
+    section("10. Hazard Severity Distinction (Fallen must not match Thermal)")
+    try:
+        from routing_engine import live_node_status as _lns, calculate_dynamic_cost, PENALTY
+        for nid in _lns:
+            _lns[nid]["status"] = "normal"
+            _lns[nid]["hazard"] = None
+
+        _lns["J8"]["status"] = "alert"
+        _lns["J8"]["hazard"] = "fall"
+        fallen_cost = calculate_dynamic_cost("J8")
+        if fallen_cost == PENALTY["fallen"]:
+            ok(f"Fallen node cost is exactly PENALTY['fallen']", f"cost={fallen_cost}")
+        elif fallen_cost >= PENALTY.get("thermal", 5000):
+            fail("Fallen node incorrectly carries thermal-level cost",
+                 f"cost={fallen_cost} (expected {PENALTY['fallen']}) — status=='alert' bug may have regressed")
+        else:
+            warn(f"Fallen cost is {fallen_cost}, expected exactly {PENALTY['fallen']}")
+
+        _lns["J8"]["status"] = "normal"
+        _lns["J8"]["hazard"] = None
+        _lns["J7"]["status"] = "alert"
+        _lns["J7"]["hazard"] = "thermal"
+        thermal_cost = calculate_dynamic_cost("J7")
+        if thermal_cost >= PENALTY.get("thermal", 5000):
+            ok("Thermal node still correctly carries full thermal penalty", f"cost={thermal_cost}")
+        else:
+            fail("Thermal penalty regression — fire node cost too low", f"cost={thermal_cost}")
+
+        _lns["J7"]["status"] = "normal"
+        _lns["J7"]["hazard"] = None
+    except Exception as e:
+        fail("Hazard severity test error", str(e))
+
+    # ── TEST 11: Crowd hard-block escalation + debounce ──────────────────────
+    # Covers the crowd-crush hard-block feature added this session: sustained
+    # 80+ pax for 3 consecutive readings should hard-block like fire; a
+    # single spike or jitter around the threshold should NOT.
+    section("11. Crowd Hard-Block Escalation")
+    try:
+        from routing_engine import update_crowd, live_node_status as _lns2, CORRIDOR_CAPACITY
+
+        update_crowd("J9", 0)
+        _lns2["J9"]["capacity_streak"] = 0
+        update_crowd("J9", 85)
+        if not _lns2["J9"]["impassable"]:
+            ok("Single crowd spike does NOT hard-block (debounce working)")
+        else:
+            fail("Single spike incorrectly hard-blocked — debounce not working")
+
+        for c in [82, 78, 84]:  # jitter around threshold, never 3 in a row
+            update_crowd("J9", c)
+        if not _lns2["J9"]["impassable"]:
+            ok("Jitter around threshold does NOT hard-block")
+        else:
+            fail("Threshold jitter incorrectly hard-blocked")
+
+        for c in [82, 85, 88]:  # genuinely sustained
+            update_crowd("J9", c)
+        if _lns2["J9"]["impassable"]:
+            ok("Sustained 3-reading crush correctly hard-blocks", f"streak={_lns2['J9']['capacity_streak']}")
+        else:
+            fail("Sustained crush did NOT hard-block — escalation broken")
+
+        # Release: must clear both impassable AND the streak counter, or a
+        # fresh hazard on the same node could re-trigger almost instantly
+        update_crowd("J9", 0)
+        if not _lns2["J9"]["impassable"] and _lns2["J9"]["capacity_streak"] == 0:
+            ok("Crowd hard-block correctly releases and resets streak")
+        else:
+            fail("Crowd hard-block did not fully release",
+                 f"impassable={_lns2['J9']['impassable']} streak={_lns2['J9']['capacity_streak']}")
+    except Exception as e:
+        fail("Crowd escalation test error", str(e))
+
+    # ── TEST 12: Reconciliation endpoint sanity ──────────────────────────────
+    # /api/active_hazards must return correct data unconditionally, including
+    # while manual_override is active — unlike /api/status's per_node_routes
+    # field, which the background loop skips updating during manual override.
+    section("12. Reconciliation Endpoint (/api/active_hazards)")
+    get("/reset")
+    time.sleep(0.3)
+    get("/api/set_system_mode/simulation")
+    post("/api/sim_trigger", {"event_type": "crowd", "node_id": "J15"})
+    time.sleep(0.3)
+    post("/api/block_node", {"node_id": "J12", "start": "J15"})  # forces manual_override=True
+    time.sleep(0.3)
+    hazards3 = get("/api/active_hazards", "GET /api/active_hazards (during manual override)")
+    if hazards3:
+        tracked3 = {p["node_id"] for p in hazards3.get("per_node_routes", [])}
+        if "J15" in tracked3:
+            ok("active_hazards correctly returns data during manual override", f"tracked={sorted(tracked3)}")
+        else:
+            fail("active_hazards missing hazard during manual override — mode gating regression",
+                 f"tracked={sorted(tracked3)}")
+
+    get("/reset")
+    time.sleep(0.3)
 
     # ─── SUMMARY ─────────────────────────────────────────────────────────────
     total = passed + failed + warnings

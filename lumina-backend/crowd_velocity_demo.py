@@ -67,7 +67,6 @@ def pause(seconds=0.6):
 # ── Reset all nodes to clean state ───────────────────────────────────────────
 def reset_all():
     defaults = {
-        "J16":  ("normal", None,      20),
         "J7":   ("normal", None,      15),
         "B9":   ("normal", None,      25),
         "J8":   ("normal", None,      20),
@@ -148,7 +147,7 @@ def demo_proactive_rerouting():
         update_crowd("J8", crowd)
         vel = get_crowd_velocity("J8")
 
-        path, cost = calculate_safest_route("J16", verbose=False)
+        path, cost = calculate_safest_route("J4", verbose=False)
         signals    = run_pull_policy(path)
         rset_data  = estimate_rset(path)
 
@@ -191,7 +190,7 @@ def demo_flash_fire():
     reset_all()
 
     step("T+0.0s — Normal operation")
-    path_normal, cost_normal = calculate_safest_route("J16", verbose=False)
+    path_normal, cost_normal = calculate_safest_route("J4", verbose=False)
     print_node_table()
     result("Normal route", " → ".join(path_normal))
     pause(0.8)
@@ -207,7 +206,7 @@ def demo_flash_fire():
     update_crowd("B9", 92)
 
     t_start = time.perf_counter()
-    path_fire, cost_fire = calculate_safest_route("J16", verbose=False)
+    path_fire, cost_fire = calculate_safest_route("J4", verbose=False)
     elapsed = (time.perf_counter() - t_start) * 1000   # this is the 500ms claim
 
     signals   = run_pull_policy(path_fire)   # outside measurement
@@ -278,7 +277,7 @@ def demo_pull_policy():
         for nid, crowd in crowds.items():
             update_crowd(nid, crowd)
 
-        path, cost = calculate_safest_route("J16", verbose=False)
+        path, cost = calculate_safest_route("J4", verbose=False)
         signals    = run_pull_policy(path)
         rset_data  = estimate_rset(path)
 
@@ -286,7 +285,7 @@ def demo_pull_policy():
         print_route(path, cost, signals, rset_data)
 
         # Check if Pull Policy correctly applied
-        lobby_signal = signals.get("J16", {}).get("signal", "GREEN")
+        lobby_signal = signals.get("J4", {}).get("signal", "GREEN")
         if expect_red and lobby_signal == "RED":
             alert("🔴 RED STOP LINE projected at Lobby — people held upstream")
         elif not expect_red and lobby_signal == "GREEN":
@@ -295,7 +294,7 @@ def demo_pull_policy():
         pause(0.9)
 
     print(f"\n  {BOLD}{GREEN}KEY INSIGHT:{RESET}")
-    print(f"  The Pull Policy held people at J16 (Central Junction) when J7 was congested.")
+    print(f"  The Pull Policy held people at J4 (Central Crossroad) when J7 was congested.")
     print(f"  This prevents the fatal crush that killed 97 people at Roskilde 2000.")
     print(f"  A static exit sign would have kept pushing people into the bottleneck.\n")
 

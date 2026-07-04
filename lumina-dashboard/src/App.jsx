@@ -550,7 +550,7 @@ export default function App() {
 
   const pushEvent = (msg, level="info", tag=null) => {
     const ts = new Date().toLocaleTimeString("en-GB",{hour12:false});
-    setLiveEvents(p => [{time:`${ts}`,msg,level,tag},...p].slice(0,15));
+    setLiveEvents(p => [{time:`${ts}`,msg,level,tag},...p].slice(0,40));
   };
 
   // ── DIRECTIONAL ACOUSTIC BEACON (Lumina accessibility feature) ─────────────
@@ -2731,7 +2731,8 @@ export default function App() {
 
             {/* Bottom strip */}
             <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:10}}>
-              <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6}}>
+              <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6,
+                height:260,overflowY:"auto"}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
                 {perNodeRoutes.length>1 ? (
                   // Multiple simultaneous hazards — group the chip rows by
@@ -2776,7 +2777,7 @@ export default function App() {
                     })}
                   </div>
                 ) : (
-                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",maxHeight:50,overflowY:"auto"}}>
                   {activeRoute.map((id,i)=>{
                     const n=nodes.find(x=>x.id===id);
                     const blocked=n?.status==="quarantine"||n?.status==="alert";
@@ -2845,7 +2846,7 @@ export default function App() {
                 </div>
               </div>
               <div style={{...card(),padding:"8px 16px",display:"flex",flexDirection:"column",
-                alignItems:"center",justifyContent:"center",minWidth:130,
+                alignItems:"center",justifyContent:"center",minWidth:130,height:260,
                 background:isHazard?(pasCountdown<60?palette.dangerLight:palette.warningLight):palette.bgCard,
                 border:isHazard?`1px solid ${pasCountdown<60?palette.danger:palette.warning}`:card().border}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:2}}>FACP PAS</div>
@@ -2858,14 +2859,14 @@ export default function App() {
                   {fftConfirmed?"CONFIRMED":"STANDBY"}
                 </div>
               </div>
-              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden"}}>
+              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden",height:260}}>
                 <div style={{padding:"6px 10px",borderBottom:`1px solid ${palette.border}`,
                   fontSize:9,fontWeight:600,color:palette.textMuted,flexShrink:0}}>EVENT LOG</div>
                 <div style={{flex:1,overflowY:"auto",padding:"2px 0"}}>
-                  {liveEvents.slice(0,5).map((e,i)=>(
+                  {liveEvents.map((e,i)=>(
                     <div key={i} style={{padding:"4px 10px",display:"grid",
                       gridTemplateColumns:"6px 58px 1fr",gap:6,alignItems:"start",
-                      borderBottom:i<4?`1px solid ${palette.border}`:undefined}}>
+                      borderBottom:i<liveEvents.length-1?`1px solid ${palette.border}`:undefined}}>
                       <div style={{width:6,height:6,borderRadius:"50%",marginTop:3,
                         background:{danger:palette.danger,warning:palette.warning,
                           success:palette.success,info:palette.info}[e.level]??palette.gray}}/>

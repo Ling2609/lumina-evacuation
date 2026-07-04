@@ -184,7 +184,7 @@ def run_thermal_demo():
     _separator("-")
     print("  SCENARIO A — Normal ambient temperature (HVAC baseline)")
     _separator("-")
-    clf_a = ThermalClassifier("J16")
+    clf_a = ThermalClassifier("J4")
     # Pre-seed so warmup is complete — classifier can show NORMAL state properly.
     for _ in range(30):
         clf_a.classify(_normal_ambient(0))
@@ -258,7 +258,7 @@ def run_thermal_demo():
 
   # One classifier per node, created at startup
   thermal_nodes = {
-      "J16": ThermalClassifier("J16"),
+      "J4":  ThermalClassifier("J4"),
       "J7":  ThermalClassifier("J7"),
   }
 
@@ -270,7 +270,7 @@ def run_thermal_demo():
       with state_lock:
           live_node_status["J7"]["status"] = "alert"
           live_node_status["J7"]["hazard"] = "thermal"
-      calculate_safest_route("J16")
+      calculate_safest_route("J4")
     """)
     _separator()
 

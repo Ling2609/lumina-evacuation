@@ -242,7 +242,7 @@ def run_fft_demo():
     _separator("-")
     print("  TEST A — Pure 520 Hz alarm signal (should confirm in 3 frames)")
     _separator("-")
-    clf_a = FFTAlarmClassifier("J16")
+    clf_a = FFTAlarmClassifier("J4")
     alarm_signal = _generate_alarm_tone(2.0, snr_db=25)
     _run_frames(clf_a, alarm_signal, "ALARM", n_frames=8)
     print(f"\n  Final state: {clf_a.state}")
@@ -319,13 +319,13 @@ def run_fft_demo():
     print("""
   # Option 1: Use simulated audio (no microphone hardware needed)
   from fft_classifier import FFTAlarmClassifier, _generate_alarm_tone
-  clf = FFTAlarmClassifier("J16")
+  clf = FFTAlarmClassifier("J4")
   result = clf.classify_frame(audio_frame_np_array)
 
   # Option 2: Use live microphone (requires: pip install sounddevice)
   import sounddevice as sd
   from fft_classifier import FFTAlarmClassifier, FRAME_SIZE, SAMPLE_RATE
-  clf = FFTAlarmClassifier("J16")
+  clf = FFTAlarmClassifier("J4")
 
   def audio_callback(indata, frames, time_info, status):
       result = clf.classify_frame(indata[:, 0])
