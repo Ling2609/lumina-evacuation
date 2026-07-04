@@ -1172,6 +1172,38 @@ def cancel_sim_trigger():
                     "remaining_hazards": len(active_hazard_nodes)})
 
 
+@app.route("/api/active_hazards")
+def api_active_hazards():
+    """
+    Always returns the CURRENT, COMPLETE list of active hazards and their
+    computed routes — unconditionally, regardless of manual_override or any
+    other mode gating. Unlike /api/status's per_node_routes field (which is
+    only reliably refreshed by the periodic background loop, and that loop
+    explicitly skips updating during manual_override), this endpoint
+    computes fresh, directly, on every call.
+    Added as a safety-net reconciliation point: the frontend calls this
+    after every trigger/cancel action to correct any remaining drift
+    between what an individual action's own response implied and what the
+    backend's actual complete hazard list is — regardless of whatever
+    specific mechanism might cause that drift, without needing to diagnose
+    each one individually.
+    """
+    with state_lock:
+        _hazards = list(active_hazard_nodes)
+    _per_node_routes = []
+    for _h in _hazards:
+        _h_routes = get_all_exit_routes(_h["node_id"])
+        _per_node_routes.append({
+            "node_id":    _h["node_id"],
+            "event_type": _h["event_type"],
+            "best_path":  _h_routes[0]["path"] if _h_routes else [],
+            "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
+            "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
+            "all_exits":  _h_routes,
+        })
+    return jsonify({"per_node_routes": _per_node_routes})
+
+
 @app.route("/api/get_route")
 def get_route():
     with state_lock:

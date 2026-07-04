@@ -323,6 +323,33 @@ export default function App() {
     return perNodeSeqRef.current[nodeId];
   };
   const isLatestSeq = (nodeId, seq) => perNodeSeqRef.current[nodeId] === seq;
+  // Safety-net reconciliation — called after every trigger/cancel with a
+  // short delay, to correct any remaining drift between what an action's
+  // own response implied and the backend's actual complete hazard list.
+  // Uses /api/active_hazards specifically because it computes fresh and
+  // unconditionally, unlike /api/status's per_node_routes field which is
+  // only reliably refreshed by a background loop that skips updating
+  // during manual_override.
+  const reconcileHazards = async()=>{
+    try{
+      const r = await fetch(apiUrl("/api/active_hazards"));
+      if(!r.ok) return;
+      const d = await r.json();
+      if(!d.per_node_routes) return;
+      setPerNodeRoutes(prev=>{
+        const prevIds = prev.map(p=>p.node_id).sort().join(",");
+        const freshIds = d.per_node_routes.map(p=>p.node_id).sort().join(",");
+        // Only actually replace if the SET of tracked hazards differs —
+        // avoids clobbering in-flight per-node route data with a
+        // possibly-slightly-older snapshot when the hazard list itself
+        // hasn't changed (route freshness within an unchanged hazard set
+        // is already handled by the normal per-action update paths).
+        if(prevIds === freshIds) return prev;
+        console.warn("[RECONCILE] Hazard list drift detected — correcting:", prevIds, "→", freshIds);
+        return d.per_node_routes;
+      });
+    } catch{ /* offline — next poll cycle will eventually catch up */ }
+  };
   // Browsers fire the regular click event TWICE as part of every
   // double-click, before dblclick itself fires. Without disambiguation,
   // double-clicking a node to cancel a hazard would ALSO fire the
@@ -811,6 +838,7 @@ export default function App() {
       setIsHazard(true);
     } catch{ pushEvent("Sim trigger failed — backend offline","danger"); }
     setSimTriggerType(null);
+    setTimeout(reconcileHazards, 300);
     return true;
   };
 
@@ -859,6 +887,7 @@ export default function App() {
       const next = remaining[remaining.length-1];
       if(next?.best_path?.length) setActiveRoute(next.best_path);
     }
+    setTimeout(reconcileHazards, 300);
   };
 
 
@@ -1059,6 +1088,7 @@ export default function App() {
       console.error("[overridePath] failed:", err);
       pushEvent(`Override failed — ${err?.message||"unknown error"} (see console)`,"danger");
     }
+    setTimeout(reconcileHazards, 300);
   };
 
   // ── DERIVED ───────────────────────────────────────────────────────────────
@@ -1881,7 +1911,19 @@ export default function App() {
                                     if(rr.ok){
                                       const dd=await rr.json();
                                       const best=dd.routes?.[0];
-                                      if(best?.path) setActiveRoute(best.path);
+                                      if(best?.path){
+                                        setActiveRoute(best.path);
+                                        // THE ACTUAL GAP: nothing in this handler ever
+                                        // called setHazardType, so the banner stayed
+                                        // frozen on "NO ROUTE — RESCUE REQUIRED" even
+                                        // after a route was successfully restored.
+                                        // Restore the banner to reflect whichever
+                                        // hazard this origin actually was, matching
+                                        // the labels used when hazards are triggered.
+                                        const origHazard = perNodeRoutesRef.current.find(nr=>nr.node_id===strandedOrigin);
+                                        const labels={"fire":"FIRE (Simulation)","fallen":"PERSON FALLEN (Simulation)","crowd":"CROWD DENSITY (Simulation)"};
+                                        setHazardType(origHazard ? (labels[origHazard.event_type]||"HAZARD ACTIVE") : "HAZARD ACTIVE");
+                                      }
                                     }
                                   } catch{ /* offline — will pick up on next poll */ }
                                 }
@@ -1919,6 +1961,7 @@ export default function App() {
                                     }
                                   } catch{ /* offline */ }
                                 }
+                                setTimeout(reconcileHazards, 300);
                               } catch{ pushEvent("Unblock failed — backend offline","danger"); }
                             } else {
                               setSelectedNode(p=>p?.id===n.id?null:n);
