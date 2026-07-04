@@ -89,7 +89,7 @@ Run through this before every presentation session.
 - [ ] iPad connected to same Wi-Fi hotspot as laptop
 - [ ] Dashboard loads on iPad at `http://<FLASK_IP>:5173`
 - [ ] Test scenario: play 520Hz tone near microphone → FFT confirms → route changes
-- [ ] Export CSV works and opens cleanly in Excel
+- [ ] Export Report works and opens cleanly in Excel (now a formatted .xlsx workbook with multiple sheets, not CSV)
 
 ---
 
@@ -184,6 +184,11 @@ All 5 must pass before presenting.
 
 **DYN-A\*** — Deterministic Dynamic A\* pathfinding. Each corridor segment is assigned a cost based on travel distance, hazard severity, crowd density, and thermal penalty. When a node is blocked, the cost jumps by +5000 and the algorithm instantly re-routes around it.
 
+**Graduated hazard severity** — not every hazard is treated the same way, matching real evacuation protocol rather than a single blanket rule:
+- **Fire, and crowd density at genuine crush level (80+ people, sustained)** are hard blocks — the routing algorithm will never send anyone through them, full stop, regardless of whether that's the only remaining path.
+- **A fallen person, and crowd density below crush level**, are soft cost penalties only — routes prefer to avoid them but will still use them if that's genuinely the best or only option, the same way a real evacuee would step around someone on the ground rather than treating the whole corridor as unusable.
+- This means a route is only ever refused outright ("Area of Refuge — dispatch rescue") when *every* path is blocked by something genuinely life-threatening, not merely inconvenient.
+
 **IoT Pull Policy** — Upstream nodes project RED stop lines when downstream corridors are congested. Prevents fatal bottlenecks before they form (prevention, not just response).
 
 **Dual-signal Fall Detection** — Combines YOLOv8 keypoint check (nose Y > hip Y) with bounding box aspect ratio check (width > 1.3× height). Either signal triggers detection; both together gives `DUAL` confidence shown on the HUD.
@@ -199,8 +204,8 @@ All manual override controls are in the **Digital Twin expanded view** (click th
 | Control | What it does |
 |---|---|
 | Select node → REROUTE AROUND | BOMBA manually quarantines a node and forces DYN-A\* to re-route |
-| Route A / B / C | Quick preset routes for common evacuation scenarios |
-| RESET | Releases manual override and returns system to AUTO mode |
+| BOMBA — QUICK REROUTE | Ranked routes to every real exit (Exit 1 / 3 / 4), labeled BEST / 2nd / 3rd by distance — one click sends evacuees to that exit directly |
+| RESET SYSTEM | Releases manual override and returns system to AUTO mode |
 
 Manual override locks all hazard state — the backend poll cannot overwrite BOMBA commands until RESET is pressed.
 
@@ -225,7 +230,3 @@ YOLOv8 (PyTorch) → export_onnx.py → ONNX → rknn-toolkit2 → RK3588 NPU
 ```
 
 Run `python export_onnx.py` once to generate the ONNX model. RKNN conversion requires the Rockchip toolkit installed on the target device.
-
----
-
-## Production Deployment Notes
