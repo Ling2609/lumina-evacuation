@@ -3198,7 +3198,7 @@ export default function App() {
                 </div>
                 <button onClick={()=>{
                   const a=document.createElement("a");
-                  a.href=apiUrl("/download_log"); a.download="Lumina_Report.csv";
+                  a.href=apiUrl("/download_log"); a.download="Lumina_Management_Report.xlsx";
                   document.body.appendChild(a); a.click(); document.body.removeChild(a);
                   pushEvent("Report download initiated","info");
                 }} style={{background:palette.purpleLight,border:`1px solid ${palette.purple}`,
@@ -3211,7 +3211,7 @@ export default function App() {
                   {label:"HVAC Reduce",   color:palette.success, nodes:nodes.filter(n=>n.crowd<10&&n.id.startsWith("J")), sub:"below 10 pax — unoccupied", dir:1},
                   {label:"HVAC Increase", color:palette.warning, nodes:nodes.filter(n=>n.crowd>70&&n.id.startsWith("J")), sub:"above 70 pax — peak load", dir:-1},
                 ].map(({label,color,nodes:zn,sub,dir})=>(
-                  <div key={label} style={{background:palette.bgCard2,borderRadius:6,
+                  <div key={label} style={{background:`${color}0D`,borderRadius:6,
                     padding:"5px 8px",borderLeft:`2px solid ${color}`}}>
                     <div style={{fontSize:9,fontWeight:600,color:palette.text}}>{label}</div>
                     {zn.length>0

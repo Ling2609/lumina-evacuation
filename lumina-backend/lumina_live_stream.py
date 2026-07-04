@@ -1900,23 +1900,80 @@ def api_force_exit():
 @app.route("/download_log")
 def download_log():
     """Commercial + operational report for facility managers and HaaS subscribers."""
-    import os, io, csv
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-    if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 100:
-        from flask import send_file
-        return send_file(LOG_FILE, as_attachment=True,
-                         download_name="Lumina_Management_Report.csv",
-                         mimetype="text/csv")
+    # ── Lumina brand palette, matching the dashboard's own colours ──
+    NAVY      = "1E293B"   # dark header background
+    TEAL      = "0D9488"   # section header background
+    TEAL_LT   = "CCFBF1"   # light teal tint
+    GREEN     = "16A34A"   # safe / OK
+    GREEN_LT  = "DCFCE7"
+    AMBER     = "D97706"   # warning / monitor
+    AMBER_LT  = "FEF3C7"
+    RED       = "DC2626"   # critical
+    RED_LT    = "FEE2E2"
+    GREY_TXT  = "64748B"
+    WHITE     = "FFFFFF"
+    BORDER    = Border(*(Side(style="thin", color="E2E8F0"),)*4)
+    FONT_NAME = "Calibri"
 
-    output = io.StringIO()
-    output.write('\ufeff')  # UTF-8 BOM for Excel
-    writer = csv.writer(output)
+    def style_title(cell, size=14):
+        cell.font = Font(name=FONT_NAME, size=size, bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.alignment = Alignment(vertical="center")
+
+    def style_section(cell):
+        cell.font = Font(name=FONT_NAME, size=11, bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=TEAL)
+        cell.alignment = Alignment(vertical="center")
+
+    def style_header(cell):
+        cell.font = Font(name=FONT_NAME, size=10, bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor="475569")
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        cell.border = BORDER
+
+    def style_data(cell, bold=False):
+        cell.font = Font(name=FONT_NAME, size=10, bold=bold)
+        cell.border = BORDER
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+    def status_fill(cell, kind):
+        # kind: "good" | "warn" | "bad"
+        fg, bg = {"good": (GREEN, GREEN_LT), "warn": (AMBER, AMBER_LT), "bad": (RED, RED_LT)}[kind]
+        cell.font = Font(name=FONT_NAME, size=10, bold=True, color=fg)
+        cell.fill = PatternFill("solid", fgColor=bg)
+
+    def write_row(ws, row, values, styles=None):
+        for i, v in enumerate(values, start=1):
+            c = ws.cell(row=row, column=i, value=v)
+            style_data(c, bold=(styles=="bold"))
+        return row + 1
+
+    def set_widths(ws, widths):
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    def section_title(ws, row, text, span):
+        c = ws.cell(row=row, column=1, value=text)
+        style_section(c)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=span)
+        for col in range(2, span+1):
+            ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=TEAL)
+        return row + 1
+
+    def table_header(ws, row, cols):
+        for i, h in enumerate(cols, start=1):
+            style_header(ws.cell(row=row, column=i, value=h))
+        return row + 1
 
     with state_lock:
         snap    = {nid: dict(d) for nid, d in live_node_status.items()}
         _sys    = system_state
         _facp   = facp_confirmed
-        _manual = manual_override
 
     rset_data      = estimate_rset(current_route)
     baseline_data  = estimate_baseline_rset(current_route)
@@ -1924,7 +1981,7 @@ def download_log():
     peak_entry     = max(snap.items(), key=lambda x: x[1]["crowd"]) if snap else ("N/A", {"crowd": 0})
     avg_occ        = round(total_footfall / max(len(snap), 1), 1)
     dynamic_rset   = rset_data.get("RSET_s", 142)
-    baseline_rset  = baseline_data.get("RSET_s", 342)  # measured, not hardcoded
+    baseline_rset  = baseline_data.get("RSET_s", 342)
     try:
         reduction_pct = round((1 - float(dynamic_rset) / float(baseline_rset)) * 100, 1)
     except Exception:
@@ -1932,196 +1989,247 @@ def download_log():
 
     BATT = {k: v["pct"]          for k, v in NODE_BATTERY.items()}
     NEXT = {k: v["next_service"] for k, v in NODE_BATTERY.items()}
-    # NODE_BATTERY is the module-level source of truth — update once, reflects everywhere
 
-    # --- REPORT HEADER -
-    writer.writerow(["LUMINA SMART EVACUATION SYSTEM"])
-    writer.writerow(["Facility Management & Commercial Analytics Report"])
-    writer.writerow(["Generated",            time.strftime('%Y-%m-%d %H:%M:%S')])
-    writer.writerow(["Session Duration (s)", round(time.time() - _startup_time, 1)])
-    writer.writerow(["Deployment Model",     "Hardware-as-a-Service (HaaS)"])
-    writer.writerow(["System Status",        _sys])
-    writer.writerow([])
+    wb = Workbook()
 
-    # --- SECTION 1: FOOTFALL TELEMETRY -
-    # Supports DOOH ad premium pricing and kiosk rental rates (Appendix G)
-    writer.writerow(["FOOTFALL TELEMETRY"])
-    writer.writerow(["Total Occupancy (pax)",   total_footfall])
-    writer.writerow(["Peak Zone",               f"{resolve_node_name(peak_entry[0])} ({peak_entry[0]})"])
-    writer.writerow(["Peak Zone Occupancy (pax)", peak_entry[1]["crowd"]])
-    writer.writerow(["Average Zone Occupancy (pax)", avg_occ])
-    writer.writerow(["Tracking Method",         "Anonymous crowd vectors (no facial data)"])
-    writer.writerow(["PDPA Compliant",           "Yes - 0 bytes raw video transmitted"])
-    writer.writerow([])
+    # ══════════════════════ SHEET 1: OVERVIEW ══════════════════════
+    ws = wb.active
+    ws.title = "Overview"
+    set_widths(ws, [34, 46])
+    r = 1
+    ws.merge_cells("A1:B1")
+    style_title(ws.cell(row=1, column=1, value="LUMINA SMART EVACUATION SYSTEM"), size=16)
+    ws.row_dimensions[1].height = 26
+    r = 2
+    ws.merge_cells("A2:B2")
+    c = ws.cell(row=2, column=1, value="Facility Management & Commercial Analytics Report")
+    c.font = Font(name=FONT_NAME, size=11, italic=True, color=GREY_TXT)
+    r = 4
+    for label, val in [
+        ("Generated",             time.strftime('%Y-%m-%d %H:%M:%S')),
+        ("Session Duration (s)",  round(time.time() - _startup_time, 1)),
+        ("Deployment Model",      "Hardware-as-a-Service (HaaS)"),
+        ("System Status",         _sys),
+    ]:
+        r = write_row(ws, r, [label, val], styles="bold" if label=="System Status" else None)
+    r += 1
 
-    # --- SECTION 2: ZONE OCCUPANCY BREAKDOWN -
-    # Spatial data for kiosk placement and DOOH zone pricing (Appendix G, Table G-2)
-    writer.writerow(["ZONE OCCUPANCY BREAKDOWN"])
-    writer.writerow(["zone", "node_id", "occupancy_pax", "crowd_velocity_rdg",
-                     "status", "recommended_action"])
+    r = section_title(ws, r, "FOOTFALL TELEMETRY", 2)
+    for label, val in [
+        ("Total Occupancy (pax)",       total_footfall),
+        ("Peak Zone",                   f"{resolve_node_name(peak_entry[0])} ({peak_entry[0]})"),
+        ("Peak Zone Occupancy (pax)",   peak_entry[1]["crowd"]),
+        ("Average Zone Occupancy (pax)", avg_occ),
+        ("Tracking Method",             "Anonymous crowd vectors (no facial data)"),
+        ("PDPA Compliant",              "Yes — 0 bytes raw video transmitted"),
+    ]:
+        r = write_row(ws, r, [label, val])
+    r += 1
+
+    r = section_title(ws, r, "EVACUATION SAFETY STATUS", 2)
+    for label, val in [
+        ("Active Route",                  " > ".join(current_route)),
+        ("Route Safe",                    "Yes" if rset_data.get("safe", True) else "No"),
+        ("Estimated Evacuation Time (s)", f"{dynamic_rset}  (With Lumina DYN-A* guidance)"),
+        ("Baseline Evacuation Time (s)",  f"{baseline_rset}  (Static signage, panic speed)"),
+        ("Time Reduction",                f"{reduction_pct}%  (Measured by routing engine)"),
+        ("Available Safe Egress Time (s)", rset_data.get("ASET_s", 600)),
+        ("Safety Margin (s)",             rset_data.get("margin_s", "N/A")),
+        ("FACP Status",                   "Confirmed" if _facp else "Standby"),
+    ]:
+        r = write_row(ws, r, [label, val])
+    ws.freeze_panes = "A5"
+
+    # ══════════════════ SHEET 2: ZONE OCCUPANCY ══════════════════
+    ws = wb.create_sheet("Zone Occupancy")
+    set_widths(ws, [30, 10, 14, 16, 12, 40])
+    r = 1
+    r = table_header(ws, r, ["Zone", "Node ID", "Occupancy (pax)", "Crowd Velocity", "Status", "Recommended Action"])
     for nid, d in snap.items():
         vel   = round(get_crowd_velocity(nid), 2)
         crowd = d["crowd"]
         if crowd > 85:
-            action = "HIGH TRAFFIC - Prime DOOH zone - Activate pull policy"
+            action, kind = "HIGH TRAFFIC — Prime DOOH zone, activate pull policy", "bad"
         elif crowd > 60:
-            action = "MODERATE TRAFFIC - Kiosk opportunity"
+            action, kind = "MODERATE TRAFFIC — Kiosk opportunity", "warn"
         elif crowd < 10:
-            action = "LOW TRAFFIC - Consider HVAC reduction"
+            action, kind = "LOW TRAFFIC — Consider HVAC reduction", "good"
         else:
-            action = "NORMAL"
-        writer.writerow([
-            resolve_node_name(nid), nid, crowd, vel,
-            d["status"].upper(), action,
-        ])
-    writer.writerow([])
+            action, kind = "NORMAL", "good"
+        row_vals = [resolve_node_name(nid), nid, crowd, vel, d["status"].upper(), action]
+        for i, v in enumerate(row_vals, start=1):
+            cell = ws.cell(row=r, column=i, value=v)
+            style_data(cell)
+        status_fill(ws.cell(row=r, column=5), kind)
+        r += 1
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:F{r-1}"
 
-    # --- SECTION 3: OCCUPANCY-DRIVEN COMMERCIAL INSIGHTS ---
-    # Shows what the data enables — facility managers apply their own cost rates
-    writer.writerow(["OCCUPANCY-DRIVEN COMMERCIAL INSIGHTS"])
-    writer.writerow(["What Lumina measures", "What facility management can act on"])
-    writer.writerow([])
+    # ══════════════════ SHEET 3: COMMERCIAL & HVAC ══════════════════
+    ws = wb.create_sheet("Commercial & HVAC")
+    set_widths(ws, [30, 10, 14, 14, 26, 44])
+    occupied = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] > 0]
+    empty    = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] < 10]
+    high     = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] > 60]
+    total_pax   = sum(d["crowd"] for d in snap.values())
+    avg_occ_pct = round(total_pax / max(len(snap) * 100, 1) * 100, 1)
 
-    # Compute peak and low zones from live data
-    occupied_zones  = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] > 0]
-    empty_zones     = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] < 10]
-    high_zones      = [(nid, d["crowd"]) for nid, d in snap.items() if d["crowd"] > 60]
-    total_pax       = sum(d["crowd"] for d in snap.values())
-    avg_occ_pct     = round(total_pax / max(len(snap) * 100, 1) * 100, 1)
+    r = 1
+    r = section_title(ws, r, "FOOTFALL ANALYTICS", 6)
+    for label, val, note in [
+        ("Total Occupancy (pax)",      total_pax, "Current headcount across all zones"),
+        ("Average Zone Occupancy (%)", avg_occ_pct, "% of maximum capacity across all nodes"),
+        ("High-Traffic Zones",         ", ".join(f"{resolve_node_name(z[0])} ({z[0]})" for z in high) or "None",
+         "Above 60 pax — prime for DOOH / kiosk placement"),
+        ("Low-Traffic Zones",          f"{len(empty)} zones below 10 pax", "Candidates for HVAC reduction — see full list on Zone Occupancy sheet"),
+    ]:
+        c1 = ws.cell(row=r, column=1, value=label); style_data(c1, bold=True)
+        c2 = ws.cell(row=r, column=2, value=val); style_data(c2)
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+        for col in (3,4):
+            style_data(ws.cell(row=r, column=col))
+        c3 = ws.cell(row=r, column=5, value=note); style_data(c3)
+        ws.merge_cells(start_row=r, start_column=5, end_row=r, end_column=6)
+        style_data(ws.cell(row=r, column=6))
+        r += 1
+    r += 1
 
-    writer.writerow(["FOOTFALL ANALYTICS"])
-    writer.writerow(["total_occupancy_pax",     total_pax,
-                     "Current headcount across all zones"])
-    writer.writerow(["average_zone_occupancy_%", avg_occ_pct,
-                     "% of maximum capacity across all nodes"])
-    writer.writerow(["high_traffic_zones",
-                     ", ".join(f"{resolve_node_name(z[0])} ({z[0]})" for z in high_zones) or "None",
-                     "Zones above 60 pax — prime locations for DOOH or kiosk placement"])
-    writer.writerow(["low_traffic_zones",
-                     ", ".join(f"{resolve_node_name(z[0])} ({z[0]})" for z in empty_zones) or "None",
-                     "Zones below 10 pax — candidate for HVAC reduction"])
-    writer.writerow([])
-
-    writer.writerow(["HVAC OPTIMISATION SIGNALS"])
-    writer.writerow(["zone", "node_id", "occupancy_pax", "measured_temp_c",
-                     "occupancy_based_hvac_action", "note"])
+    r = section_title(ws, r, "HVAC OPTIMISATION SIGNALS", 6)
+    r = table_header(ws, r, ["Zone", "Node ID", "Occupancy (pax)", "Measured Temp (°C)", "Recommended Action", "Note"])
     for nid, d in snap.items():
         temp  = round(_latest_temps.get(nid, 27.0), 1)
         crowd = d["crowd"]
-        # Actions derived from occupancy only — facility manager applies their own setpoints
         if crowd < 10:
-            action = "Reduce cooling — zone unoccupied"
-            note   = "Apply facility's unoccupied setpoint (typically +3 to +5 deg C)"
+            action, note, kind = "Reduce cooling — zone unoccupied", "Apply unoccupied setpoint (typically +3 to +5°C)", "good"
         elif crowd > 70:
-            action = "Increase cooling — high occupancy"
-            note   = "Apply facility's peak-occupancy setpoint"
+            action, note, kind = "Increase cooling — high occupancy", "Apply peak-occupancy setpoint", "warn"
         else:
-            action = "Maintain current setpoint"
-            note   = "Normal occupancy range"
-        writer.writerow([resolve_node_name(nid), nid, crowd, temp, action, note])
-    writer.writerow([])
-    writer.writerow(["NOTE", "",
-                     "Lumina provides occupancy signals only. Energy savings depend on "
-                     "facility HVAC specifications, electricity tariff, and building "
-                     "management system configuration. No savings figures are claimed here."])
-    writer.writerow([])
+            action, note, kind = "Maintain current setpoint", "Normal occupancy range", "good"
+        vals = [resolve_node_name(nid), nid, crowd, temp, action, note]
+        for i, v in enumerate(vals, start=1):
+            style_data(ws.cell(row=r, column=i, value=v))
+        status_fill(ws.cell(row=r, column=5), kind)
+        r += 1
+    r += 1
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+    c = ws.cell(row=r, column=1, value="Note: Lumina provides occupancy signals only. Energy savings depend on facility "
+                "HVAC specifications, electricity tariff, and building management system configuration. "
+                "No savings figures are claimed here.")
+    c.font = Font(name=FONT_NAME, size=9, italic=True, color=GREY_TXT)
+    c.alignment = Alignment(wrap_text=True)
+    ws.freeze_panes = "A2"
 
-    # --- SECTION 5: EVACUATION SAFETY STATUS -
-    writer.writerow(["EVACUATION SAFETY STATUS"])
-    writer.writerow(["Active Route",                " > ".join(current_route)])
-    writer.writerow(["Route Safe",                  "Yes" if rset_data.get("safe", True) else "No"])
-    writer.writerow(["Estimated Evacuation Time (s)", dynamic_rset, "With Lumina DYN-A* guidance"])
-    writer.writerow(["Baseline Evacuation Time (s)",  baseline_rset, "Without guidance (static signs, panic speed)"])
-    writer.writerow(["Time Reduction",                f"{reduction_pct}%", "Measured by routing engine"])
-    writer.writerow(["Available Safe Egress Time (s)", rset_data.get("ASET_s", 600)])
-    writer.writerow(["Safety Margin (s)",           rset_data.get("margin_s", "N/A")])
-    writer.writerow(["FACP Status",                 "Confirmed" if _facp else "Standby"])
-    writer.writerow([])
-
-    # T2 sensitivity table — proves system is safe across all realistic T2 values
-    # T2 (response hesitation) cannot be measured without a live user trial.
-    # This table shows RSET remains safe even if T2 is as high as the static baseline.
-    writer.writerow(["T2 SENSITIVITY ANALYSIS"])
-    writer.writerow(["Note",
-                     "T2 = occupant response hesitation time. "
-                     "Lumina design target: T2=5s (>80% reduction on 30s static baseline). "
-                     "Actual T2 requires user trial measurement before production claim. "
-                     "This table shows the system is SAFE across all realistic T2 values."])
-    writer.writerow(["T2_hesitation_s", "RSET_s", "reduction_vs_static_%", "safe", "margin_s"])
+    # ══════════════════ SHEET 4: EVACUATION DETAIL ══════════════════
+    ws = wb.create_sheet("Evacuation Detail")
+    set_widths(ws, [22, 12, 20, 10, 12])
+    r = 1
+    r = section_title(ws, r, "T2 SENSITIVITY ANALYSIS", 5)
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+    note_c = ws.cell(row=r, column=1, value="T2 = occupant response hesitation time. Design target: T2=5s (>80% reduction "
+                "on 30s static baseline). Actual T2 requires user trial measurement before production claim. "
+                "This table shows the system stays SAFE across all realistic T2 values.")
+    note_c.font = Font(name=FONT_NAME, size=9, italic=True, color=GREY_TXT)
+    note_c.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[r].height = 30
+    r += 1
+    r = table_header(ws, r, ["T2 Hesitation (s)", "RSET (s)", "Reduction vs Static (%)", "Safe", "Margin (s)"])
     for row in rset_t2_sensitivity(current_route):
-        marker = " <- DESIGN TARGET" if row["T2_s"] == 5 else (
-                 " <- SAME AS STATIC (worst case)" if row["T2_s"] == 30 else "")
-        writer.writerow([
-            f"{row['T2_s']}s{marker}",
-            row["RSET_s"],
-            f"{row['reduction_%']}%",
-            "Yes" if row["safe"] else "No",
-            row["margin_s"],
-        ])
-    writer.writerow([])
+        marker = " (design target)" if row["T2_s"] == 5 else (" (= static, worst case)" if row["T2_s"] == 30 else "")
+        vals = [f"{row['T2_s']}s{marker}", row["RSET_s"], f"{row['reduction_%']}%",
+                "Yes" if row["safe"] else "No", row["margin_s"]]
+        for i, v in enumerate(vals, start=1):
+            style_data(ws.cell(row=r, column=i, value=v))
+        status_fill(ws.cell(row=r, column=4), "good" if row["safe"] else "bad")
+        r += 1
+    r += 1
 
-    # --- SECTION 6: ZONE CONGESTION SIGNALS -
-    writer.writerow(["ZONE CONGESTION SIGNALS"])
-    writer.writerow(["zone", "signal", "detail"])
+    r = section_title(ws, r, "ZONE CONGESTION SIGNALS", 5)
+    r = table_header(ws, r, ["Zone", "Signal", "Detail", "", ""])
+    ws.merge_cells(start_row=r-1, start_column=3, end_row=r-1, end_column=5)
+    any_signal = False
     for nid, info in current_pull_signals.items():
+        any_signal = True
         reason = info.get("reason", "N/A").replace("\u2014", "-").replace("\u2013", "-")
-        writer.writerow([resolve_node_name(nid), info.get("signal", "N/A"), reason])
-    if not current_pull_signals:
-        writer.writerow(["All zones", "GREEN", "No congestion detected"])
-    writer.writerow([])
+        signal = info.get("signal", "N/A")
+        kind = "good" if signal=="GREEN" else ("warn" if signal=="AMBER" else "bad")
+        c1 = ws.cell(row=r, column=1, value=resolve_node_name(nid)); style_data(c1)
+        c2 = ws.cell(row=r, column=2, value=signal); status_fill(c2, kind)
+        c3 = ws.cell(row=r, column=3, value=reason); style_data(c3)
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
+        for col in (4,5): style_data(ws.cell(row=r, column=col))
+        r += 1
+    if not any_signal:
+        c1 = ws.cell(row=r, column=1, value="All zones"); style_data(c1)
+        c2 = ws.cell(row=r, column=2, value="GREEN"); status_fill(c2, "good")
+        c3 = ws.cell(row=r, column=3, value="No congestion detected"); style_data(c3)
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
+        for col in (4,5): style_data(ws.cell(row=r, column=col))
+        r += 1
 
-    # --- SECTION 7: NODE MAINTENANCE & BATTERY STATUS -
-    # NFPA 72 requires batteries >= 60% shelf life (Appendix F, BOM Defence)
-    writer.writerow(["NODE MAINTENANCE AND BATTERY STATUS"])
-    writer.writerow(["node_id", "zone", "battery_pct", "nfpa72_status",
-                     "next_service", "action_required"])
+    # ══════════════════ SHEET 5: MAINTENANCE ══════════════════
+    ws = wb.create_sheet("Maintenance")
+    set_widths(ws, [12, 24, 12, 26, 14, 30])
+    r = 1
+    r = table_header(ws, r, ["Node ID", "Zone", "Battery (%)", "NFPA 72 Status", "Next Service", "Action Required"])
     for nid in NODE_BATTERY:
         bat   = BATT.get(nid, 85)
         next_ = NEXT.get(nid, "N/A")
         if bat >= 75:
-            status = "OK"
-            action = "None"
+            status, action, kind = "OK", "None", "good"
         elif bat >= 60:
-            status = "LOW - Monitor"
-            action = "Schedule service within 30 days"
+            status, action, kind = "LOW — Monitor", "Schedule service within 30 days", "warn"
         else:
-            status = "CRITICAL - Below NFPA 72 threshold"
-            action = "HOT-SWAP REQUIRED immediately"
-        writer.writerow([nid, LUMINA_NODE_LABELS.get(nid, nid), bat, status, next_, action])
-    writer.writerow([])
+            status, action, kind = "CRITICAL — Below NFPA 72 threshold", "HOT-SWAP REQUIRED immediately", "bad"
+        vals = [nid, LUMINA_NODE_LABELS.get(nid, nid), bat, status, next_, action]
+        for i, v in enumerate(vals, start=1):
+            style_data(ws.cell(row=r, column=i, value=v))
+        status_fill(ws.cell(row=r, column=4), kind)
+        r += 1
+    r += 1
+    ws.freeze_panes = "A2"
 
-    # --- SECTION 8: SYSTEM PERFORMANCE -
-    writer.writerow(["SYSTEM PERFORMANCE"])
-    writer.writerow(["metric",                     "value",   "target",  "status"])
-    writer.writerow(["Thermal Detection Latency (ms)",
-                     round(_thermal_latency_ms, 1), "< 500ms",
-                     "Pass" if _thermal_latency_ms < 500 else "Review"])
-    writer.writerow(["Acoustic Detection Latency (ms)",
-                     round(_fft_latency_ms, 1),    "< 500ms",
-                     "Pass" if _fft_latency_ms < 500 else "Review"])
-    writer.writerow(["Nodes Online",               f"{NODES_ONLINE}/{NODES_TOTAL}",
-                     f"{NODES_TOTAL}/{NODES_TOTAL}", "Normal"])
-    writer.writerow([])
+    # ══════════════════ SHEET 6: SYSTEM & COMPLIANCE ══════════════════
+    ws = wb.create_sheet("System & Compliance")
+    set_widths(ws, [30, 14, 14, 12])
+    r = 1
+    r = section_title(ws, r, "SYSTEM PERFORMANCE", 4)
+    r = table_header(ws, r, ["Metric", "Value", "Target", "Status"])
+    for metric, value, target, ok in [
+        ("Thermal Detection Latency (ms)", round(_thermal_latency_ms, 1), "< 500ms", _thermal_latency_ms < 500),
+        ("Acoustic Detection Latency (ms)", round(_fft_latency_ms, 1), "< 500ms", _fft_latency_ms < 500),
+        ("Nodes Online", f"{NODES_ONLINE}/{NODES_TOTAL}", f"{NODES_TOTAL}/{NODES_TOTAL}", NODES_ONLINE==NODES_TOTAL),
+    ]:
+        vals = [metric, value, target, "Pass" if ok else "Review"]
+        for i, v in enumerate(vals, start=1):
+            style_data(ws.cell(row=r, column=i, value=v))
+        status_fill(ws.cell(row=r, column=4), "good" if ok else "warn")
+        r += 1
+    r += 1
 
-    # --- SECTION 9: PRIVACY AND COMPLIANCE SUMMARY -
-    writer.writerow(["PRIVACY AND COMPLIANCE SUMMARY"])
-    writer.writerow(["item",                       "status", "notes"])
-    writer.writerow(["Raw video transmitted",       "0 bytes",
-                     "Analytics run on edge TPU only - no raw video transmitted"])
-    writer.writerow(["Facial data stored",          "None",
-                     "ByteTrack anonymous vectors - no biometrics"])
-    writer.writerow(["PDPA compliant",              "Yes",
-                     "Personal Data Protection Act 2010 (Malaysia)"])
-    writer.writerow(["NFPA 72 battery compliance",  "Monitored",
-                     "Auto-alerts at 60% shelf life threshold"])
-    writer.writerow(["HaaS contract renewal trigger", "Month 36",
-                     "Free hot-swap battery included on renewal"])
+    r = section_title(ws, r, "PRIVACY AND COMPLIANCE SUMMARY", 4)
+    r = table_header(ws, r, ["Item", "Status", "Notes", ""])
+    for item, status, notes in [
+        ("Raw video transmitted", "0 bytes", "Analytics run on edge TPU only — no raw video transmitted"),
+        ("Facial data stored", "None", "ByteTrack anonymous vectors — no biometrics"),
+        ("PDPA compliant", "Yes", "Personal Data Protection Act 2010 (Malaysia)"),
+        ("NFPA 72 battery compliance", "Monitored", "Auto-alerts at 60% shelf life threshold"),
+        ("HaaS contract renewal trigger", "Month 36", "Free hot-swap battery included on renewal"),
+    ]:
+        c1 = ws.cell(row=r, column=1, value=item); style_data(c1, bold=True)
+        c2 = ws.cell(row=r, column=2, value=status); status_fill(c2, "good")
+        c3 = ws.cell(row=r, column=3, value=notes); style_data(c3)
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=4)
+        style_data(ws.cell(row=r, column=4))
+        r += 1
 
-    output.seek(0)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
     from flask import Response
     return Response(
-        output.getvalue(), mimetype="text/csv",
-        headers={"Content-Disposition": "attachment;filename=Lumina_Management_Report.csv"}
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment;filename=Lumina_Management_Report.xlsx"}
     )
 
 @app.route("/api/health")
