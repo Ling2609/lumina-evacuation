@@ -2739,7 +2739,7 @@ export default function App() {
             {/* Bottom strip */}
             <div style={{display:"grid",gridTemplateColumns:"1.4fr auto 1fr",gap:10}}>
               <div style={{...card(),padding:"9px 12px",display:"flex",flexDirection:"column",gap:6,
-                height:260,overflowY:"auto"}}>
+                height:290,overflowY:"auto"}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted}}>ACTIVE ROUTE</div>
                 {perNodeRoutes.length>1 && (
                   // THE ACTUAL FIX: this used to be a scrollable STACKED LIST
@@ -2860,7 +2860,7 @@ export default function App() {
                 </div>
               </div>
               <div style={{...card(),padding:"8px 16px",display:"flex",flexDirection:"column",
-                alignItems:"center",justifyContent:"center",minWidth:130,height:260,
+                alignItems:"center",justifyContent:"center",minWidth:130,height:290,
                 background:isHazard?(pasCountdown<60?palette.dangerLight:palette.warningLight):palette.bgCard,
                 border:isHazard?`1px solid ${pasCountdown<60?palette.danger:palette.warning}`:card().border}}>
                 <div style={{fontSize:9,fontWeight:600,color:palette.textMuted,marginBottom:2}}>FACP PAS</div>
@@ -2873,7 +2873,7 @@ export default function App() {
                   {fftConfirmed?"CONFIRMED":"STANDBY"}
                 </div>
               </div>
-              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden",height:260}}>
+              <div style={{...card(),display:"flex",flexDirection:"column",overflow:"hidden",height:290}}>
                 <div style={{padding:"6px 10px",borderBottom:`1px solid ${palette.border}`,
                   fontSize:9,fontWeight:600,color:palette.textMuted,flexShrink:0}}>EVENT LOG</div>
                 <div style={{flex:1,overflowY:"auto",padding:"2px 0"}}>
