@@ -371,6 +371,29 @@ export default function App() {
       });
     } catch{ /* offline — next poll cycle will eventually catch up */ }
   };
+  // Continuous background safety net — reconciles every 1.5s regardless of
+  // what specific action might have caused drift. After finding and fixing
+  // several DISTINCT edge cases in this same area today (stale trigger
+  // responses, stale block refreshes, even a bug in the reconciliation
+  // mechanism itself), a fixed periodic check that doesn't depend on any
+  // particular code path being correct is more robust than continuing to
+  // patch each new specific trigger point as it's discovered. Runs
+  // regardless of manual_override, since /api/active_hazards has no mode
+  // gating — this is the one place that can't be silently skipped the way
+  // /api/status's per_node_routes field can be.
+  // Ref holds the latest scheduleReconcile so the interval below never needs
+  // it in its dependency array — scheduleReconcile is recreated every
+  // render (it's not wrapped in useCallback), so depending on it directly
+  // would either re-create the interval every render (defeating the point
+  // of a steady periodic check) or trigger React's exhaustive-deps warning
+  // if omitted. This assignment runs on every render (cheap, no setState
+  // involved) and always keeps the ref pointing at the current closure.
+  const scheduleReconcileRef = useRef(scheduleReconcile);
+  useEffect(()=>{ scheduleReconcileRef.current = scheduleReconcile; });
+  useEffect(()=>{
+    const interval = setInterval(()=>{ scheduleReconcileRef.current(0); }, 1500);
+    return ()=>clearInterval(interval);
+  }, []);
   // Browsers fire the regular click event TWICE as part of every
   // double-click, before dblclick itself fires. Without disambiguation,
   // double-clicking a node to cancel a hazard would ALSO fire the
@@ -455,11 +478,25 @@ export default function App() {
   // no separate effect needed.
   const [_prevPerNodeRoutes, _setPrevPerNodeRoutes] = useState(perNodeRoutes);
   if(perNodeRoutes !== _prevPerNodeRoutes){
+    const priorRoutes = _prevPerNodeRoutes;
     _setPrevPerNodeRoutes(perNodeRoutes);
     if(perNodeRoutes.length===0){
       if(selectedHazardTab!==null) setSelectedHazardTab(null);
-    } else if(!perNodeRoutes.some(nr=>nr.node_id===selectedHazardTab)){
-      setSelectedHazardTab(perNodeRoutes[perNodeRoutes.length-1].node_id);
+    } else {
+      // If a hazard just got newly added (wasn't in the prior list at all),
+      // auto-switch to it — otherwise you could trigger a new hazard while
+      // viewing an existing one's tab and never notice the new tab
+      // appearing, since the main panel would keep showing whatever was
+      // already selected. This does NOT explain cases where a hazard's
+      // own DATA is missing or a route never arrives at all — those are
+      // separate, already-fixed ordering/sequencing issues; this only
+      // handles "the data is there, but you're looking at the wrong tab."
+      const newlyAdded = perNodeRoutes.filter(nr=>!priorRoutes.some(p=>p.node_id===nr.node_id));
+      if(newlyAdded.length>0){
+        setSelectedHazardTab(newlyAdded[newlyAdded.length-1].node_id);
+      } else if(!perNodeRoutes.some(nr=>nr.node_id===selectedHazardTab)){
+        setSelectedHazardTab(perNodeRoutes[perNodeRoutes.length-1].node_id);
+      }
     }
   }
 
