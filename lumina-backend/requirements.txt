@@ -32,6 +32,7 @@ sounddevice>=0.4.6,<1.0.0      # live microphone input (optional — demo uses s
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 Pillow>=10.0.0,<12.0.0         # image handling (ultralytics dependency)
+openpyxl>=3.1.0,<4.0.0         # XLSX management report export (download_log endpoint)
 
 # =============================================================================
 # NOT INCLUDED (install separately if needed):
