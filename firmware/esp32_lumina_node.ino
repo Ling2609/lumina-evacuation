@@ -70,6 +70,8 @@ const char* MQTT_TOPIC_ROUTE = "lumina/vitrox/demo/7a9b2f/route";
 bool systemHazard   = false;
 bool fftConfirmed   = false;
 bool buzzerActive   = false;
+unsigned long lastMqttMsg = 0;              
+const unsigned long WATCHDOG_TIMEOUT = 5000;
 
 // Per-corridor state — updated by MQTT messages from Flask
 // States: "normal" | "route" | "hazard" | "warning" | "pull_stop"
@@ -241,6 +243,7 @@ void updateBuzzer() {
 //                           "C-004":"route","C-005":"normal"}}
 // =============================================================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  lastMqttMsg = millis();
   String msg = "";
   for (unsigned int i = 0; i < length; i++) {
     msg += (char)payload[i];
@@ -497,6 +500,14 @@ void loop() {
     mqttClient.loop();
   }
 
+  if (systemHazard && (millis() - lastMqttMsg > WATCHDOG_TIMEOUT)) {
+    Serial.println("[WATCHDOG] MQTT connection lost or stale! Forcing buzzer off.");
+    systemHazard = false;
+    fftConfirmed = false;
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzOn = false;
+  }
+  
   // Animate at ~12 FPS
   if (millis() - lastAnimMs > 80) {
     lastAnimMs = millis();

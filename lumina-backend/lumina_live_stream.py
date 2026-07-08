@@ -544,7 +544,7 @@ def _heartbeat_thread():
                 "buzzer_active":   False,
                 "green_direction": "FOLLOW_ROUTE" if _manual else "NONE",
                 "corridors":       _corridors,
-            }))
+            }), retain=True)
         time.sleep(2.0)   # 2s heartbeat — light enough for ESP32 Wi-Fi/MQTT stack
 
 threading.Thread(target=_heartbeat_thread, daemon=True).start()
@@ -1500,7 +1500,7 @@ def reset_system():
         "status": "RESOLVED", "system_state": "NORMAL",
         "person_count": _total_pax, "stealth_mode": True,
         "green_direction": "NONE", "corridors": _corridors,
-    }))
+    }), retain=True)
     return jsonify({"status": "success", "message": "System reset to NORMAL"})
 
 
