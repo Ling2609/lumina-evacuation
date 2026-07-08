@@ -935,7 +935,7 @@ def _process_ai_cycle(cap, state):
                     "person_count": _total_pax, "stealth_mode": True,
                     "green_led": False, "red_led": False, "buzzer_active": False,
                     "green_direction": "NONE", "corridors": _corridors,
-                }))
+                }), retain=True)
         else:
             state["recovery_timer_start"] = 0
 
@@ -1203,7 +1203,7 @@ def cancel_sim_trigger():
             "stealth_mode":    True,
             "green_direction": "NONE",
             "corridors":       _corridors,
-        }))
+        }), retain=True)
 
     print(f"[SIM] Cancelled hazard at {node_id}, {len(active_hazard_nodes)} hazards remaining")
     return jsonify({"status": "success", "node_id": node_id,
@@ -1831,7 +1831,7 @@ def bomba_override():
             "source":       "BOMBA",
             "person_count": _total_pax,
             "corridors":    _corridors,
-        }))
+        }), retain=True)
         print("[BOMBA] Override CLEARED — system restored to normal")
         return jsonify({"status": "success", "bomba_override_active": False,
                         "message": "Bomba override cleared — normal operation resumed"})
