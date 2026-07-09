@@ -256,23 +256,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Update system state.
-  // IMPORTANT: gate on "status", not "system_state" — the backend
-  // legitimately sends different system_state values per hazard tier
-  // ("HAZARD" for thermal/manual fire, "CRITICAL" for fall/crush events),
-  // but always sets status="CRITICAL" for any active emergency. Gating on
-  // system_state=="HAZARD" meant fall-detection events (system_state=
-  // "CRITICAL") never set systemHazard=true, so the buzzer silently never
-  // sounded for a detected fall even though the dashboard showed the alert.
-  String status   = doc["status"] | "NORMAL";
+  // --- NEW: SIMULATION GATE ---
+  // This reads the status sent by the Python script.
+  // If Python sends "SIMULATION_ACTIVE", hardware stays DARK and SILENT.
+  String status = doc["status"] | "NORMAL";
+  
+  if (status == "SIMULATION_ACTIVE") {
+    strip.clear();
+    strip.show();
+    digitalWrite(BUZZER_PIN, LOW);
+    systemHazard = false; // Force hazard flag off
+    return; // Stop here, do not process hazard logic
+  }
+  // ----------------------------
+
   systemHazard  = (status == "CRITICAL");
   fftConfirmed  = doc["facp_confirmed"] | false;
 
-  // Update corridor states + per-corridor chase direction.
-  // Payload shape: {"corridors": {"C-001": {"state":"route","dir":1}, ...}}
-  // (object form) OR {"corridors": {"C-001":"route", ...}} (legacy string
-  // form, defaults dir=1) — both are accepted so older test payloads
-  // during development don't crash the parser.
+  // Process corridor states
   const char* corridorKeys[] = {"C-001", "C-002", "C-003", "C-004", "C-005"};
   if (doc.containsKey("corridors")) {
     for (int c = 0; c < 5; c++) {
@@ -282,7 +283,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         corridorState[c] = cv["state"] | "normal";
         corridorDir[c]   = cv["dir"]   | 1;
       } else {
-        // legacy plain-string form
         corridorState[c] = cv.as<String>();
         corridorDir[c]   = 1;
       }
