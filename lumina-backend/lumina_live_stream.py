@@ -87,9 +87,8 @@ def _build_corridor_states():
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
     # 2. Simulation Gate: If in simulation, return the 'normal' states immediately.
-    with state_lock:
-        if system_mode == "simulation":
-            return states
+    if system_mode == "simulation":
+        return states
 
     # 3. Hazard / quarantine takes priority 
     # Use 'states' defined above!
