@@ -82,11 +82,18 @@ CORS(app)
 # current_route, current_pull_signals).
 # =============================================================================
 def _build_corridor_states():
+    # 1. ALWAYS initialize the dictionary first.
+    # This ensures 'states' is defined no matter what.
     states = {c: {"state": "normal", "dir": 1}
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
-    # 1. Hazard / quarantine takes priority — any junction in alert or
-    #    quarantine marks its whole home corridor RED (hazard).
+    # 2. Simulation Gate: If in simulation, return the 'normal' states immediately.
+    # This prevents the LED hardware from ever receiving "hazard" or "route" commands.
+    with state_lock:
+        if system_mode == "simulation":
+            return states
+
+    # 3. Hazard / quarantine takes priority
     for jid, data in live_node_status.items():
         corridor = J_TO_CORRIDOR.get(jid)
         if not corridor:
@@ -94,43 +101,25 @@ def _build_corridor_states():
         if data.get("status") in ("alert", "quarantine"):
             states[corridor]["state"] = "hazard"
 
-    # 2. Pull policy RED stop-lines — congestion/crush, blink red, but
-    #    don't downgrade an existing hazard corridor.
+    # 4. Pull policy RED stop-lines
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "RED":
             states[corridor]["state"] = "pull_stop"
 
-    # 3. Pull policy AMBER / warning — congestion building.
+    # 5. Pull policy AMBER / warning
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "AMBER":
             states[corridor]["state"] = "warning"
 
-    # 4. Active DYN-A* route — every corridor the evacuation path actually
-    #    passes through gets GREEN chase, UNLESS that corridor is itself
-    #    the hazard origin (don't show "safe, walk this way" through fire).
-    #    Direction: compare the rank-within-corridor of consecutive route
-    #    nodes that share this corridor. Rank increases toward the building
-    #    interior, decreases toward the exit — so if the route visits this
-    #    corridor's junctions in DEcreasing rank order, evacuees are moving
-    #    toward the exit (dir=1, the LED strip's natural orientation).
-    #    Increasing rank order means moving away from this corridor's own
-    #    exit (e.g. cutting through to reach a different exit), so the
-    #    chase must reverse (dir=-1) or it would visually point inward.
+    # 6. Active DYN-A* route
     for idx, node_id in enumerate(current_route):
         corridor = (J_TO_CORRIDOR.get(node_id) or EXIT_TO_CORRIDOR.get(node_id))
-        # Don't downgrade hazard/pull_stop/warning to a plain green route —
-        # the firmware can only show one state per corridor at a time, and
-        # an evacuee should see "congestion ahead, proceed with caution"
-        # rather than a full-speed green chase into a forming crush, even
-        # if that corridor is technically still the correct evacuation path.
         if not corridor or states[corridor]["state"] in ("hazard", "pull_stop", "warning"):
             continue
         states[corridor]["state"] = "route"
 
-        # Determine direction from this node to the next one, if both
-        # are ranked junctions inside the same corridor.
         if idx + 1 < len(current_route):
             next_id = current_route[idx + 1]
             r_cur  = J_CORRIDOR_RANK.get(node_id)
@@ -138,10 +127,7 @@ def _build_corridor_states():
             if r_cur is not None and r_next is not None:
                 states[corridor]["dir"] = 1 if r_next < r_cur else -1
             elif next_id in EXIT_TO_CORRIDOR and EXIT_TO_CORRIDOR[next_id] == corridor:
-                # Walking straight into this corridor's own exit = forward
                 states[corridor]["dir"] = 1
-
-
 
     return states
 
