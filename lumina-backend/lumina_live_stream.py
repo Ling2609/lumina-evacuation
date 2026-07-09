@@ -507,30 +507,32 @@ def _heartbeat_thread():
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 
-        # ONLY send live operational data if mode is "live"
+        # ONLY send operational data if mode is "live"
         if _mode == "live":
-            message = {
-                "status": "NORMAL" if _state == "NORMAL" else "CRITICAL",
-                "system_state": _state,
-                "manual_override": _manual,
-                "stealth_mode": not _manual,
-                "person_count": _total_pax,
-                "corridors": _corridors,
-                "green_led": _manual,
-                "red_led": False,
-                "buzzer_active": False,
-                "green_direction": "FOLLOW_ROUTE" if _manual else "NONE"
-            }
-            mqtt_client.publish(TOPIC, json.dumps(message), retain=True)
-            print(">>> Python 已推送完整心跳包 (含走廊状态) 至 MQTT")
+            if _state == "NORMAL":
+                _stealth = not _manual
+                mqtt_client.publish(TOPIC, json.dumps({
+                    "status":          "NORMAL",
+                    "system_state":    "NORMAL",
+                    "manual_override": _manual,
+                    "stealth_mode":    _stealth,
+                    "person_count":    _total_pax,
+                    "green_led":       _manual, 
+                    "red_led":         False,
+                    "buzzer_active":   False,
+                    "green_direction": "FOLLOW_ROUTE" if _manual else "NONE",
+                    "corridors":       _corridors,
+                }), retain=True)
+            print(">>> Heartbeat published to MQTT [LIVE MODE]")
         else:
-            # SIMULATION MODE: Send a "silent" message so ESP32 keeps hardware dark
+            # SIMULATION MODE: Send a "silent" signal so ESP32 keeps hardware dark
             mqtt_client.publish(TOPIC, json.dumps({
                 "status": "SIMULATION_ACTIVE", 
                 "system_state": "NORMAL"
             }), retain=True)
+            print(">>> Heartbeat published to MQTT [SIMULATION MODE - Hardware Safe]")
             
-        time.sleep(1.0) # 1 second interval
+        time.sleep(1.0)
 
 threading.Thread(target=_heartbeat_thread, daemon=True).start()
 print("[INIT] MQTT heartbeat thread started")
