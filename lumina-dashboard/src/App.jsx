@@ -28,7 +28,7 @@ const DOOR_POS = {
   B7:{x:660.2,y:167.4,label:"Meeting Room 4"},   B8:{x:640.5,y:357.0,label:"CEO Room"},
   B9:{x:396.6,y:375.4,label:"COO Room"},         B10:{x:325.8,y:375.4,label:"CTO Room"},
   B11:{x:117.6,y:464.1,label:"CFO Room"},        B12:{x:117.6,y:576.7,label:"Meeting Room 5"},
-  B13:{x:221.7,y:510.8,label:"Customer Service"},
+  B13:{x:221.7,y:510.8,label:"Reception"},
   B14:{x:474.8,y:501.6,label:"Office C"},        B15:{x:582.0,y:501.6,label:"Meeting Room 6"},
   B16:{x:700.9,y:501.6,label:"Office D"},
 };
@@ -122,7 +122,7 @@ const STORE_DOTS = [
   {x:325.9,y:375.9,label:"CTO Room",         zone:"orange"},
   {x:117.6,y:464.7,label:"CFO Room",         zone:"orange"},
   {x:117.6,y:576.9,label:"Meeting Room 5",   zone:"orange"},
-  {x:272.3,y:511.2,label:"Customer Service", zone:"orange"},
+  {x:272.3,y:511.2,label:"Reception",        zone:"orange"},
   {x:475.1,y:501.8,label:"Office C",         zone:"purple"},
   {x:582.4,y:501.8,label:"Meeting Room 6",   zone:"purple"},
   {x:701.3,y:501.8,label:"Office D",         zone:"purple"},
@@ -1514,9 +1514,9 @@ export default function App() {
                 <line x1={221.7} y1={432.0} x2={325.8} y2={432.0} stroke="#94A3B8" strokeWidth="1.5"/>
                 <line x1={325.8} y1={432.0} x2={325.8} y2={567.4} stroke="#94A3B8" strokeWidth="1.5"/>
                 <text x={273.8} y={494.0} textAnchor="middle" dominantBaseline="central"
-                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Customer</text>
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}></text>
                 <text x={273.8} y={504.0} textAnchor="middle" dominantBaseline="central"
-                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Service</text>
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Reception</text>
 
                 {/* ── Corridor backbone — dashed lines ── */}
                 {CORRIDOR_EDGES.map(([a,b],i)=>{
@@ -2449,9 +2449,9 @@ export default function App() {
                 <line x1={221.7} y1={432.0} x2={325.8} y2={432.0} stroke="#94A3B8" strokeWidth="1.5"/>
                 <line x1={325.8} y1={432.0} x2={325.8} y2={567.4} stroke="#94A3B8" strokeWidth="1.5"/>
                 <text x={273.8} y={494.0} textAnchor="middle" dominantBaseline="central"
-                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Customer</text>
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}></text>
                 <text x={273.8} y={504.0} textAnchor="middle" dominantBaseline="central"
-                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Service</text>
+                  style={{fontSize:8,fill:"#374151",fontFamily:"Inter,sans-serif",fontWeight:600}}>Reception</text>
 
                 {/* ── Corridor backbone — dashed lines ── */}
                 {CORRIDOR_EDGES.map(([a,b],i)=>{

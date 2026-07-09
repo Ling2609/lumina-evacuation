@@ -88,7 +88,7 @@ DOOR_LABELS = {
     "B10":"CTO Room",
     "B11":"CFO Room",
     "B12":"Meeting Room 5",
-    "B13":"Customer Service",
+    "B13":"Reception",
     "B14":"Office C",
     "B15":"Meeting Room 6",
     "B16":"Office D",
