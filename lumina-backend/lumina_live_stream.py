@@ -82,18 +82,17 @@ CORS(app)
 # current_route, current_pull_signals).
 # =============================================================================
 def _build_corridor_states():
-    # 1. ALWAYS initialize the dictionary first.
-    # This ensures 'states' is defined no matter what.
+    # 1. Initialize states at the very top, so it is accessible everywhere
     states = {c: {"state": "normal", "dir": 1}
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
     # 2. Simulation Gate: If in simulation, return the 'normal' states immediately.
-    # This prevents the LED hardware from ever receiving "hazard" or "route" commands.
     with state_lock:
         if system_mode == "simulation":
             return states
 
-    # 3. Hazard / quarantine takes priority
+    # 3. Hazard / quarantine takes priority — any junction in alert or
+    #    quarantine marks its whole home corridor RED (hazard).
     for jid, data in live_node_status.items():
         corridor = J_TO_CORRIDOR.get(jid)
         if not corridor:
@@ -101,13 +100,13 @@ def _build_corridor_states():
         if data.get("status") in ("alert", "quarantine"):
             states[corridor]["state"] = "hazard"
 
-    # 4. Pull policy RED stop-lines
+    # 4. Pull policy RED stop-lines — congestion/crush, blink red
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "RED":
             states[corridor]["state"] = "pull_stop"
 
-    # 5. Pull policy AMBER / warning
+    # 5. Pull policy AMBER / warning — congestion building.
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "AMBER":
@@ -120,6 +119,7 @@ def _build_corridor_states():
             continue
         states[corridor]["state"] = "route"
 
+        # Determine direction
         if idx + 1 < len(current_route):
             next_id = current_route[idx + 1]
             r_cur  = J_CORRIDOR_RANK.get(node_id)
