@@ -82,7 +82,7 @@ CORS(app)
 # current_route, current_pull_signals).
 # =============================================================================
 def _build_corridor_states():
-    # 1. Initialize states at the top so it is accessible everywhere
+    # 1. Initialize the dictionary
     states = {c: {"state": "normal", "dir": 1}
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
@@ -91,11 +91,11 @@ def _build_corridor_states():
         if system_mode == "simulation":
             return states
 
-    # 3. Hazard / quarantine takes priority
+    # 3. Hazard / quarantine takes priority 
+    # Use 'states' defined above!
     for jid, data in live_node_status.items():
         corridor = J_TO_CORRIDOR.get(jid)
-        if not corridor:
-            continue
+        if not corridor: continue
         if data.get("status") in ("alert", "quarantine"):
             states[corridor]["state"] = "hazard"
 
@@ -118,6 +118,7 @@ def _build_corridor_states():
             continue
         states[corridor]["state"] = "route"
 
+        # Determine direction
         if idx + 1 < len(current_route):
             next_id = current_route[idx + 1]
             r_cur  = J_CORRIDOR_RANK.get(node_id)
@@ -500,36 +501,37 @@ print("[INIT] FFT acoustic classifier thread started")
 def _heartbeat_thread():
     while True:
         with state_lock:
+            _mode    = system_mode
             _state   = system_state
             _manual  = manual_override
-            # True total footfall across ALL nodes (camera + stochastic),
-            # not just the J16 lobby camera count — must match what the
-            # dashboard's "Total Footfall" metric shows, or MQTT logs and
-            # the React UI will visibly disagree in front of judges.
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
-            _route     = list(current_route)
             _corridors = _build_corridor_states()
-        if _state == "NORMAL":
-            # BOMBA can manually block a node and force a reroute while
-            # system_state is still NORMAL (no organic hazard triggered
-            # the HAZARD transition). If we stayed "stealth", the chief
-            # would reroute the building and the ceiling lights would
-            # stay completely dark — wake the hardware whenever a manual
-            # override is active, even outside a real emergency.
-            _stealth = not _manual
+
+        # ONLY send operational data if mode is "live"
+        if _mode == "live":
+            if _state == "NORMAL":
+                _stealth = not _manual
+                mqtt_client.publish(TOPIC, json.dumps({
+                    "status":          "NORMAL",
+                    "system_state":    "NORMAL",
+                    "manual_override": _manual,
+                    "stealth_mode":    _stealth,
+                    "person_count":    _total_pax,
+                    "green_led":       _manual, 
+                    "red_led":         False,
+                    "buzzer_active":   False,
+                    "green_direction": "FOLLOW_ROUTE" if _manual else "NONE",
+                    "corridors":       _corridors,
+                }), retain=True)
+        else:
+            # SIMULATION MODE: Send an explicit signal that tells ESP32 to do nothing.
+            # This keeps the hardware dark/silent regardless of simulation events.
             mqtt_client.publish(TOPIC, json.dumps({
-                "status":          "NORMAL",
-                "system_state":    "NORMAL",
-                "manual_override": _manual,
-                "stealth_mode":    _stealth,
-                "person_count":    _total_pax,
-                "green_led":       _manual,     # lit if BOMBA has an active reroute
-                "red_led":         False,
-                "buzzer_active":   False,
-                "green_direction": "FOLLOW_ROUTE" if _manual else "NONE",
-                "corridors":       _corridors,
+                "status": "SIMULATION_ACTIVE", 
+                "system_state": "NORMAL"
             }), retain=True)
-        time.sleep(2.0)   # 2s heartbeat — light enough for ESP32 Wi-Fi/MQTT stack
+            
+        time.sleep(2.0)
 
 threading.Thread(target=_heartbeat_thread, daemon=True).start()
 print("[INIT] MQTT heartbeat thread started")
