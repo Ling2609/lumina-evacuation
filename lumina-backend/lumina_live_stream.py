@@ -82,7 +82,7 @@ CORS(app)
 # current_route, current_pull_signals).
 # =============================================================================
 def _build_corridor_states():
-    # 1. Initialize states at the very top, so it is accessible everywhere
+    # 1. Initialize states at the top so it is accessible everywhere
     states = {c: {"state": "normal", "dir": 1}
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
@@ -91,8 +91,7 @@ def _build_corridor_states():
         if system_mode == "simulation":
             return states
 
-    # 3. Hazard / quarantine takes priority — any junction in alert or
-    #    quarantine marks its whole home corridor RED (hazard).
+    # 3. Hazard / quarantine takes priority
     for jid, data in live_node_status.items():
         corridor = J_TO_CORRIDOR.get(jid)
         if not corridor:
@@ -100,13 +99,13 @@ def _build_corridor_states():
         if data.get("status") in ("alert", "quarantine"):
             states[corridor]["state"] = "hazard"
 
-    # 4. Pull policy RED stop-lines — congestion/crush, blink red
+    # 4. Pull policy RED stop-lines
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "RED":
             states[corridor]["state"] = "pull_stop"
 
-    # 5. Pull policy AMBER / warning — congestion building.
+    # 5. Pull policy AMBER / warning
     for nid, info in current_pull_signals.items():
         corridor = J_TO_CORRIDOR.get(nid)
         if corridor and states[corridor]["state"] == "normal" and info.get("signal") == "AMBER":
@@ -119,7 +118,6 @@ def _build_corridor_states():
             continue
         states[corridor]["state"] = "route"
 
-        # Determine direction
         if idx + 1 < len(current_route):
             next_id = current_route[idx + 1]
             r_cur  = J_CORRIDOR_RANK.get(node_id)
