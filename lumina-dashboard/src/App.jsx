@@ -22,15 +22,15 @@ const ZONE_COLORS = {yellow:"#FEF9C3",orange:"#FFEDD5",purple:"#EDE9FE",pink:"#F
 
 // Store door positions for route drawing (door → junction → exit)
 const DOOR_POS = {
-  B1:{x:120.1,y:219.1,label:"Siew Later Restaurant"}, B2:{x:205.7,y:219.1,label:"BawangTea"},
-  B3:{x:282.1,y:130.5,label:"Chill Zone"},     B4:{x:380.6,y:219.1,label:"Empty Space"},
-  B5:{x:455.8,y:219.1,label:"Thai Relax Massage"}, B6:{x:660.2,y:86.8, label:"Female Washroom"},
-  B7:{x:660.2,y:167.4,label:"Male Washroom"},  B8:{x:640.5,y:357.0,label:"Ali Barber"},
-  B9:{x:396.6,y:375.4,label:"Mamadini"},       B10:{x:325.8,y:375.4,label:"Public Recipe"},
-  B11:{x:117.6,y:464.1,label:"Meating Room"},  B12:{x:117.6,y:576.7,label:"Baskin Batman"},
+  B1:{x:120.1,y:219.1,label:"Office A"},         B2:{x:205.7,y:219.1,label:"Meeting Room 1"},
+  B3:{x:282.1,y:130.5,label:"Meeting Room 2"},   B4:{x:380.6,y:219.1,label:"Office B"},
+  B5:{x:455.8,y:219.1,label:"Manager Room"},     B6:{x:660.2,y:86.8, label:"Meeting Room 3"},
+  B7:{x:660.2,y:167.4,label:"Meeting Room 4"},   B8:{x:640.5,y:357.0,label:"CEO Room"},
+  B9:{x:396.6,y:375.4,label:"COO Room"},         B10:{x:325.8,y:375.4,label:"CTO Room"},
+  B11:{x:117.6,y:464.1,label:"CFO Room"},        B12:{x:117.6,y:576.7,label:"Meeting Room 5"},
   B13:{x:221.7,y:510.8,label:"Customer Service"},
-  B14:{x:474.8,y:501.6,label:"MS. DIY"},       B15:{x:582.0,y:501.6,label:"SofaSoGood"},
-  B16:{x:700.9,y:501.6,label:"ReadMe Bookstore"},
+  B14:{x:474.8,y:501.6,label:"Office C"},        B15:{x:582.0,y:501.6,label:"Meeting Room 6"},
+  B16:{x:700.9,y:501.6,label:"Office D"},
 };
 
 // Store door → nearest corridor junction (matches routing_engine.py DOOR_TO_JUNCTION)
@@ -70,21 +70,21 @@ const J_TO_NODE = {
 // faint background layer on the Node Map so Lumina hardware positions can
 // be seen relative to actual store locations, not just on a blank grid.
 const ROOM_POLYGONS = [
-  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Siew Later",   l2:"Restaurant", cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
-  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"BawangTea",    l2:"",           cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
-  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"",             l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
-  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Chill Zone",   l2:"",           cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J4"},
-  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Thai Relax",l2:"Massage",   cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
-  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Female",       l2:"Washroom",   cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
-  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Male",         l2:"Washroom",   cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
-  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"Ali Barber",l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
-  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"Mamadini",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J4"},
-  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"Public",       l2:"Recipe",     cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J4"},
-  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"Meating",      l2:"Room",       cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
-  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Baskin",       l2:"Batman",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
-  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"MS. DIY",      l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
-  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"SofaSoGood",   l2:"",           cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
-  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"ReadMe",       l2:"Bookstore",  cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
+  {pts:"15.4,12.3 15.4,219.1 162.6,219.1 162.6,12.3",            l1:"Office A",     l2:"",           cx:89.0,  cy:115.7, fill:"#FEF9C3", rid:"J2"},
+  {pts:"162.6,12.3 162.6,219.1 248.2,219.1 248.2,12.3",          l1:"Meeting",      l2:"Room 1",     cx:205.4, cy:115.7, fill:"#FEF9C3", rid:"J3"},
+  {pts:"248.2,12.3 248.2,219.1 410.2,219.1 410.2,12.3",          l1:"Office B",     l2:"",           cx:329.2, cy:115.7, fill:"#FEF9C3", rid:"J4"},
+  {pts:"248.2,130.5 248.2,219.1 359.1,219.1 359.1,130.5",        l1:"Meeting",      l2:"Room 2",     cx:303.7, cy:174.8, fill:"#FEF9C3", rid:"J4"},
+  {pts:"410.2,12.3 410.2,219.1 487.2,219.1 558.6,132.3 558.6,12.3", l1:"Manager",   l2:"Room",       cx:469.7, cy:115.7, fill:"#FEF9C3", rid:"J7"},
+  {pts:"660.2,12.3 660.2,126.8 751.4,126.8 751.4,12.3",          l1:"Meeting",      l2:"Room 3",     cx:705.8, cy:69.6,  fill:"#FFE4E6", rid:"J10"},
+  {pts:"660.2,126.8 751.4,126.8 751.4,251.1 660.2,251.1",        l1:"Meeting",      l2:"Room 4",     cx:705.8, cy:189.0, fill:"#FFE4E6", rid:"J9"},
+  {pts:"660.2,251.1 660.2,223.4 594.3,223.4 594.3,306.5 640.5,307.7 640.5,406.8 751.4,406.8 751.4,251.1", l1:"CEO Room", l2:"", cx:695.9, cy:330.0, fill:"#FFE4E6", rid:"J11"},
+  {pts:"396.6,305.3 396.6,432.0 524.1,432.0 524.1,305.3",        l1:"COO Room",     l2:"",           cx:460.4, cy:368.7, fill:"#EDE9FE", rid:"J4"},
+  {pts:"325.8,432.0 325.8,305.3 221.7,305.3 221.7,432.0",        l1:"CTO Room",     l2:"",           cx:273.8, cy:368.7, fill:"#FFEDD5", rid:"J4"},
+  {pts:"15.4,396.4 15.4,528.7 117.6,528.7 117.6,396.4",          l1:"CFO Room",     l2:"",           cx:66.5,  cy:462.6, fill:"#FFEDD5", rid:"J20"},
+  {pts:"15.4,528.7 15.4,675.8 117.6,675.8 117.6,528.7",          l1:"Meeting",      l2:"Room 5",     cx:66.5,  cy:602.3, fill:"#FFEDD5", rid:"J18"},
+  {pts:"392.3,501.6 392.3,675.8 529.7,675.8 529.7,501.6",        l1:"Office C",     l2:"",           cx:461.0, cy:588.7, fill:"#EDE9FE", rid:"J17"},
+  {pts:"529.7,501.6 529.7,675.8 649.1,675.8 649.1,501.6",        l1:"Meeting",      l2:"Room 6",     cx:589.4, cy:588.7, fill:"#EDE9FE", rid:"J12"},
+  {pts:"649.1,501.6 649.1,675.8 751.4,675.8 751.4,501.6",        l1:"Office D",     l2:"",           cx:700.3, cy:588.7, fill:"#EDE9FE", rid:"J13"},
 ];
 
 // Interior walls that aren't part of a room polygon outline — drawn as extra
@@ -110,27 +110,23 @@ const EXIT_POS = {
   "EXIT-4":{x:751.4, y:469.0, label:"Exit 4"},
 };
 const STORE_DOTS = [
-  {x:120.2,y:219.3,label:"Siew Later",    zone:"yellow"},
-  {x:205.9,y:219.3,label:"BawangTea",     zone:"yellow"},
-  {x:282.0,y:130.5,label:"Chill Zone",    zone:"yellow"},
-  {x:381.2,y:219.3,label:"Empty Space",   zone:"yellow"},
-  {x:456.3,y:219.3,label:"Thai Relax",    zone:"yellow"},
-  {x:660.5,y: 86.8,label:"Female WR",     zone:"pink"},
-  {x:660.5,y:167.8,label:"Male WR",       zone:"pink"},
-  {x:640.7,y:357.0,label:"Ali Barber",    zone:"pink"},
-  {x:396.8,y:375.9,label:"Mamadini",      zone:"purple"},
-  {x:325.9,y:375.9,label:"Public Recipe", zone:"orange"},
-  {x:117.6,y:464.7,label:"Meating Rm",    zone:"orange"},
-  {x:117.6,y:576.9,label:"Baskin Batman", zone:"orange"},
-  {x:272.3,y:511.2,label:"Customer Svc",  zone:"orange"},
-  {x:475.1,y:501.8,label:"MS. DIY",       zone:"purple"},
-  {x:582.4,y:501.8,label:"SofaSoGood",    zone:"purple"},
-  {x:701.3,y:501.8,label:"ReadMe",        zone:"purple"},
+  {x:120.2,y:219.3,label:"Office A",         zone:"yellow"},
+  {x:205.9,y:219.3,label:"Meeting Room 1",   zone:"yellow"},
+  {x:282.0,y:130.5,label:"Meeting Room 2",   zone:"yellow"},
+  {x:381.2,y:219.3,label:"Office B",         zone:"yellow"},
+  {x:456.3,y:219.3,label:"Manager Room",     zone:"yellow"},
+  {x:660.5,y: 86.8,label:"Meeting Room 3",   zone:"pink"},
+  {x:660.5,y:167.8,label:"Meeting Room 4",   zone:"pink"},
+  {x:640.7,y:357.0,label:"CEO Room",         zone:"pink"},
+  {x:396.8,y:375.9,label:"COO Room",         zone:"purple"},
+  {x:325.9,y:375.9,label:"CTO Room",         zone:"orange"},
+  {x:117.6,y:464.7,label:"CFO Room",         zone:"orange"},
+  {x:117.6,y:576.9,label:"Meeting Room 5",   zone:"orange"},
+  {x:272.3,y:511.2,label:"Customer Service", zone:"orange"},
+  {x:475.1,y:501.8,label:"Office C",         zone:"purple"},
+  {x:582.4,y:501.8,label:"Meeting Room 6",   zone:"purple"},
+  {x:701.3,y:501.8,label:"Office D",         zone:"purple"},
 ];
-
-
-
-
 
 // Custom SVG cursors for simulation trigger mode
 const SIM_CURSORS = {

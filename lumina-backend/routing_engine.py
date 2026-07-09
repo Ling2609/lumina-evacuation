@@ -76,10 +76,22 @@ DOOR_COORDS = {
 }
 
 DOOR_LABELS = {
-    "B1":"Siew Later Restaurant","B2":"BawangTea","B3":"Chill Zone","B4":"Empty Space",
-    "B5":"Thai Relax Massage","B6":"Female Washroom","B7":"Male Washroom","B8":"Ali Barber",
-    "B9":"Mamadini","B10":"Public Recipe","B11":"Meating Room","B12":"Baskin Batman",
-    "B13":"Customer Service","B14":"MS. DIY","B15":"SofaSoGood","B16":"ReadMe Bookstore",
+    "B1":"Office A",
+    "B2":"Meeting Room 1",
+    "B3":"Meeting Room 2",
+    "B4":"Office B",
+    "B5":"Manager Room",
+    "B6":"Meeting Room 3",
+    "B7":"Meeting Room 4",
+    "B8":"CEO Room",
+    "B9":"COO Room",
+    "B10":"CTO Room",
+    "B11":"CFO Room",
+    "B12":"Meeting Room 5",
+    "B13":"Customer Service",
+    "B14":"Office C",
+    "B15":"Meeting Room 6",
+    "B16":"Office D",
 }
 
 # Junction zone names — mirrors data.js's nodeData labels, kept here so the
