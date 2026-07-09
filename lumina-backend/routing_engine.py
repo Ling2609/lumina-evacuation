@@ -40,13 +40,13 @@ def _s(x, y):
     return (round(x*sx, 1), round(y*sy, 1))
 
 JUNCTION_COORDS = {
-    "J1":  _s(195, 539), "J2":  _s(195, 429), "J3":  _s(334, 429),
+    "J1":  _s(264, 539), "J2":  _s(264, 429), "J3":  _s(334, 429),
     "J4":  _s(618, 429),
     "J7":  _s(740, 429), "J8":  _s(945, 429),  "J9":  _s(945, 272),
     "J10": _s(945, 141), "J11": _s(945, 580),  "J12": _s(945, 762),
     "J13": _s(1138,762), "J14": _s(771, 762),  "J15": _s(618, 762),
-    "J17": _s(618, 937),  "J18": _s(334, 937),
-    "J19": _s(334, 830), "J20": _s(334, 754),
+    "J17": _s(618, 937),  "J18": _s(264, 937),
+    "J19": _s(264, 830), "J20": _s(264, 754),
 }
 
 EXIT_COORDS = {
@@ -241,11 +241,11 @@ def _dist(a, b):
 
 FACILITY_GRAPH = {
     # West corridor (vertical)
-    "J1":  {"EXIT-1":_dist("J1","EXIT-1"), "J2":_dist("J1","J2")},
-    "J2":  {"J1":_dist("J2","J1"),         "J3":_dist("J2","J3"),   "B1":_dist("B1","J2")},
+    "J1":  {"EXIT-1":_dist("J1","EXIT-1"), "J2":_dist("J1","J2"), "J20":_dist("J1","J20")},
+    "J2":  {"J1":_dist("J2","J1"), "J3":_dist("J2","J3"), "B1":_dist("B1","J2")},
     # Main horizontal corridor
-    "J3":  {"J2":_dist("J3","J2"),   "J4":_dist("J3","J4"),   "J20":_dist("J3","J20"), "B2":_dist("B2","J3")},
-    "J4":  {"J3":_dist("J4","J3"),   "J7":_dist("J4","J7"),  "B4":_dist("B4","J4"), "B9":_dist("B9","J4"), "B10":_dist("B10","J4")},
+    "J3":  {"J2":_dist("J3","J2"), "J4":_dist("J3","J4"), "B2":_dist("B2","J3")}, 
+    "J4":  {"J3":_dist("J4","J3"), "J7":_dist("J4","J7"), "B4":_dist("B4","J4"), "B9":_dist("B9","J4"), "B10":_dist("B10","J4")},
     # Main horizontal continued
     "J7":  {"J4":_dist("J7","J4"),   "J8":_dist("J7","J8"),  "B5":_dist("B5","J7")},
     "J8":  {"J7":_dist("J8","J7"),   "J9":_dist("J8","J9"),   "J11":_dist("J8","J11")},
@@ -265,7 +265,7 @@ FACILITY_GRAPH = {
     "J17": {"J15":_dist("J17","J15"),"J18":_dist("J17","J18")},
     "J18": {"J17":_dist("J18","J17"),"J19":_dist("J18","J19"), "B12":_dist("B12","J18")},
     "J19": {"J18":_dist("J19","J18"),"J20":_dist("J19","J20"), "B13":_dist("B13","J19")},
-    "J20": {"J19":_dist("J20","J19"),"J3":_dist("J20","J3"),  "B11":_dist("B11","J20")},
+    "J20": {"J19":_dist("J20","J19"),"J1":_dist("J20","J1"),  "B11":_dist("B11","J20")},
     # Exits (destinations only)
     "EXIT-1":{}, "EXIT-2":{}, "EXIT-3":{},
     # Store doors — connect to nearest junction only (orthogonal, no skipping)

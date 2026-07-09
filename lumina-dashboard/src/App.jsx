@@ -96,13 +96,13 @@ const WALL_SEGMENTS = [
 ];
 
 const JUNCTIONS = {
-  J1:{x:120.1,y:331.7}, J2:{x:120.1,y:264.0}, J3:{x:205.7,y:264.0},
+  J1:{x:162.6,y:331.7}, J2:{x:162.6,y:264.0}, J3:{x:205.7,y:264.0},
   J4:{x:380.6,y:264.0},
   J7:{x:455.8,y:264.0}, J8:{x:582.0,y:264.0}, J9:{x:582.0,y:167.4},
   J10:{x:582.0,y:86.8}, J11:{x:582.0,y:357.0}, J12:{x:582.0,y:469.0},
   J13:{x:700.9,y:469.0}, J14:{x:474.8,y:469.0}, J15:{x:380.6,y:469.0},
-  J17:{x:380.6,y:576.7}, J18:{x:205.7,y:576.7},
-  J19:{x:205.7,y:510.8}, J20:{x:205.7,y:464.1},
+  J17:{x:380.6,y:576.7}, J18:{x:162.6,y:576.7},
+  J19:{x:162.6,y:510.8}, J20:{x:162.6,y:464.1},
 };
 const EXIT_POS = {
   "EXIT-1":{x:15.4, y:331.7, label:"Exit 1"},
@@ -136,7 +136,8 @@ const SIM_CURSORS = {
 };// Corridor backbone edges — exact train-map topology, no diagonals, no skipping
 const CORRIDOR_EDGES = [
   ["J1","EXIT-1"],["J1","J2"],["J2","J3"],
-  ["J3","J4"],["J3","J20"],
+  ["J1","J20"],
+  ["J3","J4"],
   ["J4","J7"],
   ["J7","J8"],["J8","J9"],["J8","J11"],
   ["J9","J10"],["J10","EXIT-2"],
@@ -145,7 +146,7 @@ const CORRIDOR_EDGES = [
   ["J15","J17"],
   // NOTE: J16 removed entirely — no physical hardware node; B9/B10 connect to J4
   ["J17","J18"],["J18","J19"],
-  ["J19","J20"],["J20","J3"],
+  ["J19","J20"]
 ];
 
 
@@ -292,7 +293,7 @@ export default function App() {
   const [isHazard,      setIsHazard]      = useState(false);
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
-  const [activeRoute,   setActiveRoute]   = useState(["J19","J20","J3","J2","J1","EXIT-1"]);
+  const [activeRoute, setActiveRoute] = useState(["J19","J20","J1","EXIT-1"]);
   const [perNodeRoutes, setPerNodeRoutes] = useState([]); // per-hazard-node evacuation paths
   // Cancel and trigger are independent async requests — if a cancel and a
   // fresh trigger on the same node happen in quick succession (e.g. cancel
@@ -825,7 +826,7 @@ export default function App() {
     // Then clear all frontend state atomically
     setManualOverride(false);
     setManualBlockedNodes([]);
-    setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
+    setActiveRoute(["J19","J20","J1","EXIT-1"]);
     setIsHazard(false);
     setPasCountdown(178);
     setFftConfirmed(false);
@@ -974,7 +975,7 @@ export default function App() {
         // correct route avoiding the block, matching backend truth.
       } else {
         setIsHazard(false);
-        setActiveRoute(["J19","J20","J3","J2","J1","EXIT-1"]);
+        setActiveRoute(["J19","J20","J1","EXIT-1"]);
       }
     } else if(wasPrimary){
       // Reassign to the next most-recently-triggered remaining hazard,

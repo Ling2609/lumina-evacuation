@@ -6,8 +6,8 @@
 
 export const nodeData = [
   // Junction nodes — where Lumina hardware monitors crowd/hazard
-  { id:"J1",  zone:"West Corridor (Exit 1 approach)", status:"normal", hazard:null, temp:27, crowd:0, x:120.2, y:331.7 },
-  { id:"J2",  zone:"West Corridor Upper",              status:"normal", hazard:null, temp:27, crowd:0, x:120.2, y:264.6 },
+  { id:"J1",  zone:"West Corridor (Exit 1 approach)", status:"normal", hazard:null, temp:27, crowd:0, x:162.6, y:331.7 },
+  { id:"J2",  zone:"West Corridor Upper",              status:"normal", hazard:null, temp:27, crowd:0, x:162.6, y:264.6 },
   { id:"J3",  zone:"Left-Center Junction",             status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:264.6 },
   { id:"J4",  zone:"Central Crossroad",                status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:264.6 },
   { id:"J7",  zone:"Center-Right Junction",            status:"normal", hazard:null, temp:27, crowd:0, x:456.3, y:264.6 },
@@ -20,9 +20,9 @@ export const nodeData = [
   { id:"J14", zone:"Bottom-Right Junction",            status:"normal", hazard:null, temp:27, crowd:0, x:475.1, y:469.1 },
   { id:"J15", zone:"South-Center Junction",            status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:469.1 },
   { id:"J17", zone:"Bottom Corridor Right",            status:"normal", hazard:null, temp:27, crowd:0, x:381.2, y:576.9 },
-  { id:"J18", zone:"South-West Lower Junction",        status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:576.9 },
-  { id:"J19", zone:"South-West Junction",              status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:511.2 },
-  { id:"J20", zone:"Left Lower Junction",              status:"normal", hazard:null, temp:27, crowd:0, x:205.9, y:464.7 },
+  { id:"J18", zone:"South-West Lower Junction",        status:"normal", hazard:null, temp:27, crowd:0, x:162.6, y:576.9 },
+  { id:"J19", zone:"South-West Junction",              status:"normal", hazard:null, temp:27, crowd:0, x:162.6, y:511.2 },
+  { id:"J20", zone:"Left Lower Junction",              status:"normal", hazard:null, temp:27, crowd:0, x:162.6, y:464.7 },
   // Exit nodes
   { id:"EXIT-1", zone:"Exit 1 — West",          status:"normal", hazard:null, temp:27, crowd:0, x: 15.4, y:331.7 },
   { id:"EXIT-2", zone:"EXIT 2 — North East",    status:"normal", hazard:null, temp:27, crowd:0, x:582.4, y: 12.3 },
