@@ -106,8 +106,8 @@ const JUNCTIONS = {
 };
 const EXIT_POS = {
   "EXIT-1":{x:15.4, y:331.7, label:"Exit 1"},
-  "EXIT-3":{x:582.0, y:12.3, label:"Exit 3"},
-  "EXIT-4":{x:751.4, y:469.0, label:"Exit 4"},
+  "EXIT-2":{x:582.0, y:12.3, label:"EXIT 2"},
+  "EXIT-3":{x:751.4, y:469.0, label:"EXIT 3"},
 };
 const STORE_DOTS = [
   {x:120.2,y:219.3,label:"Office A",         zone:"yellow"},
@@ -139,9 +139,9 @@ const CORRIDOR_EDGES = [
   ["J3","J4"],["J3","J20"],
   ["J4","J7"],
   ["J7","J8"],["J8","J9"],["J8","J11"],
-  ["J9","J10"],["J10","EXIT-3"],
+  ["J9","J10"],["J10","EXIT-2"],
   ["J11","J12"],["J12","J13"],["J12","J14"],
-  ["J13","EXIT-4"],["J14","J15"],
+  ["J13","EXIT-3"],["J14","J15"],
   ["J15","J17"],
   // NOTE: J16 removed entirely — no physical hardware node; B9/B10 connect to J4
   ["J17","J18"],["J18","J19"],
@@ -1573,8 +1573,8 @@ export default function App() {
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
                   const isOnRoute=displayRoute.includes(id);
                   const bw=36, bh=14;
-                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
-                  const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
+                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-3"?pos.x+10:pos.x-bw/2;
+                  const by=id==="EXIT-2"?pos.y-bh-8:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}
@@ -2123,7 +2123,7 @@ export default function App() {
                   <div style={{maxHeight:130,overflowY:"auto",paddingRight:2}}>
                   {(quickExitRoutes.length ? quickExitRoutes : [
                     {exit:"EXIT-1",safe:true},
-                    {exit:"EXIT-3",safe:true},{exit:"EXIT-4",safe:true},
+                    {exit:"EXIT-2",safe:true},{exit:"EXIT-3",safe:true},
                   ]).map((rt,rank)=>{
                     const exitId    = rt.exit;
                     const exitLabel = EXIT_POS[exitId]?.label || exitId;
@@ -2330,7 +2330,7 @@ export default function App() {
                     {id:"CAM-03",sublabel:"Public Recipe",   node:"R-publicrec"},
                     {id:"CAM-04",sublabel:"Siew Later",      node:"R-siewlater"},
                     {id:"CAM-05",sublabel:"Baskin Batman",   node:"R-baskin"},
-                    {id:"CAM-06",sublabel:"Exit 4",          node:"EXIT-4"},
+                    {id:"CAM-06",sublabel:"EXIT 3",          node:"EXIT-3"},
                   ].map(cam=>{
                     const n=nodes.find(x=>x.id===cam.node);
                     const sc=statusColor(n?.status??"normal");
@@ -2508,8 +2508,8 @@ export default function App() {
                 {Object.entries(EXIT_POS).map(([id,pos])=>{
                   const isOnRoute=displayRoute.includes(id);
                   const bw=36, bh=14;
-                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-4"?pos.x+10:pos.x-bw/2;
-                  const by=id==="EXIT-3"?pos.y-bh-8:pos.y-bh/2;
+                  const bx=id==="EXIT-1"?pos.x-bw-6:id==="EXIT-3"?pos.x+10:pos.x-bw/2;
+                  const by=id==="EXIT-2"?pos.y-bh-8:pos.y-bh/2;
                   return(<g key={id}>
                     <circle cx={pos.x} cy={pos.y} r={isOnRoute?9:6}
                       fill={isOnRoute?"rgba(16,185,129,0.9)":"rgba(59,130,246,0.85)"}

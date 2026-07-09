@@ -51,8 +51,8 @@ JUNCTION_COORDS = {
 
 EXIT_COORDS = {
     "EXIT-1": _s(25,  539),
-    "EXIT-3": _s(945,  20),
-    "EXIT-4": _s(1220, 762),
+    "EXIT-2": _s(945,  20),
+    "EXIT-3": _s(1220, 762),
 }
 
 # Store door coordinates (display only — NOT routing nodes)
@@ -101,9 +101,9 @@ DOOR_LABELS = {
 JUNCTION_LABELS = {
     "J1":"West Corridor (Exit 1 approach)","J2":"West Corridor Upper","J3":"Left-Center Junction",
     "J4":"Central Crossroad",
-    "J7":"Center-Right Junction","J8":"East Corridor Upper","J9":"East Corridor (Exit 3 branch)",
-    "J10":"Exit 3 Junction","J11":"East Corridor Lower","J12":"East-South Junction",
-    "J13":"Exit 4 Junction","J14":"Bottom-Right Junction","J15":"South-Center Junction",
+    "J7":"Center-Right Junction","J8":"East Corridor Upper","J9":"East Corridor (EXIT 2 branch)",
+    "J10":"EXIT 2 Junction","J11":"East Corridor Lower","J12":"East-South Junction",
+    "J13":"EXIT 3 Junction","J14":"Bottom-Right Junction","J15":"South-Center Junction",
     "J17":"Bottom Corridor Right","J18":"South-West Lower Junction",
     "J19":"South-West Junction","J20":"Left Lower Junction",
 }
@@ -249,13 +249,13 @@ FACILITY_GRAPH = {
     # Main horizontal continued
     "J7":  {"J4":_dist("J7","J4"),   "J8":_dist("J7","J8"),  "B5":_dist("B5","J7")},
     "J8":  {"J7":_dist("J8","J7"),   "J9":_dist("J8","J9"),   "J11":_dist("J8","J11")},
-    # Right vertical (J9→J10→EXIT-3)
+    # Right vertical (J9→J10→EXIT-2)
     "J9":  {"J8":_dist("J9","J8"),   "J10":_dist("J9","J10"), "B7":_dist("B7","J9")},
-    "J10": {"J9":_dist("J10","J9"),  "EXIT-3":_dist("J10","EXIT-3"), "B6":_dist("B6","J10")},
+    "J10": {"J9":_dist("J10","J9"),  "EXIT-2":_dist("J10","EXIT-2"), "B6":_dist("B6","J10")},
     # Right vertical continued (J11→J12)
     "J11": {"J8":_dist("J11","J8"),  "J12":_dist("J11","J12"), "B8":_dist("B8","J11")},
     "J12": {"J11":_dist("J12","J11"),"J13":_dist("J12","J13"),"J14":_dist("J12","J14"), "B15":_dist("B15","J12")},
-    "J13": {"J12":_dist("J13","J12"),"EXIT-4":_dist("J13","EXIT-4"), "B16":_dist("B16","J13")},
+    "J13": {"J12":_dist("J13","J12"),"EXIT-3":_dist("J13","EXIT-3"), "B16":_dist("B16","J13")},
     # Bottom horizontal
     "J14": {"J12":_dist("J14","J12"),"J15":_dist("J14","J15"), "B14":_dist("B14","J14")},
     # NOTE: J16 removed entirely — no physical hardware node there. B9 (Mamadini)
@@ -267,7 +267,7 @@ FACILITY_GRAPH = {
     "J19": {"J18":_dist("J19","J18"),"J20":_dist("J19","J20"), "B13":_dist("B13","J19")},
     "J20": {"J19":_dist("J20","J19"),"J3":_dist("J20","J3"),  "B11":_dist("B11","J20")},
     # Exits (destinations only)
-    "EXIT-1":{}, "EXIT-3":{}, "EXIT-4":{},
+    "EXIT-1":{}, "EXIT-2":{}, "EXIT-3":{},
     # Store doors — connect to nearest junction only (orthogonal, no skipping)
     # B3 (Chill Zone) merged into B4 (Empty Space) as one physical unit — same door/junction
     "B1":{"J2":_dist("B1_stub","J2")},   "B2":{"J3":_dist("B2_stub","J3")},
@@ -280,15 +280,15 @@ FACILITY_GRAPH = {
     "B15":{"J12":_dist("B15_stub","J12")},"B16":{"J13":_dist("B16_stub","J13")},
 }
 
-EXITS = ["EXIT-1","EXIT-3","EXIT-4"]
+EXITS = ["EXIT-1","EXIT-2","EXIT-3"]
 
 # Static junction -> physical corridor mapping, by nearest-exit straight-line
 # distance (NOT live route, which is crowd-dependent and would make the
 # ESP32's home-corridor assignment flicker as routes change).
 # Maps to the 5 physical LED corridors on the ESP32 strip (C-001..C-005).
 EXIT_TO_CORRIDOR = {
-    "EXIT-1": "C-001", "EXIT-3": "C-003",
-    "EXIT-4": "C-004",
+    "EXIT-1": "C-001", "EXIT-2": "C-003",
+    "EXIT-3": "C-004",
 }
 J_TO_CORRIDOR = {
     "J1":"C-001","J2":"C-001","J3":"C-001","J18":"C-001","J19":"C-001","J20":"C-001",
@@ -304,8 +304,8 @@ J_TO_CORRIDOR = {
 # the chase must reverse (dir=-1) so the LEDs don't point the wrong way.
 J_CORRIDOR_RANK = {
     "J1":1, "J2":2, "J3":3, "J20":4, "J19":5, "J18":6,   # C-001, EXIT-1 side = J1
-    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5,             # C-003, EXIT-3 side = J10
-    "J13":1, "J12":2, "J11":3, "J14":4, "J15":5, "J17":6,# C-004, EXIT-4 side = J13
+    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5,             # C-003, EXIT-2 side = J10
+    "J13":1, "J12":2, "J11":3, "J14":4, "J15":5, "J17":6,# C-004, EXIT-3 side = J13
 }
 
 # Fruin LOS D capacity per corridor segment (pax)
