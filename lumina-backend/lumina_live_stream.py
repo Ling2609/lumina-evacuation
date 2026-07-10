@@ -708,6 +708,11 @@ def _process_ai_cycle(cap, state):
     if not success:
         time.sleep(0.1)
         return
+    
+    # If the mean pixel value is extremely low, the camera is likely black/disconnected
+    if np.mean(frame) < 5: 
+        print("[AI] Warning: Black frame detected, skipping AI cycle to prevent false hazard")
+        return
 
     t_now = time.time()
     fps   = 1.0 / max(t_now - state["prev_time"], 1e-6)
