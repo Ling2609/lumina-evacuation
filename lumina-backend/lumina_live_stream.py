@@ -86,9 +86,9 @@ def _build_corridor_states():
     states = {c: {"state": "normal", "dir": 1}
               for c in ["C-001", "C-002", "C-003", "C-004", "C-005"]}
 
-    # 2. Simulation Gate: If in simulation, return the 'normal' states immediately.
-    if system_mode == "simulation":
-        return states
+    # # 2. Simulation Gate: If in simulation, return the 'normal' states immediately.
+    # if system_mode == "simulation":
+    #     return states
 
     # 3. Hazard / quarantine takes priority 
     # Use 'states' defined above!
@@ -503,33 +503,35 @@ def _heartbeat_thread():
             _mode      = system_mode
             _state     = system_state
             _manual    = manual_override
+            _bomba     = bomba_override_active
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 
-        # ONLY send operational data if mode is "live"
-        if _mode == "live":
-            if _state == "NORMAL":
-                _stealth = not _manual
-                mqtt_client.publish(TOPIC, json.dumps({
-                    "status":          "NORMAL",
-                    "system_state":    "NORMAL",
-                    "manual_override": _manual,
-                    "stealth_mode":    _stealth,
-                    "person_count":    _total_pax,
-                    "green_led":       _manual, 
-                    "red_led":         False,
-                    "buzzer_active":   False,
-                    "green_direction": "FOLLOW_ROUTE" if _manual else "NONE",
-                    "corridors":       _corridors,
-                }), retain=True)
-            print(">>> Heartbeat published to MQTT [LIVE MODE]")
+        # ALLOW hardware updates ONLY if in Live Mode OR if Bomba manually overrides
+        if _mode == "live" or _bomba:
+            mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
+            _stealth = not _manual and _state == "NORMAL"
+            
+            payload = json.dumps({
+                "status":          mqtt_status,
+                "system_state":    _state,
+                "manual_override": _manual,
+                "stealth_mode":    _stealth,
+                "person_count":    _total_pax,
+                "corridors":       _corridors,
+            })
+            print(f"[DEBUG] Sending to ESP32: {payload}", flush=True)
+            mqtt_client.publish(TOPIC, payload, retain=True)
+            print(f">>> Heartbeat published to MQTT [LIVE MODE - {mqtt_status}]", flush=True)
         else:
-            # SIMULATION MODE: Send a "silent" signal so ESP32 keeps hardware dark
+            
+            # SIMULATION MODE: Send isolation signal so ESP32 stays dark and silent
             mqtt_client.publish(TOPIC, json.dumps({
                 "status": "SIMULATION_ACTIVE", 
                 "system_state": "NORMAL"
             }), retain=True)
-            print(">>> Heartbeat published to MQTT [SIMULATION MODE - Hardware Safe]")
+            # ADDED flush=True to bypass terminal buffering
+            print(">>> Heartbeat published to MQTT [SIMULATION MODE - Hardware Isolated]", flush=True)
             
         time.sleep(1.0)
 

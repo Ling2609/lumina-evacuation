@@ -178,6 +178,8 @@ void renderCorridors() {
   for (int c = 0; c < 5; c++) {
     String state = corridorState[c];
 
+    Serial.print("Corridor C-00" + String(c+1) + " state: " + state + " | ");
+
     if (state == "hazard") {
       // RED solid — fire or confirmed blocked
       segSolid(c, COL_RED);
@@ -203,7 +205,7 @@ void renderCorridors() {
       segSolid(c, COL_OFF);
     }
   }
-
+  Serial.println();
   strip.show();
 }
 
