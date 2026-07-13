@@ -1,526 +1,427 @@
-// =============================================================================
-// LUMINA SMART EVACUATION SYSTEM
-// esp32_lumina_node.ino — LED Strip Controller
-//
-// Hardware:
-//   ESP32 Dev Board
-//   WS2812B LED strip (30 LEDs total, single data pin GPIO 5)
-//   Active Buzzer (GPIO 18)
-//   Relay Module (GPIO 19)
-//
-// LED Strip Layout (30 LEDs across 5 corridors, 6 LEDs each):
-//   LEDs  0– 5  →  C-001  Top Corridor
-//   LEDs  6–11  →  C-002  Left Corridor
-//   LEDs 12–17  →  C-003  Right Corridor
-//   LEDs 18–23  →  C-004  Center Corridor
-//   LEDs 24–29  →  C-005  Bottom Corridor
-//
-// Each corridor segment shows:
-//   GREEN chase animation = safe, proceed this way
-//   RED solid             = hazard / blocked
-//   RED blinking          = pull policy STOP LINE — hold, do not enter
-//   AMBER pulse           = warning / congestion building
-//   OFF                   = not on active route (normal operation)
-//
-// Communication:
-//   MQTT over Wi-Fi — subscribes to lumina/vitrox/demo/7a9b2f/alerts
-//   Flask sends corridor states via MQTT every 2s
-//
-// =============================================================================
+// ============================================================
+//  esp32_lumina_node.ino  —  Lumina Smart Evacuation Node
+//  Two WS2812B strips (LEFT + RIGHT), FastLED driver
+//  Receives corridor states from Python via HiveMQ MQTT
+//  Sends thermal + obstruction sensor events back to Python
+// ============================================================
 
-#include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <Adafruit_NeoPixel.h>
-#include <Adafruit_MLX90614.h>   // Install: Adafruit MLX90614 Library via Library Manager
+#include <FastLED.h>
 
-Adafruit_MLX90614 mlx = Adafruit_MLX90614();  // I2C: SDA=GPIO21, SCL=GPIO22 (ESP32 default)
+// ── WiFi & MQTT ───────────────────────────────────────────────
+#define WIFI_SSID     "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define MQTT_BROKER   "broker.hivemq.com"
+#define MQTT_PORT     1883
+#define MQTT_TOPIC    "lumina/vitrox/demo/7a9b2f/alerts"   // Python → ESP32
+#define SENSOR_TOPIC  "lumina/vitrox/demo/7a9b2f/sensors"  // ESP32 → Python
+#define CLIENT_ID     "lumina-node-01"
 
-// ── Pin definitions ───────────────────────────────────────────────────────────
-#define LED_PIN       5     // WS2812B data pin
-#define LED_COUNT     30    // total LEDs on strip
-#define BUZZER_PIN    18    // active buzzer
-#define RELAY_PIN     19    // relay module
-#define TRIG_PIN      12    // HC-SR04 ultrasonic trigger
-#define ECHO_PIN      13    // HC-SR04 ultrasonic echo
+// ── Pin Definitions ───────────────────────────────────────────
+#define LEFT_PIN         5
+#define RIGHT_PIN        4
+#define NUM_LEFT_LEDS   43
+#define NUM_RIGHT_LEDS  35
+#define BRIGHTNESS       50
+#define LED_TYPE        WS2812B
+#define COLOR_ORDER     GRB
+#define TRIG_PIN        12    // HC-SR04 trigger
+#define ECHO_PIN        13    // HC-SR04 echo
 
-// ── LED segment definitions (corridor → LED index range) ─────────────────────
-#define SEG_C001_START  0
-#define SEG_C001_END    5
-#define SEG_C002_START  6
-#define SEG_C002_END    11
-#define SEG_C003_START  12
-#define SEG_C003_END    17
-#define SEG_C004_START  18
-#define SEG_C004_END    23
-#define SEG_C005_START  24
-#define SEG_C005_END    29
-#define LEDS_PER_SEG    6
+// ── Sensor thresholds ─────────────────────────────────────────
+#define THERMAL_ALERT_TEMP     45.0   // °C — triggers THERMAL_ANOMALY
+#define THERMAL_CLEAR_TEMP     40.0   // °C — clears alert (hysteresis)
+#define OBSTRUCTION_THRESHOLD_CM 15   // cm — corridor considered blocked
 
-// ── Wi-Fi & MQTT ─────────────────────────────────────────────────────────────
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";      // change before demo
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";   // change before demo
-const char* MQTT_BROKER   = "broker.hivemq.com";
-const int   MQTT_PORT     = 1883;
-const char* MQTT_TOPIC    = "lumina/vitrox/demo/7a9b2f/alerts";
-const char* MQTT_TOPIC_ROUTE = "lumina/vitrox/demo/7a9b2f/route";
+// ── LED Arrays ────────────────────────────────────────────────
+CRGB leftLeds[NUM_LEFT_LEDS];
+CRGB rightLeds[NUM_RIGHT_LEDS];
 
-// ── System state ─────────────────────────────────────────────────────────────
-bool systemHazard   = false;
-bool fftConfirmed   = false;
-bool buzzerActive   = false;
-unsigned long lastMqttMsg = 0;              
-const unsigned long WATCHDOG_TIMEOUT = 5000;
+// ── Channel identifiers ───────────────────────────────────────
+#define CH_LEFT  0
+#define CH_RIGHT 1
 
-// Per-corridor state — updated by MQTT messages from Flask
-// States: "normal" | "route" | "hazard" | "warning" | "pull_stop"
-String corridorState[5] = {"normal", "normal", "normal", "normal", "normal"};
-// Per-corridor chase direction: 1 = toward higher LED index (default),
-// -1 = reversed. Set from the "dir" field inside each corridor's MQTT
-// payload so the green chase always points evacuees toward the exit,
-// never back into a blocked/hazard segment.
-int corridorDir[5] = {1, 1, 1, 1, 1};
-// Index mapping: 0=C-001, 1=C-002, 2=C-003, 3=C-004, 4=C-005
+// ── Segment structure ─────────────────────────────────────────
+struct PathSegment {
+  const char* name;
+  int   channel;     // CH_LEFT or CH_RIGHT
+  int   startIndex;
+  int   endIndex;
+};
 
-// Active route — which corridors are on the DYN-A* path
-bool onRoute[5] = {false, false, false, false, false};
+// ── Physical segment map ──────────────────────────────────────
+//  Derived from diorama wiring. Corridor assignments:
+//    C-001 : J1, J2, J3, J18, J19, J20  →  EXIT-1
+//    C-003 : J4, J7, J8, J9, J10        →  EXIT-2
+//    C-004 : J11, J12, J13, J14, J15, J17 → EXIT-3
+//
+//  Special rules (confirmed with hardware team):
+//  • L_J2_J8       = one piece, follows C-003 (J8 end dominates)
+//  • L_J8_EXIT2NJ12= T-junction, lights up if C-003 OR C-004 is on route
+//  • L_EXIT1_J1 & R_EXIT1_J1 always show same colour (same physical path)
+//  • R_J18_J17     = boundary segment, follows C-004
 
-// Chase animation tick
+#define NUM_SEGMENTS 9
+PathSegment mapSegments[NUM_SEGMENTS] = {
+  // ── Left strip (LEFT_PIN, 43 LEDs) ──────────────────────────
+  {"L_EXIT1_J1",      CH_LEFT,  0,  5},   // C-001 → EXIT-1 approach
+  {"L_J1_J2",         CH_LEFT,  6,  8},   // C-001
+  {"L_J2_J8",         CH_LEFT,  9, 23},   // C-003 (one piece, J8 end)
+  {"L_J8_EXIT2NJ12",  CH_LEFT, 24, 33},   // T-junction: C-003 OR C-004
+
+  // ── Right strip (RIGHT_PIN, 35 LEDs) ─────────────────────────
+  {"R_EXIT1_J1",      CH_RIGHT, 0,  5},   // C-001 → EXIT-1 (mirrors left)
+  {"R_J1_J18",        CH_RIGHT, 6, 10},   // C-001
+  {"R_J18_J17",       CH_RIGHT,11, 14},   // C-004 (boundary segment)
+  {"R_J17_J15",       CH_RIGHT,15, 18},   // C-004
+  {"R_J15_EXIT3",     CH_RIGHT,19, 34},   // C-004 → EXIT-3
+};
+
+// ── Corridor state (updated by MQTT) ─────────────────────────
+// Index: 0=C-001, 1=C-002, 2=C-003, 3=C-004, 4=C-005
+// States: "normal" | "route" | "hazard" | "pull_stop" | "warning"
+const char* corridorKeys[5] = {"C-001","C-002","C-003","C-004","C-005"};
+String corridorState[5]  = {"normal","normal","normal","normal","normal"};
+int    corridorDir[5]    = {1, 1, 1, 1, 1};  // 1=forward, -1=reverse
+
+// ── System state ──────────────────────────────────────────────
+String systemState   = "NORMAL";
+bool   systemHazard  = false;
+bool   buzzOn        = false;
+bool   fftConfirmed  = false;
+
+// ── Sensor state ──────────────────────────────────────────────
+bool thermalAlert    = false;
+bool obstructionAlert = false;
+unsigned long lastMqttMessage = 0;  // heartbeat watchdog
+
+// ── Timing ────────────────────────────────────────────────────
+unsigned long lastSensorCheck = 0;
+unsigned long lastLedUpdate   = 0;
 int chaseTick = 0;
-unsigned long lastAnimMs = 0;
-unsigned long lastBuzzToggle = 0;
-unsigned long lastMqttRetry = 0;  // throttles reconnectMqtt() so a dropped
-                                   // connection can't block the loop with
-                                   // back-to-back TCP connect() attempts
-unsigned long lastPingMs    = 0;  // HC-SR04 ping interval (500ms)
-bool          corridorBlocked = false; // tracks state change to avoid MQTT spam
 
-// Separate topic for sensor→Python messages (ESP32 publishes, Python subscribes)
-// Kept distinct from the alerts topic (Python→ESP32) to avoid feedback loops.
-const char* MQTT_SENSOR_TOPIC = "lumina/vitrox/demo/7a9b2f/sensors";
-bool buzzOn = false;
-
-// ── Objects ───────────────────────────────────────────────────────────────────
-Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+// ── WiFi + MQTT clients ───────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// ── Colour helpers ────────────────────────────────────────────────────────────
-#define COL_OFF       strip.Color(  0,   0,   0)
-#define COL_GREEN     strip.Color(  0, 180,   0)
-#define COL_GREEN_DIM strip.Color(  0,  40,   0)
-#define COL_RED       strip.Color(180,   0,   0)
-#define COL_RED_DIM   strip.Color( 60,   0,   0)
-#define COL_AMBER     strip.Color(180,  80,   0)
-#define COL_WHITE_DIM strip.Color( 30,  30,  30)
-#define COL_BLUE_DIM  strip.Color(  0,   0,  60)
-
-// =============================================================================
-// LED SEGMENT HELPERS
-// =============================================================================
-
-// Get the start LED index for a corridor (0-4)
-int segStart(int corridor) {
-  return corridor * LEDS_PER_SEG;
+// ============================================================
+//  HELPERS — set pixels on the correct strip
+// ============================================================
+void setPixel(int channel, int index, CRGB colour) {
+  if (channel == CH_LEFT  && index < NUM_LEFT_LEDS)  leftLeds[index]  = colour;
+  if (channel == CH_RIGHT && index < NUM_RIGHT_LEDS) rightLeds[index] = colour;
 }
 
-// Set all LEDs in a corridor to a solid colour
-void segSolid(int corridor, uint32_t colour) {
-  int s = segStart(corridor);
-  for (int i = s; i < s + LEDS_PER_SEG; i++) {
-    strip.setPixelColor(i, colour);
+void fillSegment(int segIdx, CRGB colour) {
+  PathSegment& seg = mapSegments[segIdx];
+  for (int i = seg.startIndex; i <= seg.endIndex; i++) {
+    setPixel(seg.channel, i, colour);
   }
 }
 
-// Chase animation — one bright LED chasing along the corridor.
-// dir=1 chases toward higher LED index (default), dir=-1 reverses the
-// chase so evacuees are pointed AWAY from a hazard even if that means
-// walking back the way they came (DYN-A* may route through a corridor
-// in either physical direction depending on where the hazard origin is).
-void segChase(int corridor, uint32_t headColor, uint32_t tailColor, int tick, int dir) {
-  int s       = segStart(corridor);
-  int rawPos  = tick % LEDS_PER_SEG;
-  int pos     = (dir >= 0) ? rawPos : (LEDS_PER_SEG - 1) - rawPos;
-  int tailPos = (dir >= 0) ? (pos - 1 + LEDS_PER_SEG) % LEDS_PER_SEG
-                           : (pos + 1) % LEDS_PER_SEG;
-  for (int i = 0; i < LEDS_PER_SEG; i++) {
-    int idx = s + i;
-    if (i == pos) {
-      strip.setPixelColor(idx, headColor);
-    } else if (i == tailPos) {
-      strip.setPixelColor(idx, tailColor);
-    } else {
-      strip.setPixelColor(idx, COL_OFF);
-    }
+// Chase animation along a segment in the given direction
+void chaseSegment(int segIdx, CRGB head, CRGB tail, int tick, int dir) {
+  PathSegment& seg = mapSegments[segIdx];
+  int len   = seg.endIndex - seg.startIndex + 1;
+  int pos   = tick % len;
+  for (int i = 0; i < len; i++) {
+    int idx = seg.startIndex + i;
+    int distFromHead = (dir == 1)
+      ? (i - pos + len) % len
+      : (pos - i + len) % len;
+    CRGB col = (distFromHead == 0) ? head
+             : (distFromHead <= 2) ? tail
+             : CRGB::Black;
+    setPixel(seg.channel, idx, col);
   }
 }
 
-// Blinking (for pull stop line)
-void segBlink(int corridor, uint32_t colour, bool on) {
-  segSolid(corridor, on ? colour : COL_OFF);
+// ============================================================
+//  MAP segment index → which corridor controls it
+//  Returns the "effective" state for that segment
+// ============================================================
+String getSegmentState(int segIdx) {
+  const char* name = mapSegments[segIdx].name;
+
+  // T-junction — lights if EITHER C-003 or C-004 is on route/hazard
+  if (strcmp(name, "L_J8_EXIT2NJ12") == 0) {
+    String s3 = corridorState[2];  // C-003
+    String s4 = corridorState[3];  // C-004
+    // Priority: hazard > route > pull_stop > warning > normal
+    if (s3 == "hazard"    || s4 == "hazard")    return "hazard";
+    if (s3 == "route"     || s4 == "route")     return "route";
+    if (s3 == "pull_stop" || s4 == "pull_stop") return "pull_stop";
+    if (s3 == "warning"   || s4 == "warning")   return "warning";
+    return "normal";
+  }
+
+  // All other segments map to one corridor
+  // C-001 segments
+  if (strcmp(name,"L_EXIT1_J1")==0 || strcmp(name,"R_EXIT1_J1")==0 ||
+      strcmp(name,"L_J1_J2")==0    || strcmp(name,"R_J1_J18")==0)
+    return corridorState[0];  // C-001
+
+  // C-003 segment (L_J2_J8 follows J8 end = C-003)
+  if (strcmp(name,"L_J2_J8")==0)
+    return corridorState[2];  // C-003
+
+  // C-004 segments
+  if (strcmp(name,"R_J18_J17")==0 || strcmp(name,"R_J17_J15")==0 ||
+      strcmp(name,"R_J15_EXIT3")==0)
+    return corridorState[3];  // C-004
+
+  return "normal";  // fallback
 }
 
-// Pulse (for warning/amber)
-void segPulse(int corridor, int tick) {
-  int brightness = (sin(tick * 0.3) + 1.0) * 40;  // 0-80
-  uint32_t col = strip.Color(brightness * 2, brightness, 0);  // amber
-  segSolid(corridor, col);
+// Get chase direction for a segment
+int getSegmentDir(int segIdx) {
+  const char* name = mapSegments[segIdx].name;
+  if (strcmp(name,"L_J8_EXIT2NJ12")==0) {
+    // T-junction: use whichever corridor is active
+    if (corridorState[2]=="route") return corridorDir[2];
+    if (corridorState[3]=="route") return corridorDir[3];
+    return 1;
+  }
+  if (strcmp(name,"L_EXIT1_J1")==0 || strcmp(name,"R_EXIT1_J1")==0 ||
+      strcmp(name,"L_J1_J2")==0    || strcmp(name,"R_J1_J18")==0)
+    return corridorDir[0];
+  if (strcmp(name,"L_J2_J8")==0)
+    return corridorDir[2];
+  if (strcmp(name,"R_J18_J17")==0 || strcmp(name,"R_J17_J15")==0 ||
+      strcmp(name,"R_J15_EXIT3")==0)
+    return corridorDir[3];
+  return 1;
 }
 
-// =============================================================================
-// RENDER ALL CORRIDORS
-// Called every ~80ms
-// =============================================================================
-void renderCorridors() {
-  bool blinkOn = (millis() / 500) % 2 == 0;
+// ============================================================
+//  UPDATE ALL LEDS based on current corridor states
+// ============================================================
+void updateLEDs() {
+  // Heartbeat watchdog — if Python goes silent for 8s, go white
+  bool pythonAlive = (millis() - lastMqttMessage < 8000);
 
-  for (int c = 0; c < 5; c++) {
-    String state = corridorState[c];
-
-    Serial.print("Corridor C-00" + String(c+1) + " state: " + state + " | ");
+  for (int s = 0; s < NUM_SEGMENTS; s++) {
+    String state = pythonAlive ? getSegmentState(s) : "normal";
+    int    dir   = getSegmentDir(s);
 
     if (state == "hazard") {
-      // RED solid — fire or confirmed blocked
-      segSolid(c, COL_RED);
-
-    } else if (state == "pull_stop") {
-      // RED blinking — pull policy STOP LINE
-      segBlink(c, COL_RED, blinkOn);
-
-    } else if (state == "warning") {
-      // AMBER pulse — congestion building
-      segPulse(c, chaseTick);
+      // RED solid blink
+      bool on = (millis() / 400) % 2;
+      fillSegment(s, on ? CRGB(180,0,0) : CRGB::Black);
 
     } else if (state == "route") {
-      // GREEN chase — on active DYN-A* route, safe to proceed.
-      // Direction comes from Python's _build_corridor_states(), which
-      // checks where this corridor's nodes sit in the route sequence.
-      segChase(c, COL_GREEN, COL_GREEN_DIM, chaseTick, corridorDir[c]);
+      // GREEN chase animation toward exit
+      chaseSegment(s, CRGB(0,200,0), CRGB(0,50,0), chaseTick, dir);
+
+    } else if (state == "pull_stop") {
+      // AMBER pulse — stop and wait
+      int brightness = (sin(millis() * 0.003) + 1) * 80;
+      fillSegment(s, CRGB(brightness, brightness/2, 0));
+
+    } else if (state == "warning") {
+      // AMBER slow blink
+      bool on = (millis() / 800) % 2;
+      fillSegment(s, on ? CRGB(180,80,0) : CRGB::Black);
 
     } else {
-      // "normal" — not on route. Tier 1 stealth: stay completely OFF
-      // during everyday operation so the guidance system is invisible
-      // and shoppers don't learn to tune out the ceiling lights.
-      segSolid(c, COL_OFF);
+      // NORMAL — dim white standby
+      fillSegment(s, pythonAlive ? CRGB(20,20,20) : CRGB(5,5,5));
     }
   }
-  Serial.println();
-  strip.show();
+
+  FastLED.show();
+  chaseTick++;
 }
 
-// =============================================================================
-// BUZZER CONTROL
-// =============================================================================
-void updateBuzzer() {
-  if (!systemHazard) {
-    digitalWrite(BUZZER_PIN, LOW);
-    buzzOn = false;
+// ============================================================
+//  MQTT CALLBACK — receives corridor state from Python
+// ============================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Reset heartbeat watchdog
+  lastMqttMessage = millis();
+
+  char msg[1200];
+  if (length >= sizeof(msg)) {
+    Serial.println("[MQTT] Message too large, skipped");
     return;
   }
-
-  if (fftConfirmed) {
-    // Continuous 520Hz-like alarm (buzzer is active so just toggle fast)
-    if (millis() - lastBuzzToggle > 480) {  // ~1Hz blink after FACP confirmed
-      buzzOn = !buzzOn;
-      digitalWrite(BUZZER_PIN, buzzOn ? HIGH : LOW);
-      lastBuzzToggle = millis();
-    }
-  } else {
-    // Pre-FACP: 3 short beeps warning
-    if (millis() - lastBuzzToggle > 800) {
-      buzzOn = !buzzOn;
-      digitalWrite(BUZZER_PIN, buzzOn ? HIGH : LOW);
-      lastBuzzToggle = millis();
-    }
-  }
-}
-
-// =============================================================================
-// MQTT CALLBACK
-// Receives JSON from Flask backend:
-//   Topic: lumina/vitrox/demo/7a9b2f/alerts
-//   Payload: {"system_state": "HAZARD", "facp_confirmed": false,
-//             "corridors": {"C-001":"hazard","C-002":"route","C-003":"normal",
-//                           "C-004":"route","C-005":"normal"}}
-// =============================================================================
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  lastMqttMsg = millis();
-  String msg = "";
-  for (unsigned int i = 0; i < length; i++) {
-    msg += (char)payload[i];
-  }
+  memcpy(msg, payload, length);
+  msg[length] = '\0';
 
   StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, msg);
   if (err) {
-    Serial.println("[MQTT] JSON parse error: " + String(err.c_str()));
+    Serial.print("[MQTT] JSON parse error: ");
+    Serial.println(err.c_str());
     return;
   }
 
-  // --- NEW: SIMULATION GATE ---
-  // This reads the status sent by the Python script.
-  // If Python sends "SIMULATION_ACTIVE", hardware stays DARK and SILENT.
-  String status = doc["status"] | "NORMAL";
-  
-  if (status == "SIMULATION_ACTIVE") {
-    strip.clear();
-    strip.show();
-    digitalWrite(BUZZER_PIN, LOW);
-    systemHazard = false; // Force hazard flag off
-    return; // Stop here, do not process hazard logic
-  }
-  // ----------------------------
+  systemState  = doc["system_state"] | "NORMAL";
+  systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
+  fftConfirmed = doc["facp_confirmed"] | false;
 
-  systemHazard  = (status == "CRITICAL");
-  fftConfirmed  = doc["facp_confirmed"] | false;
-
-  // Process corridor states
-  const char* corridorKeys[] = {"C-001", "C-002", "C-003", "C-004", "C-005"};
-  if (doc.containsKey("corridors")) {
-    for (int c = 0; c < 5; c++) {
-      if (!doc["corridors"].containsKey(corridorKeys[c])) continue;
-      JsonVariant cv = doc["corridors"][corridorKeys[c]];
-      if (cv.is<JsonObject>()) {
-        corridorState[c] = cv["state"] | "normal";
-        corridorDir[c]   = cv["dir"]   | 1;
-      } else {
-        corridorState[c] = cv.as<String>();
-        corridorDir[c]   = 1;
-      }
+  // Parse corridor states
+  JsonObject corr = doc["corridors"];
+  for (int c = 0; c < 5; c++) {
+    if (!corr.containsKey(corridorKeys[c])) continue;
+    JsonVariant cv = corr[corridorKeys[c]];
+    if (cv.is<JsonObject>()) {
+      corridorState[c] = cv["state"] | "normal";
+      corridorDir[c]   = cv["dir"]   | 1;
+    } else {
+      corridorState[c] = cv.as<String>();
+      corridorDir[c]   = 1;
     }
   }
 
-  Serial.print("[MQTT] State: " + status + " | Corridors: ");
+  // Debug print
+  Serial.print("[MQTT] State: " + systemState + " | ");
   for (int c = 0; c < 5; c++) {
     Serial.print(String(corridorKeys[c]) + "=" + corridorState[c] + " ");
   }
   Serial.println();
 }
 
-// =============================================================================
-// Wi-Fi CONNECT
-// =============================================================================
+// ============================================================
+//  SENSORS
+// ============================================================
+void checkThermal() {
+  // Simulate MLX90614 — replace with real Wire/I2C read if connected
+  // float objTemp = mlx.readObjectTempC();
+  float objTemp = 25.0;  // placeholder — replace with actual sensor read
+
+  if (!thermalAlert && objTemp > THERMAL_ALERT_TEMP) {
+    thermalAlert = true;
+    StaticJsonDocument<128> doc;
+    doc["sensor"]  = "MLX90614";
+    doc["status"]  = "THERMAL_ANOMALY";
+    doc["node"]    = "J7";
+    doc["temp_c"]  = objTemp;
+    char buf[128]; serializeJson(doc, buf);
+    mqttClient.publish(SENSOR_TOPIC, buf);
+    Serial.println("[MLX90614] THERMAL_ANOMALY published");
+  } else if (thermalAlert && objTemp < THERMAL_CLEAR_TEMP) {
+    thermalAlert = false;
+    StaticJsonDocument<128> doc;
+    doc["sensor"] = "MLX90614";
+    doc["status"] = "CLEAR";
+    doc["node"]   = "J7";
+    doc["temp_c"] = objTemp;
+    char buf[128]; serializeJson(doc, buf);
+    mqttClient.publish(SENSOR_TOPIC, buf);
+    Serial.println("[MLX90614] CLEAR published");
+  }
+}
+
+void checkObstruction() {
+  // HC-SR04 distance measurement
+  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration  = pulseIn(ECHO_PIN, HIGH, 30000);
+  int  distanceCm = (int)(duration * 0.034f / 2);
+
+  bool blocked = (distanceCm > 0 && distanceCm < OBSTRUCTION_THRESHOLD_CM);
+
+  if (blocked && !obstructionAlert) {
+    obstructionAlert = true;
+    StaticJsonDocument<128> doc;
+    doc["sensor"]      = "HC-SR04";
+    doc["status"]      = "BLOCKED";
+    doc["node"]        = "C-003";
+    doc["distance_cm"] = distanceCm;
+    char buf[128]; serializeJson(doc, buf);
+    mqttClient.publish(SENSOR_TOPIC, buf);
+    Serial.println("[HC-SR04] BLOCKED published");
+  } else if (!blocked && obstructionAlert) {
+    obstructionAlert = false;
+    StaticJsonDocument<128> doc;
+    doc["sensor"]      = "HC-SR04";
+    doc["status"]      = "CLEAR";
+    doc["node"]        = "C-003";
+    doc["distance_cm"] = distanceCm;
+    char buf[128]; serializeJson(doc, buf);
+    mqttClient.publish(SENSOR_TOPIC, buf);
+    Serial.println("[HC-SR04] CLEAR published");
+  }
+}
+
+// ============================================================
+//  WIFI + MQTT CONNECTION
+// ============================================================
 void connectWifi() {
   Serial.print("[WiFi] Connecting to " + String(WIFI_SSID));
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(" Connected! IP: " + WiFi.localIP().toString());
-  } else {
-    Serial.println(" FAILED — running in offline mode");
-  }
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\n[WiFi] Connected: " + WiFi.localIP().toString());
 }
 
-// =============================================================================
-// MQTT RECONNECT
-// =============================================================================
 void reconnectMqtt() {
-  if (mqttClient.connected()) return;
-  randomSeed(analogRead(34));  // prevent duplicate client IDs on Wokwi restart
-  String clientId = "LuminaESP32_" + String(random(0xffff), HEX);
-  Serial.print("[MQTT] Connecting as " + clientId + "...");
-  if (mqttClient.connect(clientId.c_str())) {
-    Serial.println(" Connected!");
-    mqttClient.subscribe(MQTT_TOPIC);
-    mqttClient.subscribe(MQTT_TOPIC_ROUTE);
-    Serial.println("[MQTT] Subscribed to " + String(MQTT_TOPIC));
-  } else {
-    Serial.println(" Failed (rc=" + String(mqttClient.state()) + ") retrying...");
+  while (!mqttClient.connected()) {
+    Serial.print("[MQTT] Connecting...");
+    if (mqttClient.connect(CLIENT_ID)) {
+      mqttClient.subscribe(MQTT_TOPIC);
+      Serial.println(" connected, subscribed to " + String(MQTT_TOPIC));
+    } else {
+      Serial.print(" failed rc="); Serial.println(mqttClient.state());
+      delay(3000);
+    }
   }
 }
 
-// =============================================================================
-// SETUP
-// =============================================================================
+// ============================================================
+//  SETUP
+// ============================================================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n[LUMINA] ESP32 Node starting...");
+  Serial.println("\n[Lumina] Booting...");
 
-  // Hardware init
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(RELAY_PIN,  OUTPUT);
-  pinMode(TRIG_PIN,   OUTPUT);
-  pinMode(ECHO_PIN,   INPUT);
-  digitalWrite(BUZZER_PIN, LOW);
-  digitalWrite(RELAY_PIN,  LOW);
-  digitalWrite(TRIG_PIN,   LOW);
+  // FastLED setup — two independent strips
+  FastLED.addLeds<LED_TYPE, LEFT_PIN,  COLOR_ORDER>(leftLeds,  NUM_LEFT_LEDS);
+  FastLED.addLeds<LED_TYPE, RIGHT_PIN, COLOR_ORDER>(rightLeds, NUM_RIGHT_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+  FastLED.clear(); FastLED.show();
 
-  // MLX90614 thermal sensor init (I2C)
-  if (!mlx.begin()) {
-    Serial.println("[MLX90614] Sensor not found — thermal detection disabled. Check wiring.");
-  } else {
-    Serial.println("[MLX90614] Thermal sensor ready.");
-  }
+  // Sensor pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
-  // LED strip init
-  strip.begin();
-  strip.setBrightness(80);  // 0-255 — reduce if power bank struggles
-  strip.clear();
-  strip.show();
-
-  // Startup animation — sweep green across all LEDs
-  for (int i = 0; i < LED_COUNT; i++) {
-    strip.setPixelColor(i, COL_GREEN);
-    strip.show();
-    delay(30);
-  }
-  delay(300);
-  strip.clear();
-  strip.show();
-
-  // Wi-Fi + MQTT
+  // WiFi
   connectWifi();
+
+  // MQTT — CRITICAL: setBufferSize before setCallback
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setBufferSize(1024);   // default 256 is too small for our payloads
   mqttClient.setCallback(mqttCallback);
 
-  Serial.println("[LUMINA] Ready. Waiting for MQTT commands...");
+  Serial.println("[Lumina] Ready.");
 }
 
-// =============================================================================
-// MLX90614 THERMAL DETECTION
-// Reads object (surface) temperature via I2C every 500ms.
-// Threshold 45°C: hot enough to flag a fire/heat anomaly, high enough to
-// avoid false triggers from a warm hand during normal demo setup.
-// Publishes to MQTT_SENSOR_TOPIC (not MQTT_TOPIC) so Python's
-// _on_sensor_message callback receives it and routes it through the same
-// ThermalClassifier pipeline, not directly to the main alerts channel.
-// Wiring: VCC→3.3V, GND→GND, SDA→GPIO21, SCL→GPIO22 (ESP32 I2C default).
-// =============================================================================
-unsigned long lastThermalCheck  = 0;
-bool          thermalHazardSent = false;
-
-void checkThermal() {
-  if (millis() - lastThermalCheck < 500) return;
-  lastThermalCheck = millis();
-
-  float objTemp = mlx.readObjectTempC();
-  if (isnan(objTemp) || objTemp < -40) return;  // sensor not ready or bad read
-
-  Serial.print("[MLX90614] Object temp: ");
-  Serial.print(objTemp);
-  Serial.println("°C");
-
-  if (objTemp > 45.0 && !thermalHazardSent) {
-    thermalHazardSent = true;
-    Serial.println("[MLX90614] Thermal anomaly! Publishing to sensor topic...");
-
-    StaticJsonDocument<128> doc;
-    doc["sensor"]   = "MLX90614";
-    doc["status"]   = "THERMAL_ANOMALY";
-    doc["temp_c"]   = (int)(objTemp * 10) / 10.0;  // 1 decimal place
-    char buf[128];
-    serializeJson(doc, buf);
-    // Publish to SENSOR_TOPIC — Python's _on_sensor_message handles this
-    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
-
-  } else if (objTemp <= 40.0 && thermalHazardSent) {
-    // Hysteresis: require temp to drop 5°C below threshold before clearing
-    thermalHazardSent = false;
-    Serial.println("[MLX90614] Temperature normalised.");
-  }
-}
-
-// =============================================================================
-// HC-SR04 OBSTRUCTION DETECTION
-// Implements the DYN-A* "obstruction status" cost parameter from the proposal
-// (Section 3.3). Mounted horizontally at corridor entry pointing down the
-// corridor length. Normal reading = full empty corridor length (e.g. 25-35cm
-// depending on your diorama). Obstruction (dropped cardboard box) = short
-// reading (<15cm). On state change, publishes to MQTT_SENSOR_TOPIC so Python
-// backend can call block_node_and_reroute() and update LED corridor states.
-// Pings only twice per second (500ms interval) — avoids spamming the MQTT
-// broker and keeps the 30ms pulseIn timeout from visibly stuttering the LEDs.
-// =============================================================================
-void checkObstruction() {
-  if (millis() - lastPingMs < 500) return;
-  lastPingMs = millis();
-
-  // Trigger ultrasonic pulse
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  // Read echo — 30ms timeout covers up to ~5m range, fine for a diorama
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  if (duration == 0) return;  // no echo = sensor not ready, skip silently
-
-  int distanceCm = (int)(duration * 0.034f / 2);
-
-  bool blocked = (distanceCm > 0 && distanceCm < 15);
-
-  // Only publish on state CHANGE — not every ping — to avoid MQTT spam
-  if (blocked && !corridorBlocked) {
-    corridorBlocked = true;
-    Serial.println("[HC-SR04] Obstruction detected at " + String(distanceCm) + "cm — publishing BLOCKED");
-
-    StaticJsonDocument<128> doc;
-    doc["sensor"]    = "HC-SR04";
-    doc["node"]      = "C-003";    // which corridor this sensor guards
-    doc["status"]    = "BLOCKED";
-    doc["distance_cm"] = distanceCm;
-    char buf[128];
-    serializeJson(doc, buf);
-    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
-
-  } else if (!blocked && corridorBlocked) {
-    corridorBlocked = false;
-    Serial.println("[HC-SR04] Corridor cleared — publishing CLEAR");
-
-    StaticJsonDocument<128> doc;
-    doc["sensor"]    = "HC-SR04";
-    doc["node"]      = "C-003";
-    doc["status"]    = "CLEAR";
-    doc["distance_cm"] = distanceCm;
-    char buf[128];
-    serializeJson(doc, buf);
-    mqttClient.publish(MQTT_SENSOR_TOPIC, buf);
-  }
-}
-
-// =============================================================================
-// LOOP
-// =============================================================================
+// ============================================================
+//  LOOP
+// ============================================================
 void loop() {
-  // Non-blocking MQTT reconnect — only attempt once every 5 seconds so a
-  // dropped connection can't monopolize the loop with back-to-back blocking
-  // connect() calls (each with its own multi-second TCP timeout), which
-  // would freeze LED animation/buzzer updates and risk tripping the WDT.
-  if (!mqttClient.connected()) {
-    if (millis() - lastMqttRetry > 5000) {
-      lastMqttRetry = millis();
-      reconnectMqtt();
-    }
-  } else {
-    mqttClient.loop();
+  // Maintain WiFi
+  if (WiFi.status() != WL_CONNECTED) connectWifi();
+
+  // Maintain MQTT
+  if (!mqttClient.connected()) reconnectMqtt();
+  mqttClient.loop();
+
+  unsigned long now = millis();
+
+  // Sensor checks every 500ms
+  if (now - lastSensorCheck > 500) {
+    lastSensorCheck = now;
+    checkThermal();
+    checkObstruction();
   }
 
-  if (systemHazard && (millis() - lastMqttMsg > WATCHDOG_TIMEOUT)) {
-    Serial.println("[WATCHDOG] MQTT connection lost or stale! Forcing buzzer off.");
-    systemHazard = false;
-    fftConfirmed = false;
-    digitalWrite(BUZZER_PIN, LOW);
-    buzzOn = false;
+  // LED update every 80ms (smooth chase animation)
+  if (now - lastLedUpdate > 80) {
+    lastLedUpdate = now;
+    updateLEDs();
   }
-  
-  // Animate at ~12 FPS
-  if (millis() - lastAnimMs > 80) {
-    lastAnimMs = millis();
-    chaseTick++;
-    renderCorridors();
-    updateBuzzer();
-  }
-
-  // HC-SR04 obstruction check — non-blocking, only pings every 500ms
-  checkObstruction();
-
-  // MLX90614 thermal check — non-blocking, only reads every 500ms
-  checkThermal();
 }
