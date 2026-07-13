@@ -11,9 +11,9 @@
 #include <FastLED.h>
 
 // ── WiFi & MQTT ───────────────────────────────────────────────
-#define WIFI_SSID     "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-#define MQTT_BROKER   "broker.hivemq.com"
+#define WIFI_SSID     "hello"
+#define WIFI_PASSWORD "mybirthday"
+#define MQTT_BROKER   "3.126.41.112"
 #define MQTT_PORT     1883
 #define MQTT_TOPIC    "lumina/vitrox/demo/7a9b2f/alerts"   // Python → ESP32
 #define SENSOR_TOPIC  "lumina/vitrox/demo/7a9b2f/sensors"  // ESP32 → Python
