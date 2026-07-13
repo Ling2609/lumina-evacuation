@@ -251,7 +251,7 @@ facp_confirmed = False           # True once FFT confirms the official alarm
 # in ANY mode and cannot be cancelled by simulation or sensor events.
 # Priority: bomba_override (3) > live_sensor (2) > simulation (1)
 # =============================================================================
-system_mode           = "simulation"   # "simulation" | "live"
+system_mode           = "live"         # "simulation" | "live"
 bomba_override_active = False          # True when Bomba has issued a command override
 
 # Simulation trigger state — which event type was manually triggered

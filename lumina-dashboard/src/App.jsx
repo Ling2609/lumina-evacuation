@@ -434,7 +434,7 @@ export default function App() {
   // ── System mode & simulation trigger ────────────────────────────────────
   // systemMode: "simulation" | "live"
   // simTriggerType: null | "fire" | "fallen" | "crowd" — selected in toolbar
-  const [systemMode,     setSystemMode]     = useState("simulation");
+  const [systemMode,     setSystemMode]     = useState("live");
   const [simTriggerType, setSimTriggerType] = useState(null);
   const [nodeHealthPage, setNodeHealthPage] = useState(0);
   const [quickExitRoutes, setQuickExitRoutes] = useState([]); // sorted best-to-worst from backend
