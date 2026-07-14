@@ -271,7 +271,7 @@ current_track_ids     = []        # list of active anonymous track IDs
 crowd_velocity_lobby  = 0.0      # rate-of-change at lobby node (N-011)
 thermal_state         = "NORMAL" # NORMAL | WARNING | ALERT
 fft_state             = "SILENT" # SILENT | DETECTING | CONFIRMED
-current_route         = ["J19","J20","J1","EXIT-1"]
+current_route         = []
 current_pull_signals  = {}
 current_rset          = {}
 current_route_cost    = 0   # raw DYN-A* cost score — exposed to frontend
@@ -1455,7 +1455,7 @@ def reset_system():
         fft_state            = "SILENT"
         thermal_state        = "NORMAL"
         current_route_cost   = 0
-        current_route        = ["J19","J20","J1","EXIT-1"]
+        current_route        = []
         current_pull_signals = {}
         current_rset         = {}
         current_per_node_routes.clear()
@@ -2283,7 +2283,7 @@ if __name__ == "__main__":
         facp_confirmed       = False
         manual_override      = False
         fire_sim_active      = False
-        current_route        = ["J19","J20","J1","EXIT-1"]
+        current_route        = []
         current_pull_signals = {}
         current_rset         = {}
         for _nid, _d in live_node_status.items():

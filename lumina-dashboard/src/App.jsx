@@ -293,7 +293,7 @@ export default function App() {
   const [isHazard,      setIsHazard]      = useState(false);
   const [hazardType,    setHazardType]    = useState("HAZARD DETECTED");
   const [fftConfirmed,  setFftConfirmed]  = useState(false);
-  const [activeRoute, setActiveRoute] = useState(["J19","J20","J1","EXIT-1"]);
+  const [activeRoute, setActiveRoute] = useState([]);
   const [perNodeRoutes, setPerNodeRoutes] = useState([]); // per-hazard-node evacuation paths
   // Cancel and trigger are independent async requests — if a cancel and a
   // fresh trigger on the same node happen in quick succession (e.g. cancel
@@ -826,7 +826,7 @@ export default function App() {
     // Then clear all frontend state atomically
     setManualOverride(false);
     setManualBlockedNodes([]);
-    setActiveRoute(["J19","J20","J1","EXIT-1"]);
+    setActiveRoute([]);
     setIsHazard(false);
     setPasCountdown(178);
     setFftConfirmed(false);
@@ -975,7 +975,7 @@ export default function App() {
         // correct route avoiding the block, matching backend truth.
       } else {
         setIsHazard(false);
-        setActiveRoute(["J19","J20","J1","EXIT-1"]);
+        setActiveRoute([]);
       }
     } else if(wasPrimary){
       // Reassign to the next most-recently-triggered remaining hazard,
@@ -1769,7 +1769,7 @@ export default function App() {
                     show this fallback when there's no tab panel to rely on
                     (single-hazard / plain BOMBA-block case), and keep it
                     smaller and positioned to avoid overlapping room labels. */}
-                {activeRoute.length<=1 && perNodeRoutes.length<=1 && (
+                {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
                     <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
                       style={{fontSize:11,fontWeight:700,
@@ -2704,7 +2704,7 @@ export default function App() {
                     show this fallback when there's no tab panel to rely on
                     (single-hazard / plain BOMBA-block case), and keep it
                     smaller and positioned to avoid overlapping room labels. */}
-                {activeRoute.length<=1 && perNodeRoutes.length<=1 && (
+                {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
                     <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
                       style={{fontSize:11,fontWeight:700,
