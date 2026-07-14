@@ -1769,7 +1769,7 @@ export default function App() {
                     show this fallback when there's no tab panel to rely on
                     (single-hazard / plain BOMBA-block case), and keep it
                     smaller and positioned to avoid overlapping room labels. */}
-                {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
+                {/* {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
                     <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
                       style={{fontSize:11,fontWeight:700,
@@ -1781,7 +1781,7 @@ export default function App() {
                       Area of Refuge: {shelterAlert} — dispatch rescue directly
                     </text>}
                   </g>
-                )}
+                )} */}
                 {/* ── Colour legend — horizontal row, centered under the
                      floor plan. Outer wall spans x=15.4 to 751.7 (center
                      383.5); 5 items spaced 145 apart span 580 units total,
@@ -1916,11 +1916,11 @@ export default function App() {
                     // name. That's why a fix targeting "the route display"
                     // kept appearing to not work in some views but not
                     // others — this eliminates the duplicate entirely.
-                    if(perNodeRoutes.length>=1 && displayRoute.length===0){
+                    if((perNodeRoutes.length>=1 && displayRoute.length===0) || (perNodeRoutes.length===0 && shelterAlert)){
                       return(
                         <div style={{padding:"8px 10px",background:palette.infoLight,color:palette.infoDark,
                           borderRadius:6,border:`1px solid ${palette.info}`,fontWeight:700,fontSize:10}}>
-                          🏠 {activeTabObj?.node_id} is cut off from all exits.
+                          🏠 {activeTabObj?.node_id || shelterAlert} is cut off from all exits.
                           <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
                         </div>
                       );
@@ -2704,7 +2704,7 @@ export default function App() {
                     show this fallback when there's no tab panel to rely on
                     (single-hazard / plain BOMBA-block case), and keep it
                     smaller and positioned to avoid overlapping room labels. */}
-                {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
+                {/* {isHazard && activeRoute.length<=1 && perNodeRoutes.length<=1 && (
                   <g>
                     <text x="383" y="205" textAnchor="middle" dominantBaseline="central"
                       style={{fontSize:11,fontWeight:700,
@@ -2716,7 +2716,7 @@ export default function App() {
                       Area of Refuge: {shelterAlert} — dispatch rescue directly
                     </text>}
                   </g>
-                )}
+                )} */}
                 </svg>
                 {selectedNode&&(
                   <div style={{padding:"7px 12px",borderTop:`1px solid ${palette.border}`,flexShrink:0,
@@ -2766,10 +2766,10 @@ export default function App() {
                     })}
                   </div>
                 )}
-                {perNodeRoutes.length>1 && activeTabObj && (!activeTabObj.best_path || activeTabObj.best_path.length===0) ? (
+                {((perNodeRoutes.length>=1 && activeTabObj && (!activeTabObj.best_path || activeTabObj.best_path.length===0)) || (perNodeRoutes.length===0 && shelterAlert)) ? (
                   <div style={{padding:"8px 10px",background:palette.infoLight,color:palette.infoDark,
                     borderRadius:6,border:`1px solid ${palette.info}`,fontWeight:700,fontSize:10}}>
-                    🏠 {activeTabObj.node_id} is cut off from all exits.
+                    🏠 {activeTabObj?.node_id || shelterAlert} is cut off from all exits.
                     <div style={{fontWeight:500,fontSize:9,marginTop:2}}>Area of Refuge protocols active. Dispatch rescue.</div>
                   </div>
                 ) : (
