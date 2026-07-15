@@ -9,11 +9,15 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
+#include <DHT.h>   // Install: "DHT sensor library" by Adafruit in Library Manager
+
+// DHT11 sensor object
+DHT dht(DHT_PIN, DHT11);
 
 // ── WiFi & MQTT ───────────────────────────────────────────────
-#define WIFI_SSID     "hello"
-#define WIFI_PASSWORD "mybirthday"
-#define MQTT_BROKER   "3.126.41.112"
+#define WIFI_SSID     "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define MQTT_BROKER   "broker.hivemq.com"
 #define MQTT_PORT     1883
 #define MQTT_TOPIC    "lumina/vitrox/demo/7a9b2f/alerts"   // Python → ESP32
 #define SENSOR_TOPIC  "lumina/vitrox/demo/7a9b2f/sensors"  // ESP32 → Python
@@ -30,10 +34,20 @@
 #define TRIG_PIN        12    // HC-SR04 trigger
 #define ECHO_PIN        13    // HC-SR04 echo
 
-// ── Sensor thresholds ─────────────────────────────────────────
-#define THERMAL_ALERT_TEMP     45.0   // °C — triggers THERMAL_ANOMALY
-#define THERMAL_CLEAR_TEMP     40.0   // °C — clears alert (hysteresis)
-#define OBSTRUCTION_THRESHOLD_CM 15   // cm — corridor considered blocked
+// ── DHT11 Configuration ───────────────────────────────────────
+// ⚠ CHANGE THIS: set to whichever GPIO the DHT11 data pin is wired to
+#define DHT_PIN         14    // ← HARDWARE PERSON: change this pin number
+
+// ⚠ CHANGE THIS: temperature that triggers THERMAL_ANOMALY event
+// DHT11 max range is 50°C with ±2°C accuracy — keep threshold below 48°C
+// 35°C = easy demo trigger (warm hand or breath)
+// 38°C = moderate (needs a heat pack or hot cup)
+// 42°C = needs hair dryer
+#define THERMAL_ALERT_TEMP  35.0   // ← HARDWARE PERSON: adjust as needed
+#define THERMAL_CLEAR_TEMP  30.0   // ← clears alert (keep 5°C below alert)
+
+// ── Obstruction threshold ─────────────────────────────────────
+#define OBSTRUCTION_THRESHOLD_CM 15  // cm — corridor considered blocked
 
 // ── LED Arrays ────────────────────────────────────────────────
 CRGB leftLeds[NUM_LEFT_LEDS];
@@ -288,30 +302,37 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 //  SENSORS
 // ============================================================
 void checkThermal() {
-  // Simulate MLX90614 — replace with real Wire/I2C read if connected
-  // float objTemp = mlx.readObjectTempC();
-  float objTemp = 25.0;  // placeholder — replace with actual sensor read
+  // DHT11 read — takes ~250ms, call only every 500ms (already handled by loop timing)
+  float temp = dht.readTemperature();  // Celsius
 
-  if (!thermalAlert && objTemp > THERMAL_ALERT_TEMP) {
+  // DHT11 returns NaN if read fails — skip that cycle
+  if (isnan(temp)) {
+    Serial.println("[DHT11] Read failed — check wiring and DHT_PIN");
+    return;
+  }
+
+  Serial.print("[DHT11] Temp: "); Serial.print(temp); Serial.println("°C");
+
+  if (!thermalAlert && temp > THERMAL_ALERT_TEMP) {
     thermalAlert = true;
     StaticJsonDocument<128> doc;
-    doc["sensor"]  = "MLX90614";
+    doc["sensor"]  = "DHT11";
     doc["status"]  = "THERMAL_ANOMALY";
     doc["node"]    = "J7";
-    doc["temp_c"]  = objTemp;
+    doc["temp_c"]  = temp;
     char buf[128]; serializeJson(doc, buf);
     mqttClient.publish(SENSOR_TOPIC, buf);
-    Serial.println("[MLX90614] THERMAL_ANOMALY published");
-  } else if (thermalAlert && objTemp < THERMAL_CLEAR_TEMP) {
+    Serial.println("[DHT11] THERMAL_ANOMALY published");
+  } else if (thermalAlert && temp < THERMAL_CLEAR_TEMP) {
     thermalAlert = false;
     StaticJsonDocument<128> doc;
-    doc["sensor"] = "MLX90614";
+    doc["sensor"] = "DHT11";
     doc["status"] = "CLEAR";
     doc["node"]   = "J7";
-    doc["temp_c"] = objTemp;
+    doc["temp_c"] = temp;
     char buf[128]; serializeJson(doc, buf);
     mqttClient.publish(SENSOR_TOPIC, buf);
-    Serial.println("[MLX90614] CLEAR published");
+    Serial.println("[DHT11] CLEAR published");
   }
 }
 
@@ -387,6 +408,8 @@ void setup() {
   // Sensor pins
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
+  dht.begin();
+  Serial.println("[DHT11] Sensor initialised on pin " + String(DHT_PIN));
 
   // WiFi
   connectWifi();
