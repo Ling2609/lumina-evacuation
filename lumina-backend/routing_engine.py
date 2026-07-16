@@ -16,13 +16,13 @@
 #   - FFT microphone: hardware failsafe, confirms GLOBAL_EVACUATION regardless
 #
 # NODE PLACEMENT (6 physical Lumina nodes):
-#   Node A: J2/J3  → West corridor  (sees B1 Siew Later, B2 BawangTea)
-#   Node B: J4/J6  → Central cross  (sees B3 ChillZone, B4 Empty, B5 ThaiRelax)
-#   Node C: J8/J9  → East corridor  (sees B6 Female WR, B7 Male WR, B8 AliBarber)
-#   Node D: J15 → South-Central  (B9 Mamadini / B10 Public Recipe now connect
+#   Node A: J2/J3  → West corridor  (sees B1 Office A, B2 Meeting Room 1)
+#   Node B: J4/J6  → Central cross  (sees B3 Meeting Room 2, B4 Office B, B5 Manager Room)
+#   Node C: J8/J9  → East corridor  (sees B6 Meeting Room 3, B7 Meeting Room 4, B8 CEO Room)
+#   Node D: J15 → South-Central  (B9 COO Room / B10 CTO Room now connect
 #   directly to J4 — no physical J16 hardware node in the real installation)
-#   Node E: J18/J19→ South-West    (sees B11 Meating, B12 Baskin, B13 CustSvc)
-#   Node F: J12/J13→ East-South    (sees B14 MS.DIY, B15 SofaSoGood, B16 ReadMe)
+#   Node E: J18/J19→ South-West    (sees B11 CFO Room, B12 Meeting Room 5, B13 Reception)
+#   Node F: J12/J13→ East-South    (sees B14 Office C, B15 Meeting Room 6, B16 Office D)
 # =============================================================================
 
 import heapq
@@ -57,22 +57,22 @@ EXIT_COORDS = {
 
 # Store door coordinates (display only — NOT routing nodes)
 DOOR_COORDS = {
-    "B1":  _s(195, 356),  # Siew Later
-    "B2":  _s(334, 356),  # BawangTea
-    "B3":  _s(618, 356),  # Chill Zone — merged into B4 (Empty Space) unit, same door
-    "B4":  _s(618, 356),  # Empty Space
-    "B5":  _s(740, 356),  # Thai Relax
-    "B6":  _s(1072,141),  # Female Washroom
-    "B7":  _s(1072,272),  # Male Washroom
-    "B8":  _s(1040,580),  # Ali Barber
-    "B9":  _s(644, 610),  # Mamadini
-    "B10": _s(529, 610),  # Public Recipe
-    "B11": _s(191, 754),  # Meating Room
-    "B12": _s(191, 937),  # Baskin Batman
-    "B13": _s(442, 830),  # Customer Service
-    "B14": _s(771, 815),  # MS. DIY
-    "B15": _s(945, 815),  # SofaSoGood
-    "B16": _s(1138,815),  # ReadMe Bookstore
+    "B1":  _s(195, 356),  # Office A
+    "B2":  _s(334, 356),  # Meeting Room 1
+    "B3":  _s(618, 356),  # Meeting Room 2
+    "B4":  _s(618, 356),  # Office B
+    "B5":  _s(740, 356),  # Manager Room
+    "B6":  _s(1072,141),  # Meeting Room 3
+    "B7":  _s(1072,272),  # Meeting Room 4
+    "B8":  _s(1040,580),  # CEO Room
+    "B9":  _s(644, 610),  # C0O Room
+    "B10": _s(529, 610),  # CTO Room
+    "B11": _s(191, 754),  # CFO Room
+    "B12": _s(191, 937),  # Meeting Room 5
+    "B13": _s(442, 830),  # Reception
+    "B14": _s(771, 815),  # Office C
+    "B15": _s(945, 815),  # Meeting Room 6
+    "B16": _s(1138,815),  # Office D
 }
 
 DOOR_LABELS = {
@@ -258,8 +258,8 @@ FACILITY_GRAPH = {
     "J13": {"J12":_dist("J13","J12"),"EXIT-3":_dist("J13","EXIT-3"), "B16":_dist("B16","J13")},
     # Bottom horizontal
     "J14": {"J12":_dist("J14","J12"),"J15":_dist("J14","J15"), "B14":_dist("B14","J14")},
-    # NOTE: J16 removed entirely — no physical hardware node there. B9 (Mamadini)
-    # and B10 (Public Recipe) now connect directly to J4.
+    # NOTE: J16 removed entirely — no physical hardware node there. B9 (COO Room)
+    # and B10 (CTO Room) now connect directly to J4.
     "J15": {"J14":_dist("J15","J14"),"J17":_dist("J15","J17")},
     # Bottom corridor (J17→J18)
     "J17": {"J15":_dist("J17","J15"),"J18":_dist("J17","J18")},
@@ -269,7 +269,7 @@ FACILITY_GRAPH = {
     # Exits (destinations only)
     "EXIT-1":{}, "EXIT-2":{}, "EXIT-3":{},
     # Store doors — connect to nearest junction only (orthogonal, no skipping)
-    # B3 (Chill Zone) merged into B4 (Empty Space) as one physical unit — same door/junction
+    # B3 (Meeting Room 2) merged into B4 (Empty Space) as one physical unit — same door/junction
     "B1":{"J2":_dist("B1_stub","J2")},   "B2":{"J3":_dist("B2_stub","J3")},
     "B3":{"J4":_dist("B4_stub","J4")},   "B4":{"J4":_dist("B4_stub","J4")},
     "B5":{"J7":_dist("B5_stub","J7")},   "B6":{"J10":_dist("B6_stub","J10")},

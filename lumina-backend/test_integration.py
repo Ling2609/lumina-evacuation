@@ -251,7 +251,7 @@ def run_tests():
     get("/reset")
     time.sleep(0.5)
 
-    # B9/B10 (Mamadini, Public Recipe) connect ONLY to J4 — no alternate path
+    # B9/B10 (COO Room, CTO Room) connect ONLY to J4 — no alternate path
     # exists (J16 was removed entirely; no physical hardware node there).
     # Blocking J4 as impassable (the default) should now correctly produce
     # a genuine no_route / shelter-in-place result, NOT a route that still

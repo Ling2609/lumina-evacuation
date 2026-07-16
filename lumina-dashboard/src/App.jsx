@@ -89,7 +89,7 @@ const ROOM_POLYGONS = [
 
 // Interior walls that aren't part of a room polygon outline — drawn as extra
 // segments across corridor gaps. Currently: the physical wall between Public
-// Recipe and Mamadini — both stores now route directly out through J4
+// CTO Room and COO Room — both stores now route directly out through J4
 // (J16 removed entirely; no physical hardware node exists there).
 const WALL_SEGMENTS = [
   {x1:325.8, y1:432.0, x2:396.6, y2:432.0},
@@ -643,7 +643,7 @@ export default function App() {
             const merged = Object.entries(d.nodes).map(([id,v])=>({
               // Junctions/exits get their zone from FALLBACK_NODES; store
               // doors (B1-B16) aren't in that list, so fall back to their
-              // DOOR_POS label ("Siew Later") instead of the raw door ID —
+              // DOOR_POS label ("Office A") instead of the raw door ID —
               // otherwise the UI rendered "B1  B1" (id + id) side by side.
               id, zone:pm[id]?.zone??DOOR_POS[id]?.label??id, x:pm[id]?.x??DOOR_POS[id]?.x??50, y:pm[id]?.y??DOOR_POS[id]?.y??50,
               temp:v.temp??27, status:v.status, hazard:v.hazard,
@@ -1503,7 +1503,7 @@ export default function App() {
                   );
                 })}
 
-                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider) ── */}
+                {/* ── Extra interior wall segments (e.g. CTO Room / COO Room divider) ── */}
                 {WALL_SEGMENTS.map((w,i)=>(
                   <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
                     stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
@@ -2327,10 +2327,10 @@ export default function App() {
                 <div style={{flexShrink:0,height:72,display:"grid",gridTemplateColumns:"repeat(5,1fr)",
                   gap:2,background:"#0F172A",padding:2}}>
                   {[
-                    {id:"CAM-02",sublabel:"Thai Relax",      node:"R-thairelax"},
-                    {id:"CAM-03",sublabel:"Public Recipe",   node:"R-publicrec"},
-                    {id:"CAM-04",sublabel:"Siew Later",      node:"R-siewlater"},
-                    {id:"CAM-05",sublabel:"Baskin Batman",   node:"R-baskin"},
+                    {id:"CAM-02",sublabel:"Manager Room",      node:"R-thairelax"},
+                    {id:"CAM-03",sublabel:"CTO Room",   node:"R-publicrec"},
+                    {id:"CAM-04",sublabel:"Office A",      node:"R-siewlater"},
+                    {id:"CAM-05",sublabel:"Meeting Room 5",   node:"R-baskin"},
                     {id:"CAM-06",sublabel:"EXIT 3",          node:"EXIT-3"},
                   ].map(cam=>{
                     const n=nodes.find(x=>x.id===cam.node);
@@ -2438,7 +2438,7 @@ export default function App() {
                   );
                 })}
 
-                {/* ── Extra interior wall segments (e.g. Public Recipe / Mamadini divider) ── */}
+                {/* ── Extra interior wall segments (e.g. CTO Room / COO Room divider) ── */}
                 {WALL_SEGMENTS.map((w,i)=>(
                   <line key={`wall${i}`} x1={w.x1} y1={w.y1} x2={w.x2} y2={w.y2}
                     stroke="#334155" strokeWidth="3" strokeLinecap="round"/>
