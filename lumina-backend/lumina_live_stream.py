@@ -231,12 +231,12 @@ def _on_sensor_message(client, userdata, msg):
             if status == "CLEAR":
                 with state_lock:
                     thermal_state = "NORMAL"
-                    _j14_hazard = live_node_status["J14"].get("hazard")
+                    _j14_hazard = live_node_status["J20"].get("hazard")
                     if system_state == "HAZARD" and _j14_hazard == "thermal":
                         system_state = "NORMAL"
-                        live_node_status["J14"]["status"] = "normal"
-                        live_node_status["J14"]["hazard"] = None
-                        live_node_status["J14"]["pull_signal"] = "GREEN"
+                        live_node_status["J20"]["status"] = "normal"
+                        live_node_status["J20"]["hazard"] = None
+                        live_node_status["J20"]["pull_signal"] = "GREEN"
                         current_route[:] = []
                         current_route_cost = 0
                         _total_pax  = sum(d["crowd"] for d in live_node_status.values())
@@ -259,8 +259,8 @@ def _on_sensor_message(client, userdata, msg):
                 thermal_state = result["state"]
                 if result["state"] in ("WARNING", "ALERT") and system_state == "NORMAL":
                     system_state = "HAZARD"
-                    live_node_status["J14"]["status"] = "alert"
-                    live_node_status["J14"]["hazard"] = "thermal"
+                    live_node_status["J20"]["status"] = "alert"
+                    live_node_status["J20"]["hazard"] = "thermal"
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
             if result["state"] == "ALERT":
