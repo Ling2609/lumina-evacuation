@@ -979,14 +979,19 @@ def _process_ai_cycle(cap, state):
                     current_per_node_routes[:] = _per
                     current_route[:] = _per[-1]["best_path"]
             else:
-                lobby_hazard = live_node_status.get("J4", {}).get("hazard")
-                start_node = "J7" if lobby_hazard == "fall" else "J4"
-                path, score = calculate_safest_route(start_node, verbose=False)
-                if path:
-                    if start_node == "J7":
-                        path = ["J4"] + path
-                    current_route[:] = path
-                    current_route_cost = score
+                if system_state == "HAZARD":
+                    lobby_hazard = live_node_status.get("J4", {}).get("hazard")
+                    start_node = "J7" if lobby_hazard == "fall" else "J4"
+                    path, score = calculate_safest_route(start_node, verbose=False)
+                    if path:
+                        if start_node == "J7":
+                            path = ["J4"] + path
+                        current_route[:] = path
+                        current_route_cost = score
+                        current_per_node_routes.clear()
+                else:
+                    current_route[:] = []
+                    current_route_cost = 0
                     current_per_node_routes.clear()
             signals = run_pull_policy()
             rset    = estimate_rset(current_route)
