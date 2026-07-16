@@ -199,8 +199,37 @@ def _on_sensor_message(client, userdata, msg):
 
         # ── Thermal Sensor: real thermal anomaly from physical IR sensor ─────────
         elif sensor in ("MLX90614", "DHT11"):
-            temp_c = data.get("temp_c", 0)
-            print(f"[{sensor}] Real thermal reading: {temp_c}°C")
+            temp_c  = data.get("temp_c", 0)
+            status  = data.get("status", "")   # "THERMAL_ANOMALY" or "CLEAR"
+            print(f"[{sensor}] Real thermal reading: {temp_c}°C  status={status}")
+
+            # Point 4 fix: DHT11 sends explicit "CLEAR" when temp drops below
+            # THERMAL_CLEAR_TEMP. Auto-reset the hazard so dashboard clears
+            # without needing manual reset — temperature going down = safe again.
+            if status == "CLEAR":
+                with state_lock:
+                    thermal_state = "NORMAL"
+                    _j14_hazard = live_node_status["J14"].get("hazard")
+                    if system_state == "HAZARD" and _j14_hazard == "thermal":
+                        system_state = "NORMAL"
+                        live_node_status["J14"]["status"] = "normal"
+                        live_node_status["J14"]["hazard"] = None
+                        live_node_status["J14"]["pull_signal"] = "GREEN"
+                        current_route[:] = []
+                        current_route_cost = 0
+                        _total_pax  = sum(d["crowd"] for d in live_node_status.values())
+                        _corridors  = _build_corridor_states()
+                mqtt_client.publish(TOPIC, json.dumps({
+                    "status":       "RESOLVED",
+                    "system_state": "NORMAL",
+                    "hazard_type":  f"THERMAL CLEAR ({sensor})",
+                    "temp_c":       temp_c,
+                    "person_count": _total_pax,
+                    "corridors":    _corridors,
+                }), retain=True)
+                print(f"[{sensor}] Thermal CLEAR — hazard auto-reset, dashboard returning to normal")
+                return   # nothing else to do on CLEAR
+
             # Feed the real reading into the existing ThermalClassifier —
             # same pipeline as the simulated path, now driven by real hardware.
             result = thermal_clf.classify(temp_c)
@@ -208,8 +237,8 @@ def _on_sensor_message(client, userdata, msg):
                 thermal_state = result["state"]
                 if result["state"] in ("WARNING", "ALERT") and system_state == "NORMAL":
                     system_state = "HAZARD"
-                    live_node_status["J7"]["status"] = "alert"
-                    live_node_status["J7"]["hazard"] = "thermal"
+                    live_node_status["J14"]["status"] = "alert"
+                    live_node_status["J14"]["hazard"] = "thermal"
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
             if result["state"] == "ALERT":
@@ -845,10 +874,11 @@ def _process_ai_cycle(cap, state):
         # Only update J4 crowd from camera if it's not a sim-triggered hazard node
         # (J4 is now the lobby node — merged from J16, which had no physical hardware)
         # Otherwise the camera count (0 in demo) would immediately overwrite the sim
-        _lobby_is_sim = any(h["node_id"]=="J4" for h in active_hazard_nodes)
+        # Camera is at EXIT-3 approach watching J14 (CEO Room area)
+        _lobby_is_sim = any(h["node_id"]=="J14" for h in active_hazard_nodes)
         if not _lobby_is_sim:
-            update_crowd("J4", person_count)
-        vel = get_crowd_velocity("J4")
+            update_crowd("J14", person_count)
+        vel = get_crowd_velocity("J14")
         current_person_count = person_count
         current_track_ids    = track_ids_this_frame
         crowd_velocity_lobby = round(vel, 3)
@@ -880,7 +910,7 @@ def _process_ai_cycle(cap, state):
     if vel > 5 and cur_state == "NORMAL" and system_mode == "live":
         print(f"[CROWD] Velocity spike {vel:+.2f} — pre-emptive reroute")
         with state_lock:
-            live_node_status["J4"]["status"] = "warning"
+            live_node_status["J14"]["status"] = "warning"
 
     # --- FALL ESCALATION ---
     # In simulation mode, camera fall detection is suppressed — manual triggers only
@@ -891,9 +921,9 @@ def _process_ai_cycle(cap, state):
         if t_now - state["fall_timer_start"] >= 3.0 and cur_state == "NORMAL":
             with state_lock:
                 system_state = "HAZARD"
-                live_node_status["J4"]["hazard"] = "fall"
-                live_node_status["J4"]["status"] = "alert"
-                live_node_status["J4"]["pull_signal"] = "RED"
+                live_node_status["J14"]["hazard"] = "fall"
+                live_node_status["J14"]["status"] = "alert"
+                live_node_status["J14"]["pull_signal"] = "RED"
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -908,7 +938,7 @@ def _process_ai_cycle(cap, state):
     else:
         state["fall_timer_start"] = 0
         with state_lock:
-            _n011_hazard = live_node_status["J4"]["hazard"]
+            _n011_hazard = live_node_status["J14"]["hazard"]
         # Only auto-recover fall in live mode — simulation handles its own state
         if system_mode == "live" and cur_state == "HAZARD" and _n011_hazard == "fall":
             if state["recovery_timer_start"] == 0:
@@ -917,9 +947,9 @@ def _process_ai_cycle(cap, state):
                 with state_lock:
                     system_state   = "NORMAL"
                     facp_confirmed = False
-                    live_node_status["J4"]["hazard"]      = None
-                    live_node_status["J4"]["status"]      = "normal"
-                    live_node_status["J4"]["pull_signal"] = "GREEN"
+                    live_node_status["J14"]["hazard"]      = None
+                    live_node_status["J14"]["status"]      = "normal"
+                    live_node_status["J14"]["pull_signal"] = "GREEN"
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
@@ -980,12 +1010,14 @@ def _process_ai_cycle(cap, state):
                     current_route[:] = _per[-1]["best_path"]
             else:
                 if system_state == "HAZARD":
-                    lobby_hazard = live_node_status.get("J4", {}).get("hazard")
-                    start_node = "J7" if lobby_hazard == "fall" else "J4"
+                    # Camera is at J14 (EXIT-3 approach). Fall at J14 routes
+                    # from J12 (adjacent junction) to avoid the hazard node itself.
+                    lobby_hazard = live_node_status.get("J14", {}).get("hazard")
+                    start_node = "J12" if lobby_hazard == "fall" else "J14"
                     path, score = calculate_safest_route(start_node, verbose=False)
                     if path:
-                        if start_node == "J7":
-                            path = ["J4"] + path
+                        if start_node == "J12":
+                            path = ["J14"] + path
                         current_route[:] = path
                         current_route_cost = score
                         current_per_node_routes.clear()
