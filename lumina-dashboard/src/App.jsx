@@ -705,8 +705,8 @@ export default function App() {
         }
         if (d.thermal_state==="ALERT"&&d.thermal_state!==lastThermalRef.current){
           // Find which node has thermal hazard
-          const thermalNode = d.nodes ? Object.entries(d.nodes).find(([,v])=>v.hazard==="thermal")?.[0] : "R-thairelax";
-          pushEvent(`Thermal anomaly at ${thermalNode||"R-thairelax"} — quarantine projected`,"danger","REACTIVE");
+          const thermalNode = d.nodes ? Object.entries(d.nodes).find(([,v])=>v.hazard==="thermal")?.[0] : "J20";
+          pushEvent(`Thermal anomaly at ${thermalNode||"J20"} — quarantine projected`,"danger","REACTIVE");
           lastThermalRef.current=d.thermal_state;
         } else if(d.thermal_state!=="ALERT"&&lastThermalRef.current==="ALERT") lastThermalRef.current=d.thermal_state;
         // FFT confirms acoustic alarm — only relevant for fire, not fall
@@ -2303,7 +2303,7 @@ export default function App() {
                 {/* CAM-01 hero — large live feed */}
                 <div style={{flex:1,position:"relative",background:"#000",overflow:"hidden",
                   cursor:"pointer",borderBottom:"2px solid #1E293B",minHeight:0}}
-                  onClick={()=>setCamExpanded({id:"CAM-01",label:"Center Corridor — C-004",sublabel:"Center Area",live:true,node:"R-custsvc"})}>
+                  onClick={()=>setCamExpanded({id:"CAM-01",label:"EXIT 3 Approach",sublabel:"J14",live:true,node:"J14"})}>
                   <img src={apiUrl("/video_feed")} alt="CAM-01"
                     style={{width:"100%",height:"100%",objectFit:"contain",display:"block",
                       filter:isHazard?"sepia(40%) hue-rotate(320deg) saturate(180%)":"none"}}
@@ -2312,7 +2312,7 @@ export default function App() {
                     borderRadius:4,padding:"3px 8px",display:"flex",alignItems:"center",gap:6}}>
                     <span style={{fontSize:9,color:"#10B981",fontWeight:700}}>● LIVE</span>
                     <span style={{fontSize:9,color:"#CBD5E1",fontWeight:600}}>CAM-01</span>
-                    <span style={{fontSize:8,color:"#94A3B8"}}>Center Corridor · C-004</span>
+                    <span style={{fontSize:8,color:"#94A3B8"}}>EXIT 3 Approach · J14</span>
                   </div>
                   <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",
                     borderRadius:4,padding:"2px 7px",fontSize:8,color:"#94A3B8"}}>click to expand</div>
@@ -2327,11 +2327,11 @@ export default function App() {
                 <div style={{flexShrink:0,height:72,display:"grid",gridTemplateColumns:"repeat(5,1fr)",
                   gap:2,background:"#0F172A",padding:2}}>
                   {[
-                    {id:"CAM-02",sublabel:"Manager Room",      node:"R-thairelax"},
-                    {id:"CAM-03",sublabel:"CTO Room",   node:"R-publicrec"},
-                    {id:"CAM-04",sublabel:"Office A",      node:"R-siewlater"},
-                    {id:"CAM-05",sublabel:"Meeting Room 5",   node:"R-baskin"},
-                    {id:"CAM-06",sublabel:"EXIT 3",          node:"EXIT-3"},
+                    {id:"CAM-02",sublabel:"Manager Room",    node:"J7"},
+                    {id:"CAM-03",sublabel:"CTO Room",        node:"J4"},
+                    {id:"CAM-04",sublabel:"Office A",        node:"J2"},
+                    {id:"CAM-05",sublabel:"Meeting Room 5",  node:"J20"},
+                    {id:"CAM-06",sublabel:"EXIT 3",          node:"J13"},
                   ].map(cam=>{
                     const n=nodes.find(x=>x.id===cam.node);
                     const sc=statusColor(n?.status??"normal");
