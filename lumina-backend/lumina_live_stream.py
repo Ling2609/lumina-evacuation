@@ -197,10 +197,10 @@ def _on_sensor_message(client, userdata, msg):
                     if system_state == "NORMAL":
                         manual_override = False
 
-        # ── MLX90614: real thermal anomaly from physical IR sensor ─────────
-        elif sensor == "MLX90614":
+        # ── Thermal Sensor: real thermal anomaly from physical IR sensor ─────────
+        elif sensor in ("MLX90614", "DHT11"):
             temp_c = data.get("temp_c", 0)
-            print(f"[MLX90614] Real thermal reading: {temp_c}°C")
+            print(f"[{sensor}] Real thermal reading: {temp_c}°C")
             # Feed the real reading into the existing ThermalClassifier —
             # same pipeline as the simulated path, now driven by real hardware.
             result = thermal_clf.classify(temp_c)
@@ -216,12 +216,12 @@ def _on_sensor_message(client, userdata, msg):
                 mqtt_client.publish(TOPIC, json.dumps({
                     "status":       "CRITICAL",
                     "system_state": "HAZARD",
-                    "hazard_type":  "THERMAL ANOMALY (MLX90614)",
+                    "hazard_type":  f"THERMAL ANOMALY ({sensor})",
                     "temp_c":       temp_c,
                     "person_count": _total_pax,
                     "corridors":    _corridors,
                 }))
-                print(f"[MLX90614] THERMAL ALERT triggered at {temp_c}°C")
+                print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C")
 
     except Exception as e:
         print(f"[SENSOR] Message error: {e}")

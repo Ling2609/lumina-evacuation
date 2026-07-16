@@ -11,9 +11,6 @@
 #include <FastLED.h>
 #include <DHT.h>   // Install: "DHT sensor library" by Adafruit in Library Manager
 
-// DHT11 sensor object
-DHT dht(DHT_PIN, DHT11);
-
 // ── WiFi & MQTT ───────────────────────────────────────────────
 #define WIFI_SSID     "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
@@ -48,6 +45,9 @@ DHT dht(DHT_PIN, DHT11);
 
 // ── Obstruction threshold ─────────────────────────────────────
 #define OBSTRUCTION_THRESHOLD_CM 15  // cm — corridor considered blocked
+
+// DHT11 sensor object — declared AFTER DHT_PIN is defined
+DHT dht(DHT_PIN, DHT11);
 
 // ── LED Arrays ────────────────────────────────────────────────
 CRGB leftLeds[NUM_LEFT_LEDS];
