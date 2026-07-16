@@ -251,7 +251,7 @@ void checkThermal() {
     StaticJsonDocument<128> doc;
     doc["sensor"]  = "DHT11"; 
     doc["status"]  = "THERMAL_ANOMALY"; 
-    doc["node"]    = "J7"; 
+    doc["node"]    = "J20"; 
     doc["temp_c"]  = t;
     doc["hum_p"]   = h;
     char buf[128]; serializeJson(doc, buf); 
@@ -264,7 +264,7 @@ void checkThermal() {
     StaticJsonDocument<128> doc;
     doc["sensor"] = "DHT11"; 
     doc["status"] = "CLEAR"; 
-    doc["node"]   = "J7"; 
+    doc["node"]   = "J20"; 
     doc["temp_c"] = t;
     doc["hum_p"]  = h;
     char buf[128]; serializeJson(doc, buf); 
