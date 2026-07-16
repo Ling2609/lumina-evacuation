@@ -111,10 +111,32 @@ def _build_corridor_states():
             states[corridor]["state"] = "warning"
 
     # 6. Active DYN-A* route
+    #
+    # BUG FIX: J15 and J17 are mapped to C-004 in J_TO_CORRIDOR (because they
+    # physically sit on the south bottom corridor whose LED strip runs to EXIT-3).
+    # But DYN-A* also routes through J15/J17 as waypoints on paths to EXIT-1
+    # (e.g. J13→J12→J15→J17→J18→J19→J20→J1→EXIT-1). When that happens,
+    # _build_corridor_states marks C-004 as "route", the ESP32 lights the
+    # EXIT-3 LED strip — but the actual destination is EXIT-1. The hardware
+    # shows EXIT-3, the dashboard shows EXIT-1: they contradict each other.
+    #
+    # Fix: only mark C-004 as "route" when the route actually terminates at
+    # EXIT-3. If the route ends elsewhere, J15/J17 are just corridor waypoints
+    # and their C-004 membership should be ignored for LED purposes.
+    route_destination = current_route[-1] if current_route else None
+    route_exits_via_c004 = (route_destination == "EXIT-3")
+
     for idx, node_id in enumerate(current_route):
         corridor = (J_TO_CORRIDOR.get(node_id) or EXIT_TO_CORRIDOR.get(node_id))
         if not corridor or states[corridor]["state"] in ("hazard", "pull_stop", "warning"):
             continue
+
+        # Skip C-004 entirely if the route doesn't end at EXIT-3 —
+        # J15/J17 are shared waypoints whose LED strip points to EXIT-3.
+        # Lighting them misleads evacuees when the actual exit is elsewhere.
+        if corridor == "C-004" and not route_exits_via_c004:
+            continue
+
         states[corridor]["state"] = "route"
 
         # Determine direction
@@ -1483,12 +1505,13 @@ def api_facp_clear():
 def reset_system():
     global system_state, facp_confirmed, current_route, current_pull_signals, current_rset, \
            manual_override, fire_sim_active, fft_state, thermal_state, current_route_cost, \
-           sim_trigger_type, sim_trigger_node
+           sim_trigger_type, sim_trigger_node, bomba_override_active
     with state_lock:
         system_state         = "NORMAL"
         facp_confirmed       = False
         manual_override      = False
         fire_sim_active      = False
+        bomba_override_active = False
         fft_state            = "SILENT"
         thermal_state        = "NORMAL"
         current_route_cost   = 0
@@ -2320,6 +2343,7 @@ if __name__ == "__main__":
         facp_confirmed       = False
         manual_override      = False
         fire_sim_active      = False
+        bomba_override_active = False
         current_route        = []
         current_pull_signals = {}
         current_rset         = {}
