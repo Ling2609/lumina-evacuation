@@ -190,7 +190,7 @@ def _on_sensor_message(client, userdata, msg):
             node_id = data.get("node", "C-003")
             dist    = data.get("distance_cm", -1)
             CORRIDOR_TO_JUNCTION = {
-                "C-001": "J2", "C-002": "J4", "C-003": "J8",
+                "C-001": "J1", "C-002": "J4", "C-003": "J4",
                 "C-004": "J12", "C-005": "J18",
             }
             junction = CORRIDOR_TO_JUNCTION.get(node_id, "J8")
@@ -1056,14 +1056,33 @@ def _process_ai_cycle(cap, state):
                     current_route[:] = _per[-1]["best_path"]
             else:
                 if system_state == "HAZARD":
-                    # Camera is at J14 (EXIT-3 approach). Fall at J14 routes
-                    # from J12 (adjacent junction) to avoid the hazard node itself.
+                    # Find which node has the active hazard and route from adjacent node
+                    # Camera fall → J14 hazard, start from J12
+                    # DHT11 thermal → J20 hazard, start from J19
+                    # HC-SR04 obstruction → uses block_node_and_reroute separately
+                    # Default fallback: start from J14 (camera position)
                     lobby_hazard = live_node_status.get("J14", {}).get("hazard")
-                    start_node = "J12" if lobby_hazard == "fall" else "J14"
-                    path, score = calculate_safest_route(start_node, verbose=False)
-                    if path:
-                        if start_node == "J12":
+                    thermal_hazard = live_node_status.get("J20", {}).get("hazard")
+                    path, score = [], 0
+
+                    if lobby_hazard == "fall":
+                        start_node = "J12"
+                        path, score = calculate_safest_route(start_node, verbose=False)
+                        if path:
                             path = ["J14"] + path
+                    elif thermal_hazard == "thermal":
+                        # Thermal at J20 — J20 already marked impassable,
+                        # start from J19 (adjacent) and let DYN-A* decide exit
+                        start_node = "J19"
+                        path, score = calculate_safest_route(start_node, verbose=False)
+                        if path:
+                            path = ["J20"] + path
+                    else:
+                        # Generic hazard — start from camera node
+                        start_node = "J14"
+                        path, score = calculate_safest_route(start_node, verbose=False)
+
+                    if path:
                         current_route[:] = path
                         current_route_cost = score
                         current_per_node_routes.clear()

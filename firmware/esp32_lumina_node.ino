@@ -182,16 +182,26 @@ void updateLEDs() {
 
   // 2. Sensor overrides
   if (obstructionAlert) {
+    // Blocked corridor J4-J8 — solid red
     int chA, idxA, chB, idxB;
     if (getNodeLED("J4", chA, idxA) && getNodeLED("J8", chB, idxB))
       fillBetween(chA, idxA, idxB, CRGB(255,0,0));
+    // Neighbour nodes J3 and J7 — orange warning
+    int chN, idxN;
+    if (getNodeLED("J3", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
+    if (getNodeLED("J7", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
   }
   if (thermalAlert) {
+    // Hazard node J20 — blinking red
     int ch, idx;
     if (getNodeLED("J20", ch, idx)) {
       bool on = (millis() / 400) % 2;
       setPixel(ch, idx, on ? CRGB(180,0,0) : CRGB::Black);
     }
+    // Neighbour nodes J19 and J1 — solid orange warning (matches dashboard)
+    int chN, idxN;
+    if (getNodeLED("J19", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
+    if (getNodeLED("J1",  chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
   }
 
   // 3. Active route — chase between consecutive nodes
