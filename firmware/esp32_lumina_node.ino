@@ -65,7 +65,7 @@ NodeLED nodeLEDMap[NUM_NODE_LEDS] = {
   {"J4",     CH_LEFT,  16},
   {"J7",     CH_LEFT,  20},
   {"J8",     CH_LEFT,  23},
-  {"J11",    CH_LEFT,  26},
+  {"J11",    CH_LEFT,  27},
   {"J9",     CH_LEFT,  27},
   {"J10",    CH_LEFT,  30},
   {"EXIT-2", CH_LEFT,  33},
@@ -74,8 +74,8 @@ NodeLED nodeLEDMap[NUM_NODE_LEDS] = {
   {"J20",    CH_RIGHT,  6},
   {"J19",    CH_RIGHT,  8},
   {"J18",    CH_RIGHT, 10},
-  {"J17",    CH_RIGHT, 14},
-  {"J15",    CH_RIGHT, 18},
+  {"J17",    CH_RIGHT, 15},
+  {"J15",    CH_RIGHT, 19},
   {"J14",    CH_RIGHT, 26},
   {"J12",    CH_RIGHT, 28},
   {"J13",    CH_RIGHT, 32},
@@ -94,6 +94,7 @@ bool   fftConfirmed  = false;
 
 bool thermalAlert     = false;
 bool obstructionAlert = false;
+bool fallHazard       = false;  // set from backend hazard_type "FALL DETECTED"
 unsigned long lastMqttMessage = 0;
 
 // ── Timing ────────────────────────────────────────────────────
@@ -180,50 +181,67 @@ void updateLEDs() {
     setPixel(nodeLEDMap[i].channel, nodeLEDMap[i].ledIndex, CRGB(15,15,15));
   }
 
-  // 2. Sensor overrides
+  // 2. Hazard overlays — drawn BEFORE route so green route overrides neighbours naturally
   if (obstructionAlert) {
-    // Blocked corridor J4-J8 — solid red
-    int chA, idxA, chB, idxB;
-    if (getNodeLED("J4", chA, idxA) && getNodeLED("J8", chB, idxB))
-      fillBetween(chA, idxA, idxB, CRGB(255,0,0));
-    // Neighbour nodes J3 and J7 — orange warning
-    int chN, idxN;
-    if (getNodeLED("J3", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
-    if (getNodeLED("J7", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
+    int chJ3, idxJ3, chJ4, idxJ4, chJ7, idxJ7;
+    bool hJ3 = getNodeLED("J3", chJ3, idxJ3);
+    bool hJ4 = getNodeLED("J4", chJ4, idxJ4);
+    bool hJ7 = getNodeLED("J7", chJ7, idxJ7);
+    // Fill J3 → J4 solid red (neighbour up to hazard)
+    if (hJ3 && hJ4) fillBetween(chJ3, idxJ3, idxJ4, CRGB(180,0,0));
+    // Fill J4 → J7 solid red (hazard zone to other neighbour)
+    if (hJ4 && hJ7) fillBetween(chJ4, idxJ4, idxJ7, CRGB(180,0,0));
+    // Nothing after J7 — clear boundary
+    // J4 blinks bright red to stand out as hazard node
+    bool on = (millis() / 400) % 2;
+    if (hJ4) setPixel(chJ4, idxJ4, on ? CRGB(255,0,0) : CRGB(60,0,0));
   }
   if (thermalAlert) {
-    // Hazard node J20 — blinking red
-    int ch, idx;
-    if (getNodeLED("J20", ch, idx)) {
-      bool on = (millis() / 400) % 2;
-      setPixel(ch, idx, on ? CRGB(180,0,0) : CRGB::Black);
-    }
-    // Neighbour nodes J19 and J1 — solid orange warning (matches dashboard)
-    int chN, idxN;
-    if (getNodeLED("J19", chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
-    if (getNodeLED("J1",  chN, idxN)) setPixel(chN, idxN, CRGB(180,80,0));
+    int chJ20, idxJ20, chJ19, idxJ19, chJ1, idxJ1;
+    bool hJ20 = getNodeLED("J20", chJ20, idxJ20);
+    bool hJ19 = getNodeLED("J19", chJ19, idxJ19);
+    bool hJ1  = getNodeLED("J1",  chJ1,  idxJ1,  CH_RIGHT);
+    // Fill J19 → J20 solid red
+    if (hJ19 && hJ20) fillBetween(chJ19, idxJ19, idxJ20, CRGB(180,0,0));
+    // J1 solid red (other neighbour — single node, no fill needed)
+    if (hJ1) setPixel(chJ1, idxJ1, CRGB(180,0,0));
+    // J20 blinks bright red
+    bool on = (millis() / 400) % 2;
+    if (hJ20) setPixel(chJ20, idxJ20, on ? CRGB(255,0,0) : CRGB(60,0,0));
+  }
+  if (fallHazard) {
+    int chJ15, idxJ15, chJ14, idxJ14, chJ17, idxJ17;
+    bool hJ15 = getNodeLED("J15", chJ15, idxJ15);
+    bool hJ14 = getNodeLED("J14", chJ14, idxJ14);
+    bool hJ17 = getNodeLED("J17", chJ17, idxJ17);
+    // Fill J17 → J15 solid red (neighbour up to hazard)
+    if (hJ17 && hJ15) fillBetween(chJ17, idxJ17, idxJ15, CRGB(180,0,0));
+    // J14 solid red (other neighbour)
+    if (hJ14) setPixel(chJ14, idxJ14, CRGB(180,0,0));
+    // J15 blinks bright red
+    bool on = (millis() / 400) % 2;
+    if (hJ15) setPixel(chJ15, idxJ15, on ? CRGB(255,0,0) : CRGB(60,0,0));
   }
 
-  // 3. Active route — chase between consecutive nodes
+  // 3. Active route — drawn LAST so green overrides red neighbours on the safe path
+  // SKIP index 0 (hazard node) — it must stay red. Green starts from index 1.
   if (activeRouteLen >= 2) {
-    for (int r = 0; r < activeRouteLen - 1; r++) {
+    for (int r = 1; r < activeRouteLen - 1; r++) {
       int chA, idxA, chB, idxB;
       bool foundA = getNodeLED(activeRoute[r].c_str(),   chA, idxA);
       if (!foundA) continue;
-      // For node B, prefer same channel as node A so cross-strip
-      // nodes (J1, EXIT-1) pick the entry on the same strip
       bool foundB = getNodeLED(activeRoute[r+1].c_str(), chB, idxB, chA);
       if (!foundB) continue;
       if (chA == chB) {
         chaseBetween(chA, idxA, idxB, chaseTick);
       } else {
-        // Truly different strips — light both endpoints
         setPixel(chA, idxA, CRGB(0,200,0));
         setPixel(chB, idxB, CRGB(0,200,0));
       }
     }
+    // Bright green on first SAFE node (index 1, not index 0 which is hazard)
     int chS, idxS;
-    if (getNodeLED(activeRoute[0].c_str(), chS, idxS))
+    if (getNodeLED(activeRoute[1].c_str(), chS, idxS))
       setPixel(chS, idxS, CRGB(0,255,0));
   }
 
@@ -248,6 +266,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   systemState  = doc["system_state"] | "NORMAL";
   systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
   fftConfirmed = doc["facp_confirmed"] | false;
+
+  // Parse hazard type so LEDs can show correct indicator
+  // "FALL DETECTED", "THERMAL ANOMALY", "OBSTRUCTION DETECTED", ""
+  String hazardType = doc["hazard_type"] | "";
+  fallHazard = systemHazard && hazardType.startsWith("FALL");
 
   // Parse route node list from backend — used for per-node LED rendering
   activeRouteLen = 0;

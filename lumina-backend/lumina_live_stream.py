@@ -433,7 +433,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
@@ -586,6 +586,11 @@ def _heartbeat_thread():
             mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
             _stealth = not _manual and _state == "NORMAL"
             
+            _hazard_nodes = [nid for nid, d in live_node_status.items() if d.get("hazard")]
+            _hazard_type  = ""
+            if any(d.get("hazard") == "fall"    for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
+            elif any(d.get("hazard") == "thermal" for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
+
             payload = json.dumps({
                 "status":          mqtt_status,
                 "system_state":    _state,
@@ -594,6 +599,7 @@ def _heartbeat_thread():
                 "person_count":    _total_pax,
                 "corridors":       _corridors,
                 "route":           _route,
+                "hazard_type":     _hazard_type,
             })
             print(f"[DEBUG] Sending to ESP32: {payload}", flush=True)
             mqtt_client.publish(TOPIC, payload, retain=True)
@@ -967,9 +973,9 @@ def _process_ai_cycle(cap, state):
         if t_now - state["fall_timer_start"] >= 3.0 and cur_state == "NORMAL":
             with state_lock:
                 system_state = "HAZARD"
-                live_node_status["J14"]["hazard"] = "fall"
-                live_node_status["J14"]["status"] = "alert"
-                live_node_status["J14"]["pull_signal"] = "RED"
+                live_node_status["J15"]["hazard"] = "fall"
+                live_node_status["J15"]["status"] = "alert"
+                live_node_status["J15"]["pull_signal"] = "RED"
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -984,7 +990,7 @@ def _process_ai_cycle(cap, state):
     else:
         state["fall_timer_start"] = 0
         with state_lock:
-            _n011_hazard = live_node_status["J14"]["hazard"]
+            _n011_hazard = live_node_status["J15"]["hazard"]
         # Only auto-recover fall in live mode — simulation handles its own state
         if system_mode == "live" and cur_state == "HAZARD" and _n011_hazard == "fall":
             if state["recovery_timer_start"] == 0:
@@ -993,9 +999,9 @@ def _process_ai_cycle(cap, state):
                 with state_lock:
                     system_state   = "NORMAL"
                     facp_confirmed = False
-                    live_node_status["J14"]["hazard"]      = None
-                    live_node_status["J14"]["status"]      = "normal"
-                    live_node_status["J14"]["pull_signal"] = "GREEN"
+                    live_node_status["J15"]["hazard"]      = None
+                    live_node_status["J15"]["status"]      = "normal"
+                    live_node_status["J15"]["pull_signal"] = "GREEN"
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
@@ -1055,36 +1061,37 @@ def _process_ai_cycle(cap, state):
                     current_per_node_routes[:] = _per
                     current_route[:] = _per[-1]["best_path"]
             else:
+                # Live mode with hazard — use same routing logic as simulation mode.
+                # Build active_hazard_nodes from live_node_status so get_all_exit_routes
+                # handles all cases (fall/thermal/obstruction) identically to sim mode.
                 if system_state == "HAZARD":
-                    # Find which node has the active hazard and route from adjacent node
-                    # Camera fall → J14 hazard, start from J12
-                    # DHT11 thermal → J20 hazard, start from J19
-                    # HC-SR04 obstruction → uses block_node_and_reroute separately
-                    # Default fallback: start from J14 (camera position)
-                    lobby_hazard = live_node_status.get("J14", {}).get("hazard")
-                    thermal_hazard = live_node_status.get("J20", {}).get("hazard")
-                    path, score = [], 0
-
-                    if lobby_hazard == "fall":
-                        start_node = "J12"
-                        path, score = calculate_safest_route(start_node, verbose=False)
-                        if path:
-                            path = ["J14"] + path
-                    elif thermal_hazard == "thermal":
-                        # Thermal at J20 — J20 already marked impassable,
-                        # start from J19 (adjacent) and let DYN-A* decide exit
-                        start_node = "J19"
-                        path, score = calculate_safest_route(start_node, verbose=False)
-                        if path:
-                            path = ["J20"] + path
+                    _live_hazards = [
+                        {"node_id": nid, "event_type": d["hazard"]}
+                        for nid, d in live_node_status.items()
+                        if d.get("hazard") and d.get("status") == "alert"
+                    ]
+                    if _live_hazards:
+                        _per = []
+                        for _h in _live_hazards:
+                            _h_routes = get_all_exit_routes(_h["node_id"])
+                            _per.append({
+                                "node_id":    _h["node_id"],
+                                "event_type": _h["event_type"],
+                                "best_path":  _h_routes[0]["path"] if _h_routes else [],
+                                "best_exit":  _h_routes[0]["exit"] if _h_routes else None,
+                                "best_cost":  _h_routes[0]["cost"] if _h_routes else None,
+                                "all_exits":  _h_routes,
+                                "rset":       estimate_rset(_h_routes[0]["path"]) if _h_routes else None,
+                            })
+                            if _h["node_id"] in live_node_status:
+                                live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
+                        if _per:
+                            current_per_node_routes[:] = _per
+                            current_route[:] = _per[-1]["best_path"]
+                            current_route_cost = _per[-1]["best_cost"] or 0
                     else:
-                        # Generic hazard — start from camera node
-                        start_node = "J14"
-                        path, score = calculate_safest_route(start_node, verbose=False)
-
-                    if path:
-                        current_route[:] = path
-                        current_route_cost = score
+                        current_route[:] = []
+                        current_route_cost = 0
                         current_per_node_routes.clear()
                 else:
                     current_route[:] = []
