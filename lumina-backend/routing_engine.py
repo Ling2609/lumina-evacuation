@@ -291,9 +291,10 @@ EXIT_TO_CORRIDOR = {
     "EXIT-3": "C-004",
 }
 J_TO_CORRIDOR = {
-    "J1":"C-001","J2":"C-001","J3":"C-001","J18":"C-001","J19":"C-001","J20":"C-001",
+    "J1":"C-001","J19":"C-001","J20":"C-001",
+    "J2":"C-003","J3":"C-003",
     "J4":"C-003","J7":"C-003","J8":"C-003","J9":"C-003","J10":"C-003",
-    "J11":"C-004","J12":"C-004","J13":"C-004","J14":"C-004","J15":"C-004","J17":"C-004",
+    "J11":"C-004","J12":"C-004","J13":"C-004","J14":"C-004","J15":"C-004","J17":"C-004","J18":"C-004",
 }
 
 # Physical rank of each junction within its corridor's LED strip, ordered
@@ -303,9 +304,11 @@ J_TO_CORRIDOR = {
 # if decreasing, the evacuee is moving away from that corridor's exit and
 # the chase must reverse (dir=-1) so the LEDs don't point the wrong way.
 J_CORRIDOR_RANK = {
-    "J1":1, "J2":2, "J3":3, "J20":4, "J19":5, "J18":6,   # C-001, EXIT-1 side = J1
-    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5,             # C-003, EXIT-2 side = J10
-    "J13":1, "J12":2, "J11":3, "J14":4, "J15":5, "J17":6,# C-004, EXIT-3 side = J13
+    "J1":1, "J20":2, "J19":3,                        # C-001, EXIT-1 side = J1
+    "J10":1, "J9":2, "J8":3, "J7":4, "J4":5,
+    "J3":6, "J2":7,                                   # C-003, EXIT-2 side = J10; J2/J3 at far end
+    "J13":1, "J12":2, "J11":3, "J14":4, "J15":5,
+    "J17":6, "J18":7,                                 # C-004, EXIT-3 side = J13; J18 at far end
 }
 
 # Fruin LOS D capacity per corridor segment (pax)

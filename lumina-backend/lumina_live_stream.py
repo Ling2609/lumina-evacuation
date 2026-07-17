@@ -168,7 +168,7 @@ def _on_sensor_message(client, userdata, msg):
     IMPORTANT: Real sensor events are SUPPRESSED in simulation mode.
     Bomba override cannot be overridden by sensor events.
     """
-    global manual_override, current_route, system_state, thermal_state
+    global manual_override, current_route, system_state, thermal_state, current_route_cost
 
     # Respect system mode — ignore real sensors in simulation mode
     with state_lock:
@@ -198,13 +198,15 @@ def _on_sensor_message(client, userdata, msg):
             if status == "BLOCKED":
                 print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → blocking {junction}, recalculating route")
                 with state_lock:
-                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J4")
+                    system_state = "HAZARD"   # dashboard reads this for isHazard — without
+                                              # this, dashboard never shows the obstruction
+                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J14")
                     current_route   = result["new_route"]
                     manual_override = True
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
                 mqtt_client.publish(TOPIC, json.dumps({
-                    "status": "CRITICAL", "system_state": system_state,
+                    "status": "CRITICAL", "system_state": "HAZARD",
                     "hazard_type": f"OBSTRUCTION DETECTED in {node_id}",
                     "manual_override": True, "person_count": _total_pax,
                     "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
@@ -214,10 +216,13 @@ def _on_sensor_message(client, userdata, msg):
                 with state_lock:
                     unblock_node(junction)
                     reset_hysteresis()
-                    # Only release manual_override if no active fire/thermal hazard —
-                    # clearing a debris obstruction shouldn't cancel an ongoing evacuation
-                    if system_state == "NORMAL":
+                    # Only release system_state + manual_override if no other
+                    # active hazard — clearing debris shouldn't cancel a fire evacuation
+                    if not any(d.get("hazard") for d in live_node_status.values()):
+                        system_state    = "NORMAL"
                         manual_override = False
+                        current_route[:]= []
+                        current_route_cost = 0
 
         # ── Thermal Sensor: real thermal anomaly from physical IR sensor ─────────
         elif sensor in ("MLX90614", "DHT11"):
