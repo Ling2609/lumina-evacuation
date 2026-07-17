@@ -236,16 +236,16 @@ def _on_sensor_message(client, userdata, msg):
             if status == "CLEAR":
                 with state_lock:
                     thermal_state = "NORMAL"
-                    _j14_hazard = live_node_status["J20"].get("hazard")
-                    if system_state == "HAZARD" and _j14_hazard == "thermal":
+                    _j20_hazard = live_node_status["J20"].get("hazard")
+                    if system_state == "HAZARD" and _j20_hazard == "thermal":
                         system_state = "NORMAL"
                         live_node_status["J20"]["status"] = "normal"
                         live_node_status["J20"]["hazard"] = None
                         live_node_status["J20"]["pull_signal"] = "GREEN"
                         current_route[:] = []
                         current_route_cost = 0
-                        _total_pax  = sum(d["crowd"] for d in live_node_status.values())
-                        _corridors  = _build_corridor_states()
+                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
+                    _corridors  = _build_corridor_states()
                 mqtt_client.publish(TOPIC, json.dumps({
                     "status":       "RESOLVED",
                     "system_state": "NORMAL",
@@ -255,29 +255,41 @@ def _on_sensor_message(client, userdata, msg):
                     "corridors":    _corridors,
                 }), retain=True)
                 print(f"[{sensor}] Thermal CLEAR — hazard auto-reset, dashboard returning to normal")
-                return   # nothing else to do on CLEAR
+                return
 
             # Feed the real reading into the existing ThermalClassifier —
             # same pipeline as the simulated path, now driven by real hardware.
             result = thermal_clf.classify(temp_c)
             with state_lock:
                 thermal_state = result["state"]
-                if result["state"] in ("WARNING", "ALERT") and system_state == "NORMAL":
+                # Trigger on explicit THERMAL_ANOMALY from firmware OR classifier ALERT —
+                # don't wait for classifier warmup (30 readings) when the physical sensor
+                # already confirmed the anomaly with its own hysteresis logic
+                should_trigger = (
+                    status == "THERMAL_ANOMALY" or
+                    result["state"] in ("WARNING", "ALERT")
+                )
+                if should_trigger and system_state == "NORMAL":
                     system_state = "HAZARD"
                     live_node_status["J20"]["status"] = "alert"
                     live_node_status["J20"]["hazard"] = "thermal"
+                    # Calculate reroute away from J20 — without this,
+                    # dashboard shows J20 red but no green route path
+                    _path, _score = calculate_safest_route("J20", verbose=False)
+                    if _path:
+                        current_route[:] = _path
+                        current_route_cost = _score
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
-            if result["state"] == "ALERT":
-                mqtt_client.publish(TOPIC, json.dumps({
-                    "status":       "CRITICAL",
-                    "system_state": "HAZARD",
-                    "hazard_type":  f"THERMAL ANOMALY ({sensor})",
-                    "temp_c":       temp_c,
-                    "person_count": _total_pax,
-                    "corridors":    _corridors,
-                }))
-                print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C")
+                    mqtt_client.publish(TOPIC, json.dumps({
+                        "status":       "CRITICAL",
+                        "system_state": "HAZARD",
+                        "hazard_type":  f"THERMAL ANOMALY ({sensor})",
+                        "temp_c":       temp_c,
+                        "person_count": _total_pax,
+                        "corridors":    _corridors,
+                    }))
+                    print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C → route recalculated")
 
     except Exception as e:
         print(f"[SENSOR] Message error: {e}")
