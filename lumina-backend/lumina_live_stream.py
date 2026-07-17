@@ -428,7 +428,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
