@@ -82,10 +82,25 @@ NodeLED nodeLEDMap[NUM_NODE_LEDS] = {
   {"EXIT-3", CH_RIGHT, 34},
 };
 
-// ── Active route received from backend ───────────────────────
-#define MAX_ROUTE_NODES 20
-String activeRoute[MAX_ROUTE_NODES];
-int    activeRouteLen = 0;
+// ── Active routes — one per hazard node, kept until that hazard clears ──
+#define MAX_HAZARD_ROUTES  4
+#define MAX_ROUTE_NODES   20
+
+struct HazardRoute {
+  String nodeId;
+  String eventType;
+  String path[MAX_ROUTE_NODES];
+  int    pathLen;
+  bool   active;
+};
+
+HazardRoute hazardRoutes[MAX_HAZARD_ROUTES];
+int hazardRouteCount = 0;
+
+// Colour per event type so two simultaneous routes look distinct
+CRGB routeHead(const String& et) { return CRGB(0,200,0); }  // always green
+CRGB routeTail(const String& et) { return CRGB(0,50,0);  }  // always dim green
+
 
 // ── System & Sensor state ────────────────────────────────────
 String systemState   = "NORMAL";
@@ -223,36 +238,56 @@ void updateLEDs() {
     if (hJ15) setPixel(chJ15, idxJ15, on ? CRGB(255,0,0) : CRGB(60,0,0));
   }
 
-  // 3. Active route — drawn LAST so green overrides red neighbours on the safe path
-  // Hazard node (index 0) stays red — but the gap between it and the first safe
-  // node (index 1) needs to be lit green. We chase from hazard LED+1 to safe node.
-  if (activeRouteLen >= 2) {
-    // Gap fill: hazard node → first safe node (green, excludes hazard LED itself)
+  // 3. Active routes — one per hazard, each in its own colour, drawn LAST
+  // Routes are kept alive until backend stops sending them (hazard cleared)
+  for (int h = 0; h < hazardRouteCount; h++) {
+    HazardRoute& hr = hazardRoutes[h];
+    if (!hr.active || hr.pathLen < 2) continue;
+
+    CRGB head = routeHead(hr.eventType);
+    CRGB tail = routeTail(hr.eventType);
+
+    // Gap fill: hazard node(0) -> first safe node(1), skip hazard LED itself
     int chH, idxH, chS1, idxS1;
-    bool foundH  = getNodeLED(activeRoute[0].c_str(), chH,  idxH);
-    bool foundS1 = getNodeLED(activeRoute[1].c_str(), chS1, idxS1, chH);
+    bool foundH  = getNodeLED(hr.path[0].c_str(), chH,  idxH);
+    bool foundS1 = getNodeLED(hr.path[1].c_str(), chS1, idxS1, chH);
     if (foundH && foundS1 && chH == chS1) {
-      // Chase from the LED just after the hazard node to the first safe node
       int startLED = (idxH < idxS1) ? idxH + 1 : idxH - 1;
-      if (startLED != idxS1) chaseBetween(chH, startLED, idxS1, chaseTick);
-      setPixel(chS1, idxS1, CRGB(0,255,0));  // bright green on first safe node
+      if (startLED != idxS1) {
+        int lo = min(startLED, idxS1), hi = max(startLED, idxS1), len = hi-lo+1;
+        int dir = (startLED<=idxS1) ? 1 : -1, pos = chaseTick % len;
+        for (int i = 0; i < len; i++) {
+          int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
+          setPixel(chH, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
+        }
+      }
+      setPixel(chS1, idxS1, head);
     }
 
-    // Rest of route: index 1 onwards
-    for (int r = 1; r < activeRouteLen - 1; r++) {
+    // Rest of route: index 1 onward
+    for (int r = 1; r < hr.pathLen - 1; r++) {
       int chA, idxA, chB, idxB;
-      bool foundA = getNodeLED(activeRoute[r].c_str(),   chA, idxA);
+      bool foundA = getNodeLED(hr.path[r].c_str(),   chA, idxA);
       if (!foundA) continue;
-      bool foundB = getNodeLED(activeRoute[r+1].c_str(), chB, idxB, chA);
+      bool foundB = getNodeLED(hr.path[r+1].c_str(), chB, idxB, chA);
       if (!foundB) continue;
       if (chA == chB) {
-        chaseBetween(chA, idxA, idxB, chaseTick);
+        int lo = min(idxA,idxB), hi = max(idxA,idxB), len = hi-lo+1;
+        int dir = (idxA<=idxB) ? 1 : -1, pos = chaseTick % len;
+        for (int i = 0; i < len; i++) {
+          int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
+          setPixel(chA, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
+        }
       } else {
-        setPixel(chA, idxA, CRGB(0,200,0));
-        setPixel(chB, idxB, CRGB(0,200,0));
+        setPixel(chA, idxA, head);
+        setPixel(chB, idxB, head);
       }
     }
+    // Bright first safe node
+    int chS, idxS;
+    if (getNodeLED(hr.path[1].c_str(), chS, idxS)) setPixel(chS, idxS, head);
   }
+
 
   FastLED.show();
   chaseTick++;
@@ -263,12 +298,12 @@ void updateLEDs() {
 // ============================================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   lastMqttMessage = millis();
-  char msg[1200];
+  char msg[2400];
   if (length >= sizeof(msg)) return;
   memcpy(msg, payload, length);
   msg[length] = '\0';
 
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;
   DeserializationError err = deserializeJson(doc, msg);
   if (err) return;
 
@@ -276,24 +311,41 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
   fftConfirmed = doc["facp_confirmed"] | false;
 
-  // If backend reports NORMAL, clear local sensor alert flags —
-  // prevents stale firmware-side flags conflicting with a resolved system
+  // Clear local sensor flags when backend reports NORMAL
   if (!systemHazard) {
     thermalAlert     = false;
     obstructionAlert = false;
     fallHazard       = false;
+    hazardRouteCount = 0;  // clear all stored routes
+    for (int i = 0; i < MAX_HAZARD_ROUTES; i++) hazardRoutes[i].active = false;
   }
 
-  // Parse hazard type so LEDs can show correct indicator
+  // Parse hazard type for local LED overlays
   String hazardType = doc["hazard_type"] | "";
   fallHazard = systemHazard && hazardType.startsWith("FALL");
 
-  // Parse route node list from backend — used for per-node LED rendering
-  activeRouteLen = 0;
-  JsonArray routeArr = doc["route"].as<JsonArray>();
-  for (JsonVariant v : routeArr) {
-    if (activeRouteLen >= MAX_ROUTE_NODES) break;
-    activeRoute[activeRouteLen++] = v.as<String>();
+  // Parse per_node_routes — one route per hazard node, each drawn in its own colour
+  // Routes are kept alive until the backend stops sending them (hazard cleared)
+  JsonArray pnr = doc["per_node_routes"].as<JsonArray>();
+  if (pnr) {
+    // Mark all existing routes inactive — will re-activate if still in payload
+    for (int i = 0; i < MAX_HAZARD_ROUTES; i++) hazardRoutes[i].active = false;
+    hazardRouteCount = 0;
+
+    for (JsonObject r : pnr) {
+      if (hazardRouteCount >= MAX_HAZARD_ROUTES) break;
+      HazardRoute& hr = hazardRoutes[hazardRouteCount];
+      hr.nodeId    = r["node_id"]    | "";
+      hr.eventType = r["event_type"] | "thermal";
+      hr.pathLen   = 0;
+      hr.active    = true;
+      JsonArray path = r["path"].as<JsonArray>();
+      for (JsonVariant v : path) {
+        if (hr.pathLen >= MAX_ROUTE_NODES) break;
+        hr.path[hr.pathLen++] = v.as<String>();
+      }
+      hazardRouteCount++;
+    }
   }
 }
 
@@ -428,11 +480,18 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-  dht.begin(); // 【新增】启动 DHT11 传感器
+  dht.begin();
+
+  // Initialize hazard route storage
+  hazardRouteCount = 0;
+  for (int i = 0; i < MAX_HAZARD_ROUTES; i++) {
+    hazardRoutes[i].active  = false;
+    hazardRoutes[i].pathLen = 0;
+  }
 
   connectWifi();
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setBufferSize(1024);   
+  mqttClient.setBufferSize(2048);   
   mqttClient.setCallback(mqttCallback);
 
   Serial.println("[Lumina] Ready.");

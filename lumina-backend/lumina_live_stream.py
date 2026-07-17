@@ -581,15 +581,18 @@ def _heartbeat_thread():
             _corridors = _build_corridor_states()
 
             _route     = list(current_route)
-        # ALLOW hardware updates ONLY if in Live Mode OR if Bomba manually overrides
-        if _mode == "live" or _bomba:
-            mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
-            _stealth = not _manual and _state == "NORMAL"
-            
+            _per_node_snapshot = [
+                {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
+                for r in current_per_node_routes if r.get("best_path")
+            ]
             _hazard_type  = ""
             if any(d.get("hazard") == "fall"      for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
             elif any(d.get("hazard") == "thermal"  for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
             elif any(d.get("hazard") == "collapsed" for d in live_node_status.values()): _hazard_type = "OBSTRUCTION DETECTED"
+        # ALLOW hardware updates ONLY if in Live Mode OR if Bomba manually overrides
+        if _mode == "live" or _bomba:
+            mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
+            _stealth = not _manual and _state == "NORMAL"
 
             payload = json.dumps({
                 "status":          mqtt_status,
@@ -600,6 +603,7 @@ def _heartbeat_thread():
                 "corridors":       _corridors,
                 "route":           _route,
                 "hazard_type":     _hazard_type,
+                "per_node_routes": _per_node_snapshot,
             })
             print(f"[DEBUG] Sending to ESP32: {payload}", flush=True)
             mqtt_client.publish(TOPIC, payload, retain=True)
