@@ -770,6 +770,7 @@ export default function App() {
   },[]);
 
   // ── MQTT ──────────────────────────────────────────────────────────────────
+  const lastMqttStatusRef = useRef("NORMAL"); // dedup — only log on status change
   useEffect(()=>{
     const c=mqtt.connect(MQTT_BROKER,{reconnectPeriod:3000,connectTimeout:10000});
     c.on("connect",()=>{setMqttStatus("LIVE");c.subscribe(MQTT_TOPIC);});
@@ -780,33 +781,39 @@ export default function App() {
       try{
         const p=JSON.parse(msg.toString());
         setMqttMsgCount(n=>n+1);
-        // MQTT's person_count is always the true building-wide total (see
-        // lumina_live_stream.py heartbeat/trigger/fall publishes) — NOT the
-        // same metric as the CAM-01 lobby tracker. Routing both REST and
-        // MQTT writes into the same state caused the dashboard number to
-        // visibly alternate between "1" (camera) and "200+" (building).
         if(p.person_count!==undefined) setTotalFootfall(p.person_count);
         if(p.status==="CRITICAL"){
           const _hzType = p.hazard_type??"HAZARD";
           setIsHazard(true); setHazardType(_hzType);
           setPasCountdown(178);
-          if(_hzType==="FALL DETECTED"){
-            pushEvent(`Fall detected — buffer zone active, evacuees redirected`,"danger","REACTIVE");
-          } else {
-            pushEvent(`CRITICAL: ${_hzType}`,"danger","REACTIVE");
+          // Only push event log on transition, not on every heartbeat tick
+          if(lastMqttStatusRef.current !== "CRITICAL" || lastMqttStatusRef._hzType !== _hzType){
+            lastMqttStatusRef.current = "CRITICAL";
+            lastMqttStatusRef._hzType = _hzType;
+            if(_hzType==="FALL DETECTED"){
+              pushEvent(`Fall detected — buffer zone active, evacuees redirected`,"danger","REACTIVE");
+            } else if(_hzType){
+              pushEvent(`CRITICAL: ${_hzType}`,"danger","REACTIVE");
+            }
           }
         }
         if(p.status==="FACP_CONFIRMED"){
-          // FACP only confirms fire — not triggered by fall detection
           setFftConfirmed(true);
-          pushEvent("FACP confirmed — 520Hz alarm","warning","REACTIVE");
-          pushEvent("RAMO 520Hz directional beacon activated — ADA / NFPA 72 compliant guidance","info");
-          pushEvent("Mesh coordination active — fire penalty propagated to adjacent nodes","info","PRE-EMPTIVE");
+          if(lastMqttStatusRef.current !== "FACP_CONFIRMED"){
+            lastMqttStatusRef.current = "FACP_CONFIRMED";
+            pushEvent("FACP confirmed — 520Hz alarm","warning","REACTIVE");
+            pushEvent("RAMO 520Hz directional beacon activated — ADA / NFPA 72 compliant guidance","info");
+            pushEvent("Mesh coordination active — fire penalty propagated to adjacent nodes","info","PRE-EMPTIVE");
+          }
         }
         if(p.status==="RESOLVED"){
           setIsHazard(false); setPasCountdown(178); setFftConfirmed(false);
-          pushEvent("System RESOLVED — back to NORMAL","success","REACTIVE");
+          if(lastMqttStatusRef.current !== "RESOLVED"){
+            lastMqttStatusRef.current = "RESOLVED";
+            pushEvent("System RESOLVED — back to NORMAL","success","REACTIVE");
+          }
         }
+        if(p.status==="NORMAL") lastMqttStatusRef.current = "NORMAL";
       } catch{ /* malformed MQTT payload — ignore */ }
     });
     return()=>c.end();

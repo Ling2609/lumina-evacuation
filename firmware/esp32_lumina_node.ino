@@ -224,8 +224,21 @@ void updateLEDs() {
   }
 
   // 3. Active route — drawn LAST so green overrides red neighbours on the safe path
-  // SKIP index 0 (hazard node) — it must stay red. Green starts from index 1.
+  // Hazard node (index 0) stays red — but the gap between it and the first safe
+  // node (index 1) needs to be lit green. We chase from hazard LED+1 to safe node.
   if (activeRouteLen >= 2) {
+    // Gap fill: hazard node → first safe node (green, excludes hazard LED itself)
+    int chH, idxH, chS1, idxS1;
+    bool foundH  = getNodeLED(activeRoute[0].c_str(), chH,  idxH);
+    bool foundS1 = getNodeLED(activeRoute[1].c_str(), chS1, idxS1, chH);
+    if (foundH && foundS1 && chH == chS1) {
+      // Chase from the LED just after the hazard node to the first safe node
+      int startLED = (idxH < idxS1) ? idxH + 1 : idxH - 1;
+      if (startLED != idxS1) chaseBetween(chH, startLED, idxS1, chaseTick);
+      setPixel(chS1, idxS1, CRGB(0,255,0));  // bright green on first safe node
+    }
+
+    // Rest of route: index 1 onwards
     for (int r = 1; r < activeRouteLen - 1; r++) {
       int chA, idxA, chB, idxB;
       bool foundA = getNodeLED(activeRoute[r].c_str(),   chA, idxA);
@@ -239,10 +252,6 @@ void updateLEDs() {
         setPixel(chB, idxB, CRGB(0,200,0));
       }
     }
-    // Bright green on first SAFE node (index 1, not index 0 which is hazard)
-    int chS, idxS;
-    if (getNodeLED(activeRoute[1].c_str(), chS, idxS))
-      setPixel(chS, idxS, CRGB(0,255,0));
   }
 
   FastLED.show();
@@ -267,8 +276,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
   fftConfirmed = doc["facp_confirmed"] | false;
 
+  // If backend reports NORMAL, clear local sensor alert flags —
+  // prevents stale firmware-side flags conflicting with a resolved system
+  if (!systemHazard) {
+    thermalAlert     = false;
+    obstructionAlert = false;
+    fallHazard       = false;
+  }
+
   // Parse hazard type so LEDs can show correct indicator
-  // "FALL DETECTED", "THERMAL ANOMALY", "OBSTRUCTION DETECTED", ""
   String hazardType = doc["hazard_type"] | "";
   fallHazard = systemHazard && hazardType.startsWith("FALL");
 

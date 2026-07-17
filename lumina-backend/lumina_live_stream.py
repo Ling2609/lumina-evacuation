@@ -586,10 +586,10 @@ def _heartbeat_thread():
             mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
             _stealth = not _manual and _state == "NORMAL"
             
-            _hazard_nodes = [nid for nid, d in live_node_status.items() if d.get("hazard")]
             _hazard_type  = ""
-            if any(d.get("hazard") == "fall"    for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
-            elif any(d.get("hazard") == "thermal" for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
+            if any(d.get("hazard") == "fall"      for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
+            elif any(d.get("hazard") == "thermal"  for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
+            elif any(d.get("hazard") == "collapsed" for d in live_node_status.values()): _hazard_type = "OBSTRUCTION DETECTED"
 
             payload = json.dumps({
                 "status":          mqtt_status,
@@ -973,9 +973,10 @@ def _process_ai_cycle(cap, state):
         if t_now - state["fall_timer_start"] >= 3.0 and cur_state == "NORMAL":
             with state_lock:
                 system_state = "HAZARD"
-                live_node_status["J15"]["hazard"] = "fall"
-                live_node_status["J15"]["status"] = "alert"
+                live_node_status["J15"]["hazard"]     = "fall"
+                live_node_status["J15"]["status"]     = "alert"
                 live_node_status["J15"]["pull_signal"] = "RED"
+                live_node_status["J15"]["impassable"] = True
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -1002,6 +1003,7 @@ def _process_ai_cycle(cap, state):
                     live_node_status["J15"]["hazard"]      = None
                     live_node_status["J15"]["status"]      = "normal"
                     live_node_status["J15"]["pull_signal"] = "GREEN"
+                    live_node_status["J15"]["impassable"]  = False
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
@@ -1059,7 +1061,7 @@ def _process_ai_cycle(cap, state):
                         live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
                 if _per:
                     current_per_node_routes[:] = _per
-                    current_route[:] = _per[-1]["best_path"]
+                    current_route[:] = _per[0]["best_path"]
             else:
                 # Live mode with hazard — use same routing logic as simulation mode.
                 # Build active_hazard_nodes from live_node_status so get_all_exit_routes
@@ -1087,8 +1089,8 @@ def _process_ai_cycle(cap, state):
                                 live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
                         if _per:
                             current_per_node_routes[:] = _per
-                            current_route[:] = _per[-1]["best_path"]
-                            current_route_cost = _per[-1]["best_cost"] or 0
+                            current_route[:] = _per[0]["best_path"]
+                            current_route_cost = _per[0]["best_cost"] or 0
                     else:
                         current_route[:] = []
                         current_route_cost = 0
@@ -1264,7 +1266,7 @@ def cancel_sim_trigger():
                 live_node_status[_h["node_id"]]["shelter_in_place"] = (len(_h_routes) == 0)
         current_per_node_routes[:] = _per
         if _per:
-            current_route[:] = _per[-1]["best_path"]
+            current_route[:] = _per[0]["best_path"]
         else:
             current_route[:] = []
         # If no more active hazards, return to normal
