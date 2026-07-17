@@ -980,7 +980,9 @@ def _process_ai_cycle(cap, state):
                 live_node_status["J15"]["hazard"]     = "fall"
                 live_node_status["J15"]["status"]     = "alert"
                 live_node_status["J15"]["pull_signal"] = "RED"
-                live_node_status["J15"]["impassable"] = True
+                # Note: impassable NOT set for fall — corridor is still physically
+                # passable (high cost penalty from "alert" status is sufficient).
+                # Hard-blocking would prevent routing through J15 even as last resort.
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -1007,7 +1009,6 @@ def _process_ai_cycle(cap, state):
                     live_node_status["J15"]["hazard"]      = None
                     live_node_status["J15"]["status"]      = "normal"
                     live_node_status["J15"]["pull_signal"] = "GREEN"
-                    live_node_status["J15"]["impassable"]  = False
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
