@@ -239,9 +239,10 @@ def _on_sensor_message(client, userdata, msg):
                     _j20_hazard = live_node_status["J20"].get("hazard")
                     if system_state == "HAZARD" and _j20_hazard == "thermal":
                         system_state = "NORMAL"
-                        live_node_status["J20"]["status"] = "normal"
-                        live_node_status["J20"]["hazard"] = None
+                        live_node_status["J20"]["status"]     = "normal"
+                        live_node_status["J20"]["hazard"]     = None
                         live_node_status["J20"]["pull_signal"] = "GREEN"
+                        live_node_status["J20"]["impassable"] = False
                         current_route[:] = []
                         current_route_cost = 0
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
@@ -271,13 +272,17 @@ def _on_sensor_message(client, userdata, msg):
                 )
                 if should_trigger and system_state == "NORMAL":
                     system_state = "HAZARD"
-                    live_node_status["J20"]["status"] = "alert"
-                    live_node_status["J20"]["hazard"] = "thermal"
-                    # Calculate reroute away from J20 — without this,
-                    # dashboard shows J20 red but no green route path
-                    _path, _score = calculate_safest_route("J20", verbose=False)
+                    live_node_status["J20"]["status"]     = "alert"
+                    live_node_status["J20"]["hazard"]     = "thermal"
+                    live_node_status["J20"]["impassable"] = True  # hard-block so DYN-A*
+                                                                   # avoids it, not just
+                                                                   # adds a cost penalty
+                    # Start from J19 (adjacent to J20) so DYN-A* finds the
+                    # safest exit automatically — algorithm decides, not us
+                    _path, _score = calculate_safest_route("J19", verbose=False)
                     if _path:
-                        current_route[:] = _path
+                        current_route[:] = ["J20"] + _path  # prepend hazard node so
+                                                              # dashboard shows it red
                         current_route_cost = _score
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
@@ -428,7 +433,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
@@ -575,6 +580,7 @@ def _heartbeat_thread():
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 
+            _route     = list(current_route)
         # ALLOW hardware updates ONLY if in Live Mode OR if Bomba manually overrides
         if _mode == "live" or _bomba:
             mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
@@ -587,6 +593,7 @@ def _heartbeat_thread():
                 "stealth_mode":    _stealth,
                 "person_count":    _total_pax,
                 "corridors":       _corridors,
+                "route":           _route,
             })
             print(f"[DEBUG] Sending to ESP32: {payload}", flush=True)
             mqtt_client.publish(TOPIC, payload, retain=True)

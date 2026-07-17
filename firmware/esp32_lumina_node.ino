@@ -49,31 +49,43 @@ CRGB rightLeds[NUM_RIGHT_LEDS];
 #define CH_LEFT  0
 #define CH_RIGHT 1
 
-struct PathSegment {
-  const char* name;
-  int   channel;
-  int   startIndex;
-  int   endIndex;
+// ── Per-node LED mapping (exact LED index from physical measurement) ──
+struct NodeLED {
+  const char* node_id;
+  int         channel;
+  int         ledIndex;
 };
 
-// ── Physical segment map ──────────────────────────────────────
-#define NUM_SEGMENTS 9
-PathSegment mapSegments[NUM_SEGMENTS] = {
-  {"L_EXIT1_J1",      CH_LEFT,  0,  5},
-  {"L_J1_J2",         CH_LEFT,  6,  8},
-  {"L_J2_J8",         CH_LEFT,  9, 23},
-  {"L_J8_EXIT2NJ12",  CH_LEFT, 24, 33},
-  {"R_EXIT1_J1",      CH_RIGHT, 0,  5},   
-  {"R_J1_J18",        CH_RIGHT, 6, 10},   
-  {"R_J18_J17",       CH_RIGHT,11, 14},   
-  {"R_J17_J15",       CH_RIGHT,15, 18},   
-  {"R_J15_EXIT3",     CH_RIGHT,19, 34},   
+#define NUM_NODE_LEDS 23
+NodeLED nodeLEDMap[NUM_NODE_LEDS] = {
+  {"EXIT-1", CH_LEFT,   0},
+  {"J1",     CH_LEFT,   5},
+  {"J2",     CH_LEFT,   8},
+  {"J3",     CH_LEFT,  10},
+  {"J4",     CH_LEFT,  16},
+  {"J7",     CH_LEFT,  20},
+  {"J8",     CH_LEFT,  23},
+  {"J11",    CH_LEFT,  26},
+  {"J9",     CH_LEFT,  27},
+  {"J10",    CH_LEFT,  30},
+  {"EXIT-2", CH_LEFT,  33},
+  {"EXIT-1", CH_RIGHT,  0},
+  {"J1",     CH_RIGHT,  5},
+  {"J20",    CH_RIGHT,  6},
+  {"J19",    CH_RIGHT,  8},
+  {"J18",    CH_RIGHT, 10},
+  {"J17",    CH_RIGHT, 14},
+  {"J15",    CH_RIGHT, 18},
+  {"J14",    CH_RIGHT, 26},
+  {"J12",    CH_RIGHT, 28},
+  {"J13",    CH_RIGHT, 32},
+  {"EXIT-3", CH_RIGHT, 34},
 };
 
-// ── Corridor state ───────────────────────────────────────────
-const char* corridorKeys[5] = {"C-001","C-002","C-003","C-004","C-005"};
-String corridorState[5]  = {"normal","normal","normal","normal","normal"};
-int    corridorDir[5]    = {1, 1, 1, 1, 1};
+// ── Active route received from backend ───────────────────────
+#define MAX_ROUTE_NODES 20
+String activeRoute[MAX_ROUTE_NODES];
+int    activeRouteLen = 0;
 
 // ── System & Sensor state ────────────────────────────────────
 String systemState   = "NORMAL";
@@ -102,93 +114,109 @@ void setPixel(int channel, int index, CRGB colour) {
   if (channel == CH_RIGHT && index < NUM_RIGHT_LEDS) rightLeds[index] = colour;
 }
 
-void fillSegment(int segIdx, CRGB colour) {
-  PathSegment& seg = mapSegments[segIdx];
-  for (int i = seg.startIndex; i <= seg.endIndex; i++) {
-    setPixel(seg.channel, i, colour);
+// ── Find LED info for a node, optionally preferring a specific channel ────
+bool getNodeLED(const char* nodeId, int& outCh, int& outIdx, int preferChannel = -1) {
+  int firstCh = -1, firstIdx = -1;
+  for (int i = 0; i < NUM_NODE_LEDS; i++) {
+    if (strcmp(nodeLEDMap[i].node_id, nodeId) == 0) {
+      if (firstCh == -1) { firstCh = nodeLEDMap[i].channel; firstIdx = nodeLEDMap[i].ledIndex; }
+      if (preferChannel == -1 || nodeLEDMap[i].channel == preferChannel) {
+        outCh  = nodeLEDMap[i].channel;
+        outIdx = nodeLEDMap[i].ledIndex;
+        return true;
+      }
+    }
   }
+  // Fallback to first match if preferred channel not found
+  if (firstCh != -1) { outCh = firstCh; outIdx = firstIdx; return true; }
+  return false;
 }
 
-void chaseSegment(int segIdx, CRGB head, CRGB tail, int tick, int dir) {
-  PathSegment& seg = mapSegments[segIdx];
-  int len   = seg.endIndex - seg.startIndex + 1;
-  int pos   = tick % len;
+// ── Chase between two LED indices on same strip ───────────────
+void chaseBetween(int ch, int fromIdx, int toIdx, int tick) {
+  int lo  = min(fromIdx, toIdx);
+  int hi  = max(fromIdx, toIdx);
+  int len = hi - lo + 1;
+  int dir = (fromIdx <= toIdx) ? 1 : -1;
+  int pos = tick % len;
   for (int i = 0; i < len; i++) {
-    int idx = seg.startIndex + i;
-    int distFromHead = (dir == 1) ? (i - pos + len) % len : (pos - i + len) % len;
-    CRGB col = (distFromHead == 0) ? head : (distFromHead <= 2) ? tail : CRGB::Black;
-    setPixel(seg.channel, idx, col);
+    int distFromHead = (dir == 1)
+      ? (i - pos + len) % len
+      : (pos - i + len) % len;
+    CRGB col = (distFromHead == 0) ? CRGB(0,200,0)
+             : (distFromHead <= 2) ? CRGB(0,50,0)
+             : CRGB::Black;
+    setPixel(ch, lo + i, col);
   }
 }
 
-String getSegmentState(int segIdx) {
-  const char* name = mapSegments[segIdx].name;
-  if (strcmp(name, "L_J8_EXIT2NJ12") == 0) {
-    String s3 = corridorState[2];  
-    String s4 = corridorState[3];  
-    if (s3 == "hazard"    || s4 == "hazard")    return "hazard";
-    if (s3 == "route"     || s4 == "route")     return "route";
-    if (s3 == "pull_stop" || s4 == "pull_stop") return "pull_stop";
-    if (s3 == "warning"   || s4 == "warning")   return "warning";
-    return "normal";
-  }
-  if (strcmp(name,"L_EXIT1_J1")==0 || strcmp(name,"R_EXIT1_J1")==0 || strcmp(name,"L_J1_J2")==0 || strcmp(name,"R_J1_J18")==0) return corridorState[0]; 
-  if (strcmp(name,"L_J2_J8")==0) return corridorState[2];  
-  if (strcmp(name,"R_J18_J17")==0 || strcmp(name,"R_J17_J15")==0 || strcmp(name,"R_J15_EXIT3")==0) return corridorState[3];  
-  return "normal";  
-}
-
-int getSegmentDir(int segIdx) {
-  const char* name = mapSegments[segIdx].name;
-  if (strcmp(name,"L_J8_EXIT2NJ12")==0) {
-    if (corridorState[2]=="route") return corridorDir[2];
-    if (corridorState[3]=="route") return corridorDir[3];
-    return 1;
-  }
-  if (strcmp(name,"L_EXIT1_J1")==0 || strcmp(name,"R_EXIT1_J1")==0 || strcmp(name,"L_J1_J2")==0 || strcmp(name,"R_J1_J18")==0) return corridorDir[0];
-  if (strcmp(name,"L_J2_J8")==0) return corridorDir[2];
-  if (strcmp(name,"R_J18_J17")==0 || strcmp(name,"R_J17_J15")==0 || strcmp(name,"R_J15_EXIT3")==0) return corridorDir[3];
-  return 1;
+// ── Fill between two LED indices ─────────────────────────────
+void fillBetween(int ch, int fromIdx, int toIdx, CRGB colour) {
+  int lo = min(fromIdx, toIdx);
+  int hi = max(fromIdx, toIdx);
+  for (int i = lo; i <= hi; i++) setPixel(ch, i, colour);
 }
 
 // ============================================================
-//  UPDATE ALL LEDS 
+//  UPDATE ALL LEDS — per-node route rendering
 // ============================================================
 void updateLEDs() {
   bool pythonAlive = (millis() - lastMqttMessage < 8000);
 
-  for (int s = 0; s < NUM_SEGMENTS; s++) {
-    
-    // 【拦截 1：超声波】如果报警，且是 L_J2_J8 路线，直接全红
-    if (obstructionAlert && strcmp(mapSegments[s].name, "L_J2_J8") == 0) {
-      fillSegment(s, CRGB(255, 0, 0)); 
-      continue;                        
-    }
+  // Clear all LEDs
+  for (int i = 0; i < NUM_LEFT_LEDS;  i++) leftLeds[i]  = CRGB::Black;
+  for (int i = 0; i < NUM_RIGHT_LEDS; i++) rightLeds[i] = CRGB::Black;
 
-    // 【拦截 2：温度计】如果报警，且是 R_J1_J18 路线，直接全红
-    if (thermalAlert && strcmp(mapSegments[s].name, "R_J1_J18") == 0) {
-      fillSegment(s, CRGB(255, 0, 0)); 
-      continue;                        
-    }
+  if (!pythonAlive) {
+    for (int i = 0; i < NUM_LEFT_LEDS;  i++) leftLeds[i]  = CRGB(5,5,5);
+    for (int i = 0; i < NUM_RIGHT_LEDS; i++) rightLeds[i] = CRGB(5,5,5);
+    FastLED.show();
+    chaseTick++;
+    return;
+  }
 
-    String state = pythonAlive ? getSegmentState(s) : "normal";
-    int    dir   = getSegmentDir(s);
+  // 1. Dim white on all node LEDs (idle state)
+  for (int i = 0; i < NUM_NODE_LEDS; i++) {
+    setPixel(nodeLEDMap[i].channel, nodeLEDMap[i].ledIndex, CRGB(15,15,15));
+  }
 
-    if (state == "hazard") {
+  // 2. Sensor overrides
+  if (obstructionAlert) {
+    int chA, idxA, chB, idxB;
+    if (getNodeLED("J4", chA, idxA) && getNodeLED("J8", chB, idxB))
+      fillBetween(chA, idxA, idxB, CRGB(255,0,0));
+  }
+  if (thermalAlert) {
+    int ch, idx;
+    if (getNodeLED("J20", ch, idx)) {
       bool on = (millis() / 400) % 2;
-      fillSegment(s, on ? CRGB(180,0,0) : CRGB::Black);
-    } else if (state == "route") {
-      chaseSegment(s, CRGB(0,200,0), CRGB(0,50,0), chaseTick, dir);
-    } else if (state == "pull_stop") {
-      int brightness = (sin(millis() * 0.003) + 1) * 80;
-      fillSegment(s, CRGB(brightness, brightness/2, 0));
-    } else if (state == "warning") {
-      bool on = (millis() / 800) % 2;
-      fillSegment(s, on ? CRGB(180,80,0) : CRGB::Black);
-    } else {
-      fillSegment(s, pythonAlive ? CRGB(20,20,20) : CRGB(5,5,5)); // 这里就是你说的“恢复白色”
+      setPixel(ch, idx, on ? CRGB(180,0,0) : CRGB::Black);
     }
   }
+
+  // 3. Active route — chase between consecutive nodes
+  if (activeRouteLen >= 2) {
+    for (int r = 0; r < activeRouteLen - 1; r++) {
+      int chA, idxA, chB, idxB;
+      bool foundA = getNodeLED(activeRoute[r].c_str(),   chA, idxA);
+      if (!foundA) continue;
+      // For node B, prefer same channel as node A so cross-strip
+      // nodes (J1, EXIT-1) pick the entry on the same strip
+      bool foundB = getNodeLED(activeRoute[r+1].c_str(), chB, idxB, chA);
+      if (!foundB) continue;
+      if (chA == chB) {
+        chaseBetween(chA, idxA, idxB, chaseTick);
+      } else {
+        // Truly different strips — light both endpoints
+        setPixel(chA, idxA, CRGB(0,200,0));
+        setPixel(chB, idxB, CRGB(0,200,0));
+      }
+    }
+    int chS, idxS;
+    if (getNodeLED(activeRoute[0].c_str(), chS, idxS))
+      setPixel(chS, idxS, CRGB(0,255,0));
+  }
+
   FastLED.show();
   chaseTick++;
 }
@@ -211,17 +239,12 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
   fftConfirmed = doc["facp_confirmed"] | false;
 
-  JsonObject corr = doc["corridors"];
-  for (int c = 0; c < 5; c++) {
-    if (!corr.containsKey(corridorKeys[c])) continue;
-    JsonVariant cv = corr[corridorKeys[c]];
-    if (cv.is<JsonObject>()) {
-      corridorState[c] = cv["state"] | "normal";
-      corridorDir[c]   = cv["dir"]   | 1;
-    } else {
-      corridorState[c] = cv.as<String>();
-      corridorDir[c]   = 1;
-    }
+  // Parse route node list from backend — used for per-node LED rendering
+  activeRouteLen = 0;
+  JsonArray routeArr = doc["route"].as<JsonArray>();
+  for (JsonVariant v : routeArr) {
+    if (activeRouteLen >= MAX_ROUTE_NODES) break;
+    activeRoute[activeRouteLen++] = v.as<String>();
   }
 }
 
