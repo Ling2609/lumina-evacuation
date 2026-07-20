@@ -198,11 +198,20 @@ def _on_sensor_message(client, userdata, msg):
             if status == "BLOCKED":
                 print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → blocking {junction}, recalculating route")
                 with state_lock:
-                    system_state = "HAZARD"   # dashboard reads this for isHazard — without
-                                              # this, dashboard never shows the obstruction
+                    system_state = "HAZARD"
                     result = block_node_and_reroute(junction, current_route[0] if current_route else "J14")
                     current_route   = result["new_route"]
                     manual_override = True
+                    # Populate per_node_routes so firmware gets the reroute via MQTT heartbeat
+                    current_per_node_routes[:] = [{
+                        "node_id":    junction,
+                        "event_type": "collapsed",
+                        "best_path":  current_route,
+                        "best_exit":  current_route[-1] if current_route else None,
+                        "best_cost":  0,
+                        "all_exits":  [],
+                        "rset":       None,
+                    }]
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
                 mqtt_client.publish(TOPIC, json.dumps({
@@ -216,6 +225,7 @@ def _on_sensor_message(client, userdata, msg):
                 with state_lock:
                     unblock_node(junction)
                     reset_hysteresis()
+                    current_per_node_routes.clear()
                     # Only release system_state + manual_override if no other
                     # active hazard — clearing debris shouldn't cancel a fire evacuation
                     if not any(d.get("hazard") for d in live_node_status.values()):
@@ -433,7 +443,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
@@ -980,9 +990,7 @@ def _process_ai_cycle(cap, state):
                 live_node_status["J15"]["hazard"]     = "fall"
                 live_node_status["J15"]["status"]     = "alert"
                 live_node_status["J15"]["pull_signal"] = "RED"
-                # Note: impassable NOT set for fall — corridor is still physically
-                # passable (high cost penalty from "alert" status is sufficient).
-                # Hard-blocking would prevent routing through J15 even as last resort.
+                live_node_status["J15"]["impassable"] = True
                 _route     = list(current_route)
                 _total_pax = sum(d["crowd"] for d in live_node_status.values())
                 _corridors = _build_corridor_states()
@@ -1009,6 +1017,7 @@ def _process_ai_cycle(cap, state):
                     live_node_status["J15"]["hazard"]      = None
                     live_node_status["J15"]["status"]      = "normal"
                     live_node_status["J15"]["pull_signal"] = "GREEN"
+                    live_node_status["J15"]["impassable"]  = False
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()

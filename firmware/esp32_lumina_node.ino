@@ -265,12 +265,16 @@ void updateLEDs() {
     }
 
     // Rest of route: index 1 onward
+    // Track prevCh so dual-strip nodes (J1, EXIT-1) always stay on the same
+    // strip as the previous segment — prevents LEFT/RIGHT strip confusion
+    int prevCh = chS1;  // start from the strip the first safe node landed on
     for (int r = 1; r < hr.pathLen - 1; r++) {
       int chA, idxA, chB, idxB;
-      bool foundA = getNodeLED(hr.path[r].c_str(),   chA, idxA);
+      bool foundA = getNodeLED(hr.path[r].c_str(),   chA, idxA, prevCh);
       if (!foundA) continue;
       bool foundB = getNodeLED(hr.path[r+1].c_str(), chB, idxB, chA);
       if (!foundB) continue;
+      prevCh = chB;
       if (chA == chB) {
         int lo = min(idxA,idxB), hi = max(idxA,idxB), len = hi-lo+1;
         int dir = (idxA<=idxB) ? 1 : -1, pos = chaseTick % len;
@@ -285,7 +289,7 @@ void updateLEDs() {
     }
     // Bright first safe node
     int chS, idxS;
-    if (getNodeLED(hr.path[1].c_str(), chS, idxS)) setPixel(chS, idxS, head);
+    if (getNodeLED(hr.path[1].c_str(), chS, idxS, chH)) setPixel(chS, idxS, head);
   }
 
 
