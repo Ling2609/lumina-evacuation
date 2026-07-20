@@ -149,11 +149,13 @@ bool getNodeLED(const char* nodeId, int& outCh, int& outIdx, int preferChannel =
 }
 
 // ── Chase between two LED indices on same strip ───────────────
+// Direction is always fromIdx → toIdx (follows route order),
+// regardless of which index is numerically larger.
 void chaseBetween(int ch, int fromIdx, int toIdx, int tick) {
   int lo  = min(fromIdx, toIdx);
   int hi  = max(fromIdx, toIdx);
   int len = hi - lo + 1;
-  int dir = (fromIdx <= toIdx) ? 1 : -1;
+  int dir = (fromIdx <= toIdx) ? 1 : -1;  // +1 = low→high, -1 = high→low
   int pos = tick % len;
   for (int i = 0; i < len; i++) {
     int distFromHead = (dir == 1)
@@ -255,7 +257,8 @@ void updateLEDs() {
       int startLED = (idxH < idxS1) ? idxH + 1 : idxH - 1;
       if (startLED != idxS1) {
         int lo = min(startLED, idxS1), hi = max(startLED, idxS1), len = hi-lo+1;
-        int dir = (startLED<=idxS1) ? 1 : -1, pos = chaseTick % len;
+        int dir = (startLED <= idxS1) ? 1 : -1;
+        int pos = chaseTick % len;
         for (int i = 0; i < len; i++) {
           int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
           setPixel(chH, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
@@ -265,9 +268,7 @@ void updateLEDs() {
     }
 
     // Rest of route: index 1 onward
-    // Track prevCh so dual-strip nodes (J1, EXIT-1) always stay on the same
-    // strip as the previous segment — prevents LEFT/RIGHT strip confusion
-    int prevCh = chS1;  // start from the strip the first safe node landed on
+    int prevCh = chS1;
     for (int r = 1; r < hr.pathLen - 1; r++) {
       int chA, idxA, chB, idxB;
       bool foundA = getNodeLED(hr.path[r].c_str(),   chA, idxA, prevCh);
@@ -277,7 +278,8 @@ void updateLEDs() {
       prevCh = chB;
       if (chA == chB) {
         int lo = min(idxA,idxB), hi = max(idxA,idxB), len = hi-lo+1;
-        int dir = (idxA<=idxB) ? 1 : -1, pos = chaseTick % len;
+        int dir = (idxA <= idxB) ? 1 : -1;
+        int pos = chaseTick % len;
         for (int i = 0; i < len; i++) {
           int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
           setPixel(chA, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
@@ -328,27 +330,29 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String hazardType = doc["hazard_type"] | "";
   fallHazard = systemHazard && hazardType.startsWith("FALL");
 
-  // Parse per_node_routes — one route per hazard node, each drawn in its own colour
-  // Routes are kept alive until the backend stops sending them (hazard cleared)
-  JsonArray pnr = doc["per_node_routes"].as<JsonArray>();
-  if (pnr) {
-    // Mark all existing routes inactive — will re-activate if still in payload
+  // Parse per_node_routes — routes are kept until backend explicitly clears them
+  // (sends empty array) or system returns to NORMAL.
+  // If "per_node_routes" key is absent from payload (e.g. old heartbeat format),
+  // do NOT clear existing routes — they remain until next valid update.
+  if (doc.containsKey("per_node_routes")) {
+    JsonArray pnr = doc["per_node_routes"].as<JsonArray>();
     for (int i = 0; i < MAX_HAZARD_ROUTES; i++) hazardRoutes[i].active = false;
     hazardRouteCount = 0;
-
-    for (JsonObject r : pnr) {
-      if (hazardRouteCount >= MAX_HAZARD_ROUTES) break;
-      HazardRoute& hr = hazardRoutes[hazardRouteCount];
-      hr.nodeId    = r["node_id"]    | "";
-      hr.eventType = r["event_type"] | "thermal";
-      hr.pathLen   = 0;
-      hr.active    = true;
-      JsonArray path = r["path"].as<JsonArray>();
-      for (JsonVariant v : path) {
-        if (hr.pathLen >= MAX_ROUTE_NODES) break;
-        hr.path[hr.pathLen++] = v.as<String>();
+    if (pnr) {
+      for (JsonObject r : pnr) {
+        if (hazardRouteCount >= MAX_HAZARD_ROUTES) break;
+        HazardRoute& hr = hazardRoutes[hazardRouteCount];
+        hr.nodeId    = r["node_id"]    | "";
+        hr.eventType = r["event_type"] | "thermal";
+        hr.pathLen   = 0;
+        hr.active    = true;
+        JsonArray path = r["path"].as<JsonArray>();
+        for (JsonVariant v : path) {
+          if (hr.pathLen >= MAX_ROUTE_NODES) break;
+          hr.path[hr.pathLen++] = v.as<String>();
+        }
+        hazardRouteCount++;
       }
-      hazardRouteCount++;
     }
   }
 }

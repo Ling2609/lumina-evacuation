@@ -72,6 +72,50 @@ app = Flask(__name__)
 CORS(app)
 
 # =============================================================================
+# MQTT PAYLOAD BUILDER — single source of truth for what the ESP32 receives.
+# Every mqtt_client.publish() call should use this to build its payload so
+# the firmware always gets the full picture regardless of which code path
+# triggered the publish. Caller MUST hold state_lock before calling.
+# =============================================================================
+def _build_mqtt_payload(status: str, extra: dict = None) -> str:
+    """Build a complete MQTT payload. CALLER MUST HOLD state_lock.
+    
+    Always includes: status, system_state, hazard_type, manual_override,
+    stealth_mode, person_count, corridors, route, per_node_routes.
+    
+    extra: optional dict merged into payload. Special key:
+      "hazard_type_override" → replaces the auto-detected hazard_type.
+    """
+    _hazard_type = ""
+    if any(d.get("hazard") == "fall"      for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
+    elif any(d.get("hazard") == "thermal"  for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
+    elif any(d.get("hazard") == "collapsed" for d in live_node_status.values()): _hazard_type = "OBSTRUCTION DETECTED"
+
+    # Allow caller to override the auto-detected hazard_type
+    if extra and "hazard_type_override" in extra:
+        _hazard_type = extra["hazard_type_override"]
+        extra = {k: v for k, v in extra.items() if k != "hazard_type_override"}
+
+    payload = {
+        "status":          status,
+        "system_state":    system_state,
+        "hazard_type":     _hazard_type,
+        "manual_override": manual_override,
+        "stealth_mode":    not manual_override and system_state == "NORMAL",
+        "person_count":    sum(d["crowd"] for d in live_node_status.values()),
+        "corridors":       _build_corridor_states(),
+        "route":           list(current_route),
+        "per_node_routes": [
+            {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
+            for r in current_per_node_routes if r.get("best_path")
+        ],
+    }
+    if extra:
+        payload.update(extra)
+    return json.dumps(payload)
+
+
+# =============================================================================
 # CORRIDOR STATE BUILDER — translates DYN-A* route + pull policy into the
 # 5-corridor dict the ESP32 firmware parses (C-001..C-005).
 # Each corridor entry is {"state": ..., "dir": 1|-1} — direction tells the
@@ -202,7 +246,8 @@ def _on_sensor_message(client, userdata, msg):
                     result = block_node_and_reroute(junction, current_route[0] if current_route else "J14")
                     current_route   = result["new_route"]
                     manual_override = True
-                    # Populate per_node_routes so firmware gets the reroute via MQTT heartbeat
+                    live_node_status[junction]["hazard"] = "collapsed"
+                    live_node_status[junction]["status"] = "alert"
                     current_per_node_routes[:] = [{
                         "node_id":    junction,
                         "event_type": "collapsed",
@@ -212,19 +257,14 @@ def _on_sensor_message(client, userdata, msg):
                         "all_exits":  [],
                         "rset":       None,
                     }]
-                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
-                    _corridors  = _build_corridor_states()
-                mqtt_client.publish(TOPIC, json.dumps({
-                    "status": "CRITICAL", "system_state": "HAZARD",
-                    "hazard_type": f"OBSTRUCTION DETECTED in {node_id}",
-                    "manual_override": True, "person_count": _total_pax,
-                    "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
-                }))
+                    _payload = _build_mqtt_payload("CRITICAL", {"green_direction": "FOLLOW_ROUTE"})
+                mqtt_client.publish(TOPIC, _payload)
             elif status == "CLEAR":
                 print(f"[HC-SR04] {node_id} cleared → unblocking {junction}")
                 with state_lock:
                     unblock_node(junction)
-                    reset_hysteresis()
+                    live_node_status[junction]["hazard"] = None
+                    live_node_status[junction]["status"] = "normal"
                     current_per_node_routes.clear()
                     # Only release system_state + manual_override if no other
                     # active hazard — clearing debris shouldn't cancel a fire evacuation
@@ -255,27 +295,14 @@ def _on_sensor_message(client, userdata, msg):
                         live_node_status["J20"]["impassable"] = False
                         current_route[:] = []
                         current_route_cost = 0
-                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
-                    _corridors  = _build_corridor_states()
-                mqtt_client.publish(TOPIC, json.dumps({
-                    "status":       "RESOLVED",
-                    "system_state": "NORMAL",
-                    "hazard_type":  f"THERMAL CLEAR ({sensor})",
-                    "temp_c":       temp_c,
-                    "person_count": _total_pax,
-                    "corridors":    _corridors,
-                }), retain=True)
+                    _payload = _build_mqtt_payload("RESOLVED", {"temp_c": temp_c})
+                mqtt_client.publish(TOPIC, _payload, retain=True)
                 print(f"[{sensor}] Thermal CLEAR — hazard auto-reset, dashboard returning to normal")
                 return
 
-            # Feed the real reading into the existing ThermalClassifier —
-            # same pipeline as the simulated path, now driven by real hardware.
             result = thermal_clf.classify(temp_c)
             with state_lock:
                 thermal_state = result["state"]
-                # Trigger on explicit THERMAL_ANOMALY from firmware OR classifier ALERT —
-                # don't wait for classifier warmup (30 readings) when the physical sensor
-                # already confirmed the anomaly with its own hysteresis logic
                 should_trigger = (
                     status == "THERMAL_ANOMALY" or
                     result["state"] in ("WARNING", "ALERT")
@@ -289,7 +316,6 @@ def _on_sensor_message(client, userdata, msg):
                     if _path:
                         current_route[:] = ["J20"] + _path
                         current_route_cost = _score
-                    # Populate per_node_routes so firmware gets green route immediately
                     current_per_node_routes[:] = [{
                         "node_id":    "J20",
                         "event_type": "thermal",
@@ -299,21 +325,12 @@ def _on_sensor_message(client, userdata, msg):
                         "all_exits":  [],
                         "rset":       None,
                     }]
-                    _total_pax  = sum(d["crowd"] for d in live_node_status.values())
-                    _corridors  = _build_corridor_states()
-                    _per_snap   = [{"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
-                                   for r in current_per_node_routes if r.get("best_path")]
-                    mqtt_client.publish(TOPIC, json.dumps({
-                        "status":          "CRITICAL",
-                        "system_state":    "HAZARD",
-                        "hazard_type":     f"THERMAL ANOMALY ({sensor})",
-                        "temp_c":          temp_c,
-                        "person_count":    _total_pax,
-                        "corridors":       _corridors,
-                        "route":           list(current_route),
-                        "per_node_routes": _per_snap,
-                    }))
-                    print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C → route recalculated")
+                    _payload = _build_mqtt_payload("CRITICAL", {"temp_c": temp_c})
+                else:
+                    _payload = None
+            if _payload:
+                mqtt_client.publish(TOPIC, _payload)
+                print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C → route recalculated")
 
     except Exception as e:
         print(f"[SENSOR] Message error: {e}")
@@ -522,15 +539,7 @@ def _thermal_thread():
             with state_lock:
                 _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                 _corridors  = _build_corridor_states()
-            mqtt_client.publish(TOPIC, json.dumps({
-                "status":       "CRITICAL",
-                "system_state": "HAZARD",
-                "hazard_type":  "THERMAL ANOMALY",
-                "temp_c":       result["temp_c"],
-                "z_score":      result["z_score"],
-                "person_count": _total_pax,
-                "corridors":    _corridors,
-            }))
+            mqtt_client.publish(TOPIC, _build_mqtt_payload("CRITICAL", {"temp_c": result["temp_c"], "z_score": result["z_score"]}))
         time.sleep(0.2)   # 5 Hz
 
 threading.Thread(target=_thermal_thread, daemon=True).start()
@@ -592,38 +601,12 @@ print("[INIT] FFT acoustic classifier thread started")
 def _heartbeat_thread():
     while True:
         with state_lock:
-            _mode      = system_mode
-            _state     = system_state
-            _manual    = manual_override
-            _bomba     = bomba_override_active
-            _total_pax = sum(d["crowd"] for d in live_node_status.values())
-            _corridors = _build_corridor_states()
-
-            _route     = list(current_route)
-            _per_node_snapshot = [
-                {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
-                for r in current_per_node_routes if r.get("best_path")
-            ]
-            _hazard_type  = ""
-            if any(d.get("hazard") == "fall"      for d in live_node_status.values()): _hazard_type = "FALL DETECTED"
-            elif any(d.get("hazard") == "thermal"  for d in live_node_status.values()): _hazard_type = "THERMAL ANOMALY"
-            elif any(d.get("hazard") == "collapsed" for d in live_node_status.values()): _hazard_type = "OBSTRUCTION DETECTED"
-        # ALLOW hardware updates ONLY if in Live Mode OR if Bomba manually overrides
-        if _mode == "live" or _bomba:
+            _mode  = system_mode
+            _state = system_state
+            _bomba = bomba_override_active
             mqtt_status = "CRITICAL" if _state == "HAZARD" else "NORMAL"
-            _stealth = not _manual and _state == "NORMAL"
-
-            payload = json.dumps({
-                "status":          mqtt_status,
-                "system_state":    _state,
-                "manual_override": _manual,
-                "stealth_mode":    _stealth,
-                "person_count":    _total_pax,
-                "corridors":       _corridors,
-                "route":           _route,
-                "hazard_type":     _hazard_type,
-                "per_node_routes": _per_node_snapshot,
-            })
+            payload = _build_mqtt_payload(mqtt_status) if (_mode == "live" or _bomba) else None
+        if payload:
             print(f"[DEBUG] Sending to ESP32: {payload}", flush=True)
             mqtt_client.publish(TOPIC, payload, retain=True)
             print(f">>> Heartbeat published to MQTT [LIVE MODE - {mqtt_status}]", flush=True)
@@ -999,18 +982,8 @@ def _process_ai_cycle(cap, state):
                 live_node_status["J15"]["hazard"]     = "fall"
                 live_node_status["J15"]["status"]     = "alert"
                 live_node_status["J15"]["pull_signal"] = "RED"
-                live_node_status["J15"]["impassable"] = True
-                _route     = list(current_route)
-                _total_pax = sum(d["crowd"] for d in live_node_status.values())
-                _corridors = _build_corridor_states()
-            mqtt_client.publish(TOPIC, json.dumps({
-                "status": "CRITICAL", "system_state": "CRITICAL",
-                "hazard_type": "FALL DETECTED", "person_count": _total_pax,
-                "track_count": len(track_ids_this_frame),
-                "stealth_mode": False, "green_led": True, "red_led": False,
-                "buzzer_active": True, "green_direction": "FOLLOW_ROUTE",
-                "active_route": _route, "corridors": _corridors,
-            }))
+                _payload_fall = _build_mqtt_payload("CRITICAL", {"buzzer_active": True, "green_direction": "FOLLOW_ROUTE"})
+            mqtt_client.publish(TOPIC, _payload_fall)
     else:
         state["fall_timer_start"] = 0
         with state_lock:
@@ -1030,12 +1003,7 @@ def _process_ai_cycle(cap, state):
                 with state_lock:
                     _total_pax = sum(d["crowd"] for d in live_node_status.values())
                     _corridors = _build_corridor_states()
-                mqtt_client.publish(TOPIC, json.dumps({
-                    "status": "RESOLVED", "system_state": "NORMAL",
-                    "person_count": _total_pax, "stealth_mode": True,
-                    "green_led": False, "red_led": False, "buzzer_active": False,
-                    "green_direction": "NONE", "corridors": _corridors,
-                }), retain=True)
+                mqtt_client.publish(TOPIC, _build_mqtt_payload("RESOLVED"), retain=True)
         else:
             state["recovery_timer_start"] = 0
 
@@ -1323,14 +1291,9 @@ def cancel_sim_trigger():
 
     # Publish RESOLVED to MQTT so ESP32 hardware turns off — must be outside lock
     if _publish_resolve:
-        mqtt_client.publish(TOPIC, json.dumps({
-            "status":          "RESOLVED",
-            "system_state":    "NORMAL",
-            "person_count":    _total_pax,
-            "stealth_mode":    True,
-            "green_direction": "NONE",
-            "corridors":       _corridors,
-        }), retain=True)
+        with state_lock:
+            _payload_resolve = _build_mqtt_payload("RESOLVED")
+        mqtt_client.publish(TOPIC, _payload_resolve, retain=True)
 
     print(f"[SIM] Cancelled hazard at {node_id}, {len(active_hazard_nodes)} hazards remaining")
     return jsonify({"status": "success", "node_id": node_id,
@@ -1505,13 +1468,7 @@ def trigger_hazard():
         current_route[:] = _path
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()
-    mqtt_client.publish(TOPIC, json.dumps({
-        "status":       "CRITICAL",
-        "system_state": "HAZARD",
-        "hazard_type":  "MANUAL OVERRIDE (thermal only — awaiting FFT confirmation)",
-        "person_count": _total_pax,
-        "corridors":    _corridors,
-    }))
+    mqtt_client.publish(TOPIC, _build_mqtt_payload("CRITICAL", {"hazard_type_override": "MANUAL OVERRIDE (thermal only — awaiting FFT confirmation)"}))
     return jsonify({"status": "success", "message": "Fire simulation triggered at J7 (Thai Relax corridor — FACP zone B5) — thermal + acoustic AI now running"})
 
 
@@ -1624,11 +1581,9 @@ def reset_system():
         # vanish from the building just because the alarm cleared.
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()  # all "normal" post-reset
-    mqtt_client.publish(TOPIC, json.dumps({
-        "status": "RESOLVED", "system_state": "NORMAL",
-        "person_count": _total_pax, "stealth_mode": True,
-        "green_direction": "NONE", "corridors": _corridors,
-    }), retain=True)
+    with state_lock:
+        _payload_reset = _build_mqtt_payload("RESOLVED")
+    mqtt_client.publish(TOPIC, _payload_reset, retain=True)
     return jsonify({"status": "success", "message": "System reset to NORMAL"})
 
 
@@ -1683,16 +1638,9 @@ def block_node():
             {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
             for r in current_per_node_routes if r.get("best_path")
         ]
-    mqtt_client.publish(TOPIC, json.dumps({
-        "status": "CRITICAL", "system_state": system_state,
-        "hazard_type": "NO ROUTE — RESCUE REQUIRED" if result.get("no_route") else "MANUAL OVERRIDE",
-        "manual_override": True, "no_route": result.get("no_route", False),
-        "shelter_node": start_original if result.get("no_route") else None,
-        "stealth_mode": False, "person_count": _total_pax,
-        "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
-        "route": list(current_route),
-        "per_node_routes": _per_node_snap,
-    }))
+    with state_lock:
+        _payload_block = _build_mqtt_payload("CRITICAL", {"no_route": result.get("no_route", False), "shelter_node": start_original if result.get("no_route") else None})
+    mqtt_client.publish(TOPIC, _payload_block)
     if result.get("no_route"):
         print(f"[BOMBA] Blocked {node_id} (IMPASSABLE) — NO ROUTE EXISTS. Rescue required.")
     else:
@@ -1879,15 +1827,9 @@ def sim_trigger():
         current_route[:] = _path
         _corridors = _build_corridor_states()
 
-    mqtt_client.publish(TOPIC, json.dumps({
-        "status":       "CRITICAL",
-        "system_state": "HAZARD",
-        "hazard_type":  hazard_label,
-        "source":       "SIMULATION",
-        "node_id":      node_id,
-        "person_count": _total_pax,
-        "corridors":    _corridors,
-    }))
+    with state_lock:
+        _payload_sim = _build_mqtt_payload("CRITICAL", {"source": "SIMULATION", "node_id": node_id})
+    mqtt_client.publish(TOPIC, _payload_sim)
     print(f"[SIM] Triggered {event_type.upper()} at {node_id} → {len(_per_node_routes)} hazard nodes active")
     return jsonify({
         "status":          "success",
@@ -1928,14 +1870,7 @@ def bomba_override():
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 
-        mqtt_client.publish(TOPIC, json.dumps({
-            "status":       "CRITICAL",
-            "system_state": "HAZARD",
-            "hazard_type":  "BOMBA COMMAND OVERRIDE",
-            "source":       "BOMBA",
-            "person_count": _total_pax,
-            "corridors":    _corridors,
-        }))
+        mqtt_client.publish(TOPIC, _build_mqtt_payload("CRITICAL", {"source": "BOMBA"}))
         print("[BOMBA] Override ACTIVATED — highest priority event, all other triggers blocked")
         return jsonify({"status": "success", "bomba_override_active": True,
                         "message": "Bomba override activated — all sensors and simulation suppressed"})
@@ -1965,13 +1900,9 @@ def bomba_override():
             _total_pax = sum(d["crowd"] for d in live_node_status.values())
             _corridors = _build_corridor_states()
 
-        mqtt_client.publish(TOPIC, json.dumps({
-            "status":       "RESOLVED",
-            "system_state": "NORMAL",
-            "source":       "BOMBA",
-            "person_count": _total_pax,
-            "corridors":    _corridors,
-        }), retain=True)
+        with state_lock:
+            _payload_bomba_res = _build_mqtt_payload("RESOLVED", {"source": "BOMBA"})
+        mqtt_client.publish(TOPIC, _payload_bomba_res, retain=True)
         print("[BOMBA] Override CLEARED — system restored to normal")
         return jsonify({"status": "success", "bomba_override_active": False,
                         "message": "Bomba override cleared — normal operation resumed"})

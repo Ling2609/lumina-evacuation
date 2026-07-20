@@ -723,6 +723,14 @@ export default function App() {
           } else if (!fallNode) {
             lastFftRef._fallLogged = false;
           }
+          // Obstruction detection — check if any node has collapsed hazard
+          const obstructNode = Object.entries(d.nodes).find(([,v])=>v.hazard==="collapsed")?.[0];
+          if (obstructNode && !lastFftRef._obstructLogged) {
+            pushEvent(`Obstruction detected at ${obstructNode} — corridor blocked, rerouting`,"danger","REACTIVE");
+            lastFftRef._obstructLogged = true;
+          } else if (!obstructNode) {
+            lastFftRef._obstructLogged = false;
+          }
         }
         if ((d.crowd_velocity??0)>5&&!lastVelRef.current){
           pushEvent(`Velocity spike ${d.crowd_velocity?.toFixed(1)}/rdg — pre-emptive reroute`,"warning","PRE-EMPTIVE");
