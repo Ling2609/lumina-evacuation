@@ -284,25 +284,34 @@ def _on_sensor_message(client, userdata, msg):
                     system_state = "HAZARD"
                     live_node_status["J20"]["status"]     = "alert"
                     live_node_status["J20"]["hazard"]     = "thermal"
-                    live_node_status["J20"]["impassable"] = True  # hard-block so DYN-A*
-                                                                   # avoids it, not just
-                                                                   # adds a cost penalty
-                    # Start from J19 (adjacent to J20) so DYN-A* finds the
-                    # safest exit automatically — algorithm decides, not us
+                    live_node_status["J20"]["impassable"] = True
                     _path, _score = calculate_safest_route("J19", verbose=False)
                     if _path:
-                        current_route[:] = ["J20"] + _path  # prepend hazard node so
-                                                              # dashboard shows it red
+                        current_route[:] = ["J20"] + _path
                         current_route_cost = _score
+                    # Populate per_node_routes so firmware gets green route immediately
+                    current_per_node_routes[:] = [{
+                        "node_id":    "J20",
+                        "event_type": "thermal",
+                        "best_path":  list(current_route),
+                        "best_exit":  current_route[-1] if current_route else None,
+                        "best_cost":  _score,
+                        "all_exits":  [],
+                        "rset":       None,
+                    }]
                     _total_pax  = sum(d["crowd"] for d in live_node_status.values())
                     _corridors  = _build_corridor_states()
+                    _per_snap   = [{"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
+                                   for r in current_per_node_routes if r.get("best_path")]
                     mqtt_client.publish(TOPIC, json.dumps({
-                        "status":       "CRITICAL",
-                        "system_state": "HAZARD",
-                        "hazard_type":  f"THERMAL ANOMALY ({sensor})",
-                        "temp_c":       temp_c,
-                        "person_count": _total_pax,
-                        "corridors":    _corridors,
+                        "status":          "CRITICAL",
+                        "system_state":    "HAZARD",
+                        "hazard_type":     f"THERMAL ANOMALY ({sensor})",
+                        "temp_c":          temp_c,
+                        "person_count":    _total_pax,
+                        "corridors":       _corridors,
+                        "route":           list(current_route),
+                        "per_node_routes": _per_snap,
                     }))
                     print(f"[{sensor}] THERMAL ALERT triggered at {temp_c}°C → route recalculated")
 
@@ -443,7 +452,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
@@ -1629,7 +1638,7 @@ def block_node():
     BOMBA blocks a node. Backend recalculates route avoiding it.
     Returns the complete new route — frontend just displays it.
     """
-    global current_route, manual_override
+    global current_route, manual_override, current_per_node_routes
     body    = request.get_json(silent=True) or {}
     node_id = body.get("node_id") or request.args.get("node_id", "J4")
     # start: caller sends the hazard origin (activeRoute[0]); fallback to current_route
@@ -1652,19 +1661,28 @@ def block_node():
     impassable = body.get("impassable", True)
     with state_lock:
         result = block_node_and_reroute(node_id, start, impassable=impassable)
-        # Echo back the ORIGINAL id, not the resolved junction
         result["start"] = start_original
-        # If the block is impassable and truly no route exists, do NOT
-        # silently keep serving the stale previous route — an evacuee
-        # following it could be walked into a collapsed area. Clear it and
-        # flag the situation so the dashboard shows "NO ROUTE — SEND RESCUE"
-        # instead of a route that quietly still worked before the block.
         current_route = result["new_route"] if not result.get("no_route") else []
         manual_override = True
+        # Populate per_node_routes so firmware receives the reroute via heartbeat
+        if current_route:
+            current_per_node_routes[:] = [{
+                "node_id":    node_id,
+                "event_type": "collapsed",
+                "best_path":  current_route,
+                "best_exit":  current_route[-1] if current_route else None,
+                "best_cost":  0,
+                "all_exits":  [],
+                "rset":       None,
+            }]
+        else:
+            current_per_node_routes.clear()
         _total_pax = sum(d["crowd"] for d in live_node_status.values())
         _corridors = _build_corridor_states()
-    # Push immediately — don't make BOMBA wait up to 2s for the next
-    # heartbeat to see the diorama lights react to a manual block.
+        _per_node_snap = [
+            {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
+            for r in current_per_node_routes if r.get("best_path")
+        ]
     mqtt_client.publish(TOPIC, json.dumps({
         "status": "CRITICAL", "system_state": system_state,
         "hazard_type": "NO ROUTE — RESCUE REQUIRED" if result.get("no_route") else "MANUAL OVERRIDE",
@@ -1672,6 +1690,8 @@ def block_node():
         "shelter_node": start_original if result.get("no_route") else None,
         "stealth_mode": False, "person_count": _total_pax,
         "green_direction": "FOLLOW_ROUTE", "corridors": _corridors,
+        "route": list(current_route),
+        "per_node_routes": _per_node_snap,
     }))
     if result.get("no_route"):
         print(f"[BOMBA] Blocked {node_id} (IMPASSABLE) — NO ROUTE EXISTS. Rescue required.")
@@ -1683,7 +1703,7 @@ def block_node():
 @app.route("/api/unblock_node", methods=["POST","GET"])
 def api_unblock():
     """BOMBA unblocks a previously blocked node."""
-    global manual_override
+    global manual_override, current_per_node_routes
     body    = request.get_json(silent=True) or {}
     node_id = body.get("node_id") or request.args.get("node_id", "J4")
     with state_lock:
@@ -1706,6 +1726,7 @@ def api_unblock():
         )
         if not _other_blocks_remain:
             manual_override = False
+            current_per_node_routes.clear()
     return jsonify({"status": "unblocked", "node_id": node_id})
 
 
