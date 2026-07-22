@@ -7,7 +7,7 @@ import { MetricCard } from "./components/UIComponents";
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const FLASK_IP    = "127.0.0.1";   // <- CHANGE FOR IPAD DEMO
 const FLASK_PORT  = 5001;
-const MQTT_BROKER = "ws://broker.hivemq.com:8000/mqtt";
+const MQTT_BROKER = "ws://broker.emqx.io:8083/mqtt";
 const MQTT_TOPIC  = "lumina/vitrox/demo/7a9b2f/alerts";
 const POLL_MS     = 1500;
 const HEALTH_MS   = 5000;

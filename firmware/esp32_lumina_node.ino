@@ -14,7 +14,7 @@
 // ── WiFi & MQTT ───────────────────────────────────────────────
 #define WIFI_SSID     "hello"
 #define WIFI_PASSWORD "mybirthday"
-#define MQTT_BROKER   "3.126.41.112"
+#define MQTT_BROKER   "broker.emqx.io"
 #define MQTT_PORT     1883
 #define MQTT_TOPIC    "lumina/vitrox/demo/7a9b2f/alerts"
 #define SENSOR_TOPIC  "lumina/vitrox/demo/7a9b2f/sensors"
@@ -294,6 +294,26 @@ void updateLEDs() {
     if (getNodeLED(hr.path[1].c_str(), chS, idxS, chH)) setPixel(chS, idxS, head);
   }
 
+  // 4. Re-apply hazard node blinks ON TOP of everything — hazard nodes must
+  //    always blink red regardless of route overlap. This ensures J4/J20/J15
+  //    never get hidden by a green route drawn over them.
+  bool blinkOn = (millis() / 400) % 2;
+  if (obstructionAlert) {
+    int ch, idx;
+    if (getNodeLED("J4", ch, idx))
+      setPixel(ch, idx, blinkOn ? CRGB(255,0,0) : CRGB(60,0,0));
+  }
+  if (thermalAlert) {
+    int ch, idx;
+    if (getNodeLED("J20", ch, idx))
+      setPixel(ch, idx, blinkOn ? CRGB(255,0,0) : CRGB(60,0,0));
+  }
+  if (fallHazard) {
+    int ch, idx;
+    if (getNodeLED("J15", ch, idx))
+      setPixel(ch, idx, blinkOn ? CRGB(255,0,0) : CRGB(60,0,0));
+  }
+
 
   FastLED.show();
   chaseTick++;
@@ -464,10 +484,19 @@ void connectWifi() {
 }
 
 void reconnectMqtt() {
+  // 加上打印信息，看看是不是一直卡在这里！
   while (!mqttClient.connected()) {
+    Serial.print("[MQTT] Connecting to broker ");
+    Serial.print(MQTT_BROKER);
+    Serial.print(" ...");
+    
     if (mqttClient.connect(CLIENT_ID)) {
+      Serial.println(" CONNECTED!");
       mqttClient.subscribe(MQTT_TOPIC);
     } else {
+      Serial.print(" FAILED, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" -> Retrying in 3 seconds");
       delay(3000);
     }
   }

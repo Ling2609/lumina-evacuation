@@ -198,7 +198,7 @@ def _build_corridor_states():
 # =============================================================================
 # 1. GLOBAL SETUP & THREAD LOCKING
 # =============================================================================
-BROKER       = "broker.hivemq.com"
+BROKER       = "broker.emqx.io"
 TOPIC        = "lumina/vitrox/demo/7a9b2f/alerts"   # unique — prevents hackathon collision
 SENSOR_TOPIC = "lumina/vitrox/demo/7a9b2f/sensors"  # ESP32→Python: sensor data
 
@@ -240,39 +240,34 @@ def _on_sensor_message(client, userdata, msg):
             junction = CORRIDOR_TO_JUNCTION.get(node_id, "J8")
 
             if status == "BLOCKED":
-                print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → blocking {junction}, recalculating route")
+                print(f"[HC-SR04] Obstruction in {node_id} ({dist}cm) → quarantining {junction}")
                 with state_lock:
+                    # Show HAZARD banner so operator knows something is blocked,
+                    # but do NOT generate a green evacuation route — a physical
+                    # collapse is a quarantine, not an evacuation order.
                     system_state = "HAZARD"
-                    result = block_node_and_reroute(junction, current_route[0] if current_route else "J14")
-                    current_route   = result["new_route"]
-                    manual_override = True
-                    live_node_status[junction]["hazard"] = "collapsed"
-                    live_node_status[junction]["status"] = "alert"
-                    current_per_node_routes[:] = [{
-                        "node_id":    junction,
-                        "event_type": "collapsed",
-                        "best_path":  current_route,
-                        "best_exit":  current_route[-1] if current_route else None,
-                        "best_cost":  0,
-                        "all_exits":  [],
-                        "rset":       None,
-                    }]
-                    _payload = _build_mqtt_payload("CRITICAL", {"green_direction": "FOLLOW_ROUTE"})
+                    live_node_status[junction]["hazard"]     = "collapsed"
+                    live_node_status[junction]["status"]     = "alert"
+                    live_node_status[junction]["impassable"] = True
+                    # No current_per_node_routes — no green route on LEDs or dashboard
+                    _payload = _build_mqtt_payload("CRITICAL")
+                mqtt_client.publish(TOPIC, _payload)
                 mqtt_client.publish(TOPIC, _payload)
             elif status == "CLEAR":
                 print(f"[HC-SR04] {node_id} cleared → unblocking {junction}")
                 with state_lock:
                     unblock_node(junction)
-                    live_node_status[junction]["hazard"] = None
-                    live_node_status[junction]["status"] = "normal"
+                    live_node_status[junction]["hazard"]     = None
+                    live_node_status[junction]["status"]     = "normal"
+                    live_node_status[junction]["impassable"] = False
                     current_per_node_routes.clear()
-                    # Only release system_state + manual_override if no other
-                    # active hazard — clearing debris shouldn't cancel a fire evacuation
                     if not any(d.get("hazard") for d in live_node_status.values()):
                         system_state    = "NORMAL"
                         manual_override = False
                         current_route[:]= []
                         current_route_cost = 0
+                    _payload_clear = _build_mqtt_payload("NORMAL")
+                mqtt_client.publish(TOPIC, _payload_clear)
 
         # ── Thermal Sensor: real thermal anomaly from physical IR sensor ─────────
         elif sensor in ("MLX90614", "DHT11"):
@@ -289,10 +284,9 @@ def _on_sensor_message(client, userdata, msg):
                     _j20_hazard = live_node_status["J20"].get("hazard")
                     if system_state == "HAZARD" and _j20_hazard == "thermal":
                         system_state = "NORMAL"
-                        live_node_status["J20"]["status"]     = "normal"
-                        live_node_status["J20"]["hazard"]     = None
+                        live_node_status["J20"]["status"]      = "normal"
+                        live_node_status["J20"]["hazard"]      = None
                         live_node_status["J20"]["pull_signal"] = "GREEN"
-                        live_node_status["J20"]["impassable"] = False
                         current_route[:] = []
                         current_route_cost = 0
                     _payload = _build_mqtt_payload("RESOLVED", {"temp_c": temp_c})
@@ -311,10 +305,12 @@ def _on_sensor_message(client, userdata, msg):
                     system_state = "HAZARD"
                     live_node_status["J20"]["status"]     = "alert"
                     live_node_status["J20"]["hazard"]     = "thermal"
-                    live_node_status["J20"]["impassable"] = True
-                    _path, _score = calculate_safest_route("J19", verbose=False)
+                    # Do NOT mark J20 impassable — people are AT J20 and need
+                    # to evacuate FROM there. Route starts from J20 itself so
+                    # DYN-A* finds shortest exit (J20→J1→EXIT-1).
+                    _path, _score = calculate_safest_route("J20", verbose=False)
                     if _path:
-                        current_route[:] = ["J20"] + _path
+                        current_route[:] = _path
                         current_route_cost = _score
                     current_per_node_routes[:] = [{
                         "node_id":    "J20",
@@ -469,7 +465,7 @@ print("[INIT] Starting camera...")
 # Set env var CAMERA_INDEX=1 if USB webcam is not detected on index 0
 # e.g.  CAMERA_INDEX=1 python lumina_live_stream.py
 import os as _os
-_cam_idx = int(_os.environ.get("CAMERA_INDEX", 1))
+_cam_idx = int(_os.environ.get("CAMERA_INDEX", 0))
 print(f"[INIT] Using camera index {_cam_idx} (set CAMERA_INDEX env var to change)")
 cap = cv2.VideoCapture(_cam_idx)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
@@ -1617,34 +1613,14 @@ def block_node():
     with state_lock:
         result = block_node_and_reroute(node_id, start, impassable=impassable)
         result["start"] = start_original
-        current_route = result["new_route"] if not result.get("no_route") else []
-        manual_override = True
-        # Populate per_node_routes so firmware receives the reroute via heartbeat
-        if current_route:
-            current_per_node_routes[:] = [{
-                "node_id":    node_id,
-                "event_type": "collapsed",
-                "best_path":  current_route,
-                "best_exit":  current_route[-1] if current_route else None,
-                "best_cost":  0,
-                "all_exits":  [],
-                "rset":       None,
-            }]
-        else:
-            current_per_node_routes.clear()
-        _total_pax = sum(d["crowd"] for d in live_node_status.values())
-        _corridors = _build_corridor_states()
-        _per_node_snap = [
-            {"node_id": r["node_id"], "event_type": r["event_type"], "path": r["best_path"]}
-            for r in current_per_node_routes if r.get("best_path")
-        ]
-    with state_lock:
-        _payload_block = _build_mqtt_payload("CRITICAL", {"no_route": result.get("no_route", False), "shelter_node": start_original if result.get("no_route") else None})
+        # Show HAZARD banner so operator knows a node is blocked,
+        # but do NOT update current_route or current_per_node_routes —
+        # no green evacuation route until a real hazard (fire/fall) triggers.
+        system_state = "HAZARD"
+        live_node_status.get(node_id, {}).update({"hazard": "collapsed", "status": "alert"})
+        _payload_block = _build_mqtt_payload("CRITICAL", {"blocked_node": node_id})
     mqtt_client.publish(TOPIC, _payload_block)
-    if result.get("no_route"):
-        print(f"[BOMBA] Blocked {node_id} (IMPASSABLE) — NO ROUTE EXISTS. Rescue required.")
-    else:
-        print(f"[BOMBA] Blocked {node_id}, new route: {' → '.join(result['new_route'])}")
+    print(f"[BOMBA] Quarantined {node_id} — HAZARD banner shown, no evacuation route")
     return jsonify(result)
 
 
