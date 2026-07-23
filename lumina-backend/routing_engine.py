@@ -122,6 +122,8 @@ DOOR_TO_JUNCTION = {
     "B13":"J19", "B14":"J14", "B15":"J12", "B16":"J13",
 }
 
+ACTIVE_STORE_HAZARDS = {}  # door_id -> hazard_type; protects shared junctions
+
 # ── Store event handling ──────────────────────────────────────────────────
 # When FACP signals fire in store Bx, or Lumina thermal detects heat in corridor:
 # 1. Mark the nearest junction as alert
@@ -136,6 +138,7 @@ def facp_store_alert(door_id: str, hazard_type: str = "thermal"):
     junction_id = DOOR_TO_JUNCTION.get(door_id)
     if not junction_id:
         return None
+    ACTIVE_STORE_HAZARDS[door_id] = hazard_type
     live_node_status[junction_id]["status"] = "alert"
     live_node_status[junction_id]["hazard"] = hazard_type
     # Thermal (fire) hard-blocks, consistent with the thermal sensor thread
@@ -145,14 +148,28 @@ def facp_store_alert(door_id: str, hazard_type: str = "thermal"):
     return junction_id
 
 def facp_store_clear(door_id: str):
-    """Clear alert for a store's nearest junction."""
+    """Clear one store alarm without clearing another alarm on the same junction."""
     junction_id = DOOR_TO_JUNCTION.get(door_id)
     if not junction_id:
         return None
-    live_node_status[junction_id]["status"] = "normal"
-    live_node_status[junction_id]["hazard"] = None
-    live_node_status[junction_id]["impassable"] = False
-    live_node_status[junction_id]["shelter_in_place"] = False
+
+    ACTIVE_STORE_HAZARDS.pop(door_id, None)
+    remaining = [
+        hazard for door, hazard in ACTIVE_STORE_HAZARDS.items()
+        if DOOR_TO_JUNCTION.get(door) == junction_id
+    ]
+
+    if remaining:
+        # Keep the shared junction hazardous. Thermal has highest severity.
+        hazard_type = "thermal" if "thermal" in remaining else remaining[0]
+        live_node_status[junction_id]["status"] = "alert"
+        live_node_status[junction_id]["hazard"] = hazard_type
+        live_node_status[junction_id]["impassable"] = (hazard_type == "thermal")
+    else:
+        live_node_status[junction_id]["status"] = "normal"
+        live_node_status[junction_id]["hazard"] = None
+        live_node_status[junction_id]["impassable"] = False
+        live_node_status[junction_id]["shelter_in_place"] = False
     return junction_id
 
 def route_from_store(door_id: str, verbose: bool = True) -> tuple:
@@ -547,59 +564,108 @@ def heuristic(a: str, b: str) -> float:
 # =============================================================================
 # 8. DYN-A* WITH HYSTERESIS
 # =============================================================================
-def calculate_safest_route(start_junction: str, target: str = None,
-                            verbose: bool = True) -> tuple:
+def calculate_safest_route(
+    start_junction: str,
+    target: str = None,
+    verbose: bool = True,
+) -> tuple:
     global _current_route, _current_route_cost
-    # NOTE: deliberately does NOT reject an impassable start_junction here.
-    # Computing "how does someone standing at the hazard itself escape" is a
-    # normal, essential operation (every fire/fallen/crowd trigger needs
-    # this) — the hazard's own location is legitimately impassable for
-    # OTHER routes passing through it, but the person actually there still
-    # needs an escape path computed FROM there. The specific edge case this
-    # would have caught (blocking a node that's also the pre-existing route's
-    # origin) is instead handled at the caller level in
-    # block_node_and_reroute(), where it can be distinguished correctly.
+
     targets = [target] if target in EXITS else EXITS
-    best_path, best_cost = [], float("inf")
+
+    best_path = []
+    best_cost = float("inf")
 
     for exit_id in targets:
-        start_cost = calculate_dynamic_cost(start_junction)
-        queue   = [(start_cost, start_junction, [start_junction])]
-        visited = set()
-        while queue:
-            cost, node, path = heapq.heappop(queue)
-            if node in visited: continue
-            visited.add(node)
-            if node == exit_id:
-                if cost < best_cost:
-                    best_cost = cost
-                    best_path = path
-                break
-            for nbr, dist in FACILITY_GRAPH.get(node, {}).items():
-                if nbr not in visited and not live_node_status.get(nbr, {}).get("impassable", False):
-                    nc = cost + dist + calculate_dynamic_cost(nbr)
-                    heapq.heappush(queue, (nc + heuristic(nbr, exit_id), nbr, path+[nbr]))
-
-    # Hysteresis: recalculate LIVE cost of current route before comparing
-    # (not cached cost — current route may now pass through hazard)
-    if _current_route and len(_current_route) >= 2:
-        live_current_cost = sum(
-            FACILITY_GRAPH.get(_current_route[i], {}).get(_current_route[i+1], 0) +
-            calculate_dynamic_cost(_current_route[i+1])
-            for i in range(len(_current_route)-1)
+        path, cost = route_to_specific_exit(
+            start_junction,
+            exit_id,
+            verbose=False,
         )
-        # Only keep current route if new route is NOT 20% cheaper AND current route not critically worse
-        if best_cost >= live_current_cost * (1 - HYSTERESIS_THRESHOLD) and live_current_cost < PENALTY["thermal"]/2:
-            if verbose:
-                print(f"[DYN-A*] Hysteresis: keeping current (live={live_current_cost:.1f}, new={best_cost:.1f})")
-            return _current_route, round(live_current_cost, 1)
 
-    _current_route      = best_path
+        if path and cost < best_cost:
+            best_path = path
+            best_cost = cost
+
+    # Hysteresis is valid only for the SAME routing request.
+    # A route cached for J12 must never be returned for a later J2 request.
+    same_origin = bool(_current_route) and _current_route[0] == start_junction
+    same_target = (
+        target is None
+        or (bool(_current_route) and _current_route[-1] == target)
+    )
+    current_route_valid = (
+        same_origin
+        and same_target
+        and all(
+            not live_node_status.get(node, {}).get(
+                "impassable",
+                False,
+            )
+            for node in _current_route[1:]
+        )
+    )
+
+    if current_route_valid and len(_current_route) >= 2:
+        live_current_cost = calculate_dynamic_cost(
+            _current_route[0]
+        )
+
+        valid_edges = True
+
+        for index in range(len(_current_route) - 1):
+            current = _current_route[index]
+            following = _current_route[index + 1]
+
+            distance = FACILITY_GRAPH.get(
+                current,
+                {},
+            ).get(following)
+
+            if distance is None:
+                valid_edges = False
+                break
+
+            live_current_cost += (
+                distance
+                + calculate_dynamic_cost(following)
+            )
+
+        if (
+            valid_edges
+            and best_path
+            and best_cost
+                >= live_current_cost
+                * (1 - HYSTERESIS_THRESHOLD)
+            and live_current_cost
+                < PENALTY["thermal"] / 2
+        ):
+            if verbose:
+                print(
+                    "[DYN-A*] Hysteresis: keeping current "
+                    f"(live={live_current_cost:.1f}, "
+                    f"new={best_cost:.1f})"
+                )
+
+            return (
+                list(_current_route),
+                round(live_current_cost, 1),
+            )
+
+    _current_route = list(best_path)
     _current_route_cost = best_cost
 
     if verbose and best_path:
-        print(f"[DYN-A*] {' → '.join(best_path)} (cost={best_cost:.1f})")
-    return best_path, round(best_cost, 1)
+        print(
+            f"[DYN-A*] {' → '.join(best_path)} "
+            f"(cost={best_cost:.1f})"
+        )
+
+    return best_path, (
+        round(best_cost, 1)
+        if best_cost != float("inf")
+        else float("inf")
+    )
 
 def force_route(path: list):
     """BOMBA manual override — bypasses hysteresis."""
@@ -612,25 +678,67 @@ def reset_hysteresis():
     _current_route      = []
     _current_route_cost = float("inf")
 
-def route_to_specific_exit(start: str, exit_id: str, verbose: bool = False) -> tuple:
-    """BOMBA forces route to a specific exit. Bypasses hysteresis."""
+def route_to_specific_exit(
+    start: str,
+    exit_id: str,
+    verbose: bool = False,
+) -> tuple:
+    """Calculate the lowest-cost route to one specified exit."""
+
     if exit_id not in EXITS:
         return [], float("inf")
-    # NOTE: no blanket impassable-start check here — same reasoning as
-    # calculate_safest_route above. See block_node_and_reroute() for the
-    # correctly-scoped fix to the actual bug this was meant to catch.
-    queue = [(calculate_dynamic_cost(start), start, [start])]
-    visited = set()
+
+    start_g = calculate_dynamic_cost(start)
+
+    # Queue entry:
+    # (f_score, g_score, node_id, path)
+    queue = [
+        (
+            start_g + heuristic(start, exit_id),
+            start_g,
+            start,
+            [start],
+        )
+    ]
+
+    best_g = {start: start_g}
+
     while queue:
-        cost, node, path = heapq.heappop(queue)
-        if node in visited: continue
-        visited.add(node)
+        _, g_cost, node, path = heapq.heappop(queue)
+
+        # Ignore stale queue entries.
+        if g_cost > best_g.get(node, float("inf")):
+            continue
+
         if node == exit_id:
-            return path, round(cost, 1)
-        for nbr, dist in FACILITY_GRAPH.get(node, {}).items():
-            if nbr not in visited and not live_node_status.get(nbr, {}).get("impassable", False):
-                nc = cost + dist + calculate_dynamic_cost(nbr)
-                heapq.heappush(queue, (nc + heuristic(nbr, exit_id), nbr, path + [nbr]))
+            if verbose:
+                print(
+                    f"[DYN-A*] {' → '.join(path)} "
+                    f"(cost={g_cost:.1f})"
+                )
+            return path, round(g_cost, 1)
+
+        for nbr, distance in FACILITY_GRAPH.get(node, {}).items():
+            if live_node_status.get(nbr, {}).get("impassable", False):
+                continue
+
+            new_g = (
+                g_cost
+                + distance
+                + calculate_dynamic_cost(nbr)
+            )
+
+            if new_g >= best_g.get(nbr, float("inf")):
+                continue
+
+            best_g[nbr] = new_g
+            new_f = new_g + heuristic(nbr, exit_id)
+
+            heapq.heappush(
+                queue,
+                (new_f, new_g, nbr, path + [nbr]),
+            )
+
     return [], float("inf")
 
 def get_all_exit_routes(start: str) -> list:
@@ -638,7 +746,10 @@ def get_all_exit_routes(start: str) -> list:
     routes = []
     for exit_id in EXITS:
         path, cost = route_to_specific_exit(start, exit_id, verbose=False)
-        if path and cost < 9000:  # skip exits blocked by hazard
+        # Reachability is determined by whether A* found a path, not by an
+        # arbitrary cost cutoff. A high-risk route may still be physically
+        # reachable and should remain visible to BOMBA as a last resort.
+        if path and cost != float("inf"):
             routes.append({"exit": exit_id, "path": path, "cost": cost, "distance_m": round(cost, 1)})
     routes.sort(key=lambda r: r["cost"])
     # "safe" is relative, not an absolute threshold — if the start node ITSELF
@@ -778,8 +889,20 @@ def estimate_rset(route: list, t1: float = 30.0) -> dict:
     t2 = 5.0
     t3 = 0.0
     for i in range(len(route)-1):
-        d = FACILITY_GRAPH.get(route[i],{}).get(route[i+1], 0)
-        c = live_node_status.get(route[i+1],{}).get("crowd",0)
+        a, b = route[i], route[i+1]
+        d = FACILITY_GRAPH.get(a, {}).get(b)
+        if d is None:
+            return {
+                "T1_detection_s": round(t1, 1),
+                "T2_hesitation_s": round(t2, 1),
+                "T3_travel_s": None,
+                "RSET_s": None,
+                "ASET_s": ASET_SECONDS,
+                "margin_s": None,
+                "safe": False,
+                "error": f"Invalid route edge: {a} → {b}",
+            }
+        c = live_node_status.get(b, {}).get("crowd", 0)
         spd = WALKING_SPEED_PANIC if c>85 else WALKING_SPEED_EVACUATE if c>50 else WALKING_SPEED_NORMAL
         t3 += d/spd if spd>0 else 0
     rset = t1+t2+t3
@@ -788,11 +911,27 @@ def estimate_rset(route: list, t1: float = 30.0) -> dict:
             "ASET_s":ASET_SECONDS,"margin_s":round(ASET_SECONDS-rset,1),
             "safe":rset<ASET_SECONDS}
 
+def _validated_route_distance(route: list) -> tuple:
+    """Return (distance_m, error). Reject malformed/non-adjacent route steps."""
+    total = 0.0
+    for a, b in zip(route, route[1:]):
+        distance = FACILITY_GRAPH.get(a, {}).get(b)
+        if distance is None:
+            return None, f"Invalid route edge: {a} → {b}"
+        total += distance
+    return total, None
+
 def estimate_baseline_rset(route: list, t1: float = 30.0) -> dict:
     t2 = 30.0
-    t3 = sum(FACILITY_GRAPH.get(route[i],{}).get(route[i+1],0)/WALKING_SPEED_PANIC
-             for i in range(len(route)-1))
-    rset = t1+t2+t3
+    distance, error = _validated_route_distance(route)
+    if error:
+        return {
+            "T1_detection_s": round(t1, 1), "T2_hesitation_s": round(t2, 1),
+            "T3_travel_s": None, "RSET_s": None, "ASET_s": ASET_SECONDS,
+            "margin_s": None, "safe": False, "error": error,
+        }
+    t3 = distance / WALKING_SPEED_PANIC
+    rset = t1 + t2 + t3
     return {"T1_detection_s":round(t1,1),"T2_hesitation_s":round(t2,1),
             "T3_travel_s":round(t3,1),"RSET_s":round(rset,1),
             "ASET_s":ASET_SECONDS,"margin_s":round(ASET_SECONDS-rset,1),
@@ -800,8 +939,12 @@ def estimate_baseline_rset(route: list, t1: float = 30.0) -> dict:
 
 def rset_t2_sensitivity(route: list, t1: float = 30.0) -> list:
     base = estimate_baseline_rset(route, t1)
-    t3 = sum(FACILITY_GRAPH.get(route[i],{}).get(route[i+1],0)/WALKING_SPEED_NORMAL
-             for i in range(len(route)-1))
+    if base.get("error"):
+        return [{"error": base["error"], "safe": False}]
+    distance, error = _validated_route_distance(route)
+    if error:
+        return [{"error": error, "safe": False}]
+    t3 = distance / WALKING_SPEED_NORMAL
     results = []
     for t2 in [2,5,8,10,12,15,20,25,30]:
         rset = t1+t2+t3

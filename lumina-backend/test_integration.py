@@ -133,7 +133,7 @@ def run_tests():
     if health.get("mqtt_connected"):
         ok("MQTT broker connected")
     else:
-        fail("MQTT broker NOT connected", "Check Wi-Fi and broker.hivemq.com reachability")
+        fail("MQTT broker NOT connected", "Check Wi-Fi and broker.emqx.io reachability")
 
     uptime = health.get("uptime_s", 0)
     ok(f"System uptime", f"{uptime:.1f}s")
@@ -320,18 +320,18 @@ def run_tests():
     # ── TEST 7: MQTT broker reachability ──────────────────────────────────────
     section("7. Network Connectivity")
     try:
-        s = socket.create_connection(("broker.hivemq.com", 1883), timeout=3)
+        s = socket.create_connection(("broker.emqx.io", 1883), timeout=3)
         s.close()
-        ok("HiveMQ broker reachable", "broker.hivemq.com:1883")
+        ok("EMQX broker reachable", "broker.emqx.io:1883")
     except Exception as e:
-        fail("HiveMQ broker NOT reachable", f"{e} — ESP32 and React MQTT will fail")
+        fail("EMQX broker NOT reachable", f"{e} — ESP32 and React MQTT will fail")
 
     try:
-        s = socket.create_connection(("broker.hivemq.com", 8000), timeout=3)
+        s = socket.create_connection(("broker.emqx.io", 8083), timeout=3)
         s.close()
-        ok("HiveMQ WebSocket port reachable", "port 8000 — needed for React dashboard")
+        ok("EMQX WebSocket port reachable", "port 8083 — needed for React dashboard")
     except Exception as e:
-        fail("HiveMQ WebSocket port NOT reachable", f"{e}")
+        fail("EMQX WebSocket port NOT reachable", f"{e}")
 
     # ── TEST 8: Routing engine standalone ────────────────────────────────────
     section("8. Routing Engine Standalone Verification")

@@ -146,6 +146,13 @@ class ThermalClassifier:
     def get_events(self) -> list:
         return self.events
 
+    def reset(self):
+        """Reset state, events and rolling baseline for a fresh run."""
+        self.history.clear()
+        self.events.clear()
+        self.state = "NORMAL"
+        self._seed_baseline()
+
 # =============================================================================
 # 3. TEMPERATURE SIGNAL GENERATORS  (simulate sensor streams for demo)
 # =============================================================================

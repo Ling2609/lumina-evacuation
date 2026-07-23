@@ -167,6 +167,13 @@ class FFTAlarmClassifier:
     def get_events(self):
         return self.events
 
+    def reset(self):
+        """Reset acoustic confirmation state for a fresh run."""
+        self.state = "SILENT"
+        self.consecutive = 0
+        self.history.clear()
+        self.events.clear()
+
 # =============================================================================
 # 3. SYNTHETIC SIGNAL GENERATORS
 # =============================================================================
