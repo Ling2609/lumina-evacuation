@@ -107,9 +107,13 @@ String systemState   = "NORMAL";
 bool   systemHazard  = false;
 bool   fftConfirmed  = false;
 
-bool thermalAlert     = false;
-bool obstructionAlert = false;
-bool fallHazard       = false;  // set from backend hazard_type "FALL DETECTED"
+bool   thermalAlert     = false;
+bool   obstructionAlert = false;
+bool   fallHazard       = false;  // set from backend hazard_type "FALL DETECTED"
+String activeBlockedNode = "";    // backward-compatible first blocked node
+#define MAX_BLOCKED_NODES 6
+String activeBlockedNodes[MAX_BLOCKED_NODES];
+int activeBlockedNodeCount = 0;
 unsigned long lastMqttMessage = 0;
 
 // ── Timing ────────────────────────────────────────────────────
@@ -149,20 +153,25 @@ bool getNodeLED(const char* nodeId, int& outCh, int& outIdx, int preferChannel =
 }
 
 // ── Chase between two LED indices on same strip ───────────────
-// Direction is always fromIdx → toIdx (follows route order),
-// regardless of which index is numerically larger.
-void chaseBetween(int ch, int fromIdx, int toIdx, int tick) {
+// Head always travels FROM fromIdx TOWARD toIdx.
+// forward (fromIdx < toIdx): head moves low→high
+// reverse (fromIdx > toIdx): head moves high→low
+void chaseBetween(int ch, int fromIdx, int toIdx, int tick,
+                  CRGB headColour = CRGB(0,200,0),
+                  CRGB tailColour = CRGB(0,50,0)) {
+  if (fromIdx == toIdx) { setPixel(ch, fromIdx, headColour); return; }
   int lo  = min(fromIdx, toIdx);
   int hi  = max(fromIdx, toIdx);
   int len = hi - lo + 1;
-  int dir = (fromIdx <= toIdx) ? 1 : -1;  // +1 = low→high, -1 = high→low
-  int pos = tick % len;
+  bool forward = (fromIdx < toIdx);
+  int progress = tick % len;
+  int headOffset = forward ? progress : (len - 1 - progress);
   for (int i = 0; i < len; i++) {
-    int distFromHead = (dir == 1)
-      ? (i - pos + len) % len
-      : (pos - i + len) % len;
-    CRGB col = (distFromHead == 0) ? CRGB(0,200,0)
-             : (distFromHead <= 2) ? CRGB(0,50,0)
+    int trailDistance = forward
+      ? (headOffset - i + len) % len
+      : (i - headOffset + len) % len;
+    CRGB col = (trailDistance == 0) ? headColour
+             : (trailDistance <= 2) ? tailColour
              : CRGB::Black;
     setPixel(ch, lo + i, col);
   }
@@ -173,6 +182,33 @@ void fillBetween(int ch, int fromIdx, int toIdx, CRGB colour) {
   int lo = min(fromIdx, toIdx);
   int hi = max(fromIdx, toIdx);
   for (int i = lo; i <= hi; i++) setPixel(ch, i, colour);
+}
+
+
+// Backend corridor guidance states: normal | route | warning | pull_stop | hazard
+const char* CORRIDOR_IDS[5] = {"C-001","C-002","C-003","C-004","C-005"};
+String corridorState[5] = {"normal","normal","normal","normal","normal"};
+int corridorDir[5] = {1,1,1,1,1};
+
+void paintCorridorOverlay(int idx) {
+  String st = corridorState[idx];
+
+  // Exact hazard zones (J4/J15/J20) are already painted BEFORE the green
+  // per-node route. Do not repaint the whole corridor red afterward, or it
+  // will hide the green evacuation chase. Pull-stop and warning overlays
+  // still keep higher priority and may intentionally override the route.
+  if (st == "normal" || st == "route" || st == "hazard") return;
+
+  CRGB col = (st == "warning") ? CRGB(180,90,0) : CRGB(180,0,0);
+  bool blink = ((millis()/350)%2)==0;
+  if (st == "pull_stop" && !blink) col = CRGB(35,0,0);
+
+  // Physical strip ranges derived from measured node LED indices.
+  if (idx == 0) fillBetween(CH_RIGHT, 0, 8, col);       // C-001 west/EXIT-1
+  else if (idx == 1) fillBetween(CH_LEFT, 16, 23, col); // C-002 central overlap
+  else if (idx == 2) fillBetween(CH_LEFT, 8, 33, col);  // C-003 north/EXIT-2
+  else if (idx == 3) fillBetween(CH_RIGHT, 10, 34, col);// C-004 south/EXIT-3
+  else if (idx == 4) fillBetween(CH_RIGHT, 6, 15, col); // C-005 south-west
 }
 
 // ============================================================
@@ -199,19 +235,29 @@ void updateLEDs() {
   }
 
   // 2. Hazard overlays — drawn BEFORE route so green route overrides neighbours naturally
-  if (obstructionAlert) {
-    int chJ3, idxJ3, chJ4, idxJ4, chJ7, idxJ7;
-    bool hJ3 = getNodeLED("J3", chJ3, idxJ3);
-    bool hJ4 = getNodeLED("J4", chJ4, idxJ4);
-    bool hJ7 = getNodeLED("J7", chJ7, idxJ7);
-    // Fill J3 → J4 solid red (neighbour up to hazard)
-    if (hJ3 && hJ4) fillBetween(chJ3, idxJ3, idxJ4, CRGB(180,0,0));
-    // Fill J4 → J7 solid red (hazard zone to other neighbour)
-    if (hJ4 && hJ7) fillBetween(chJ4, idxJ4, idxJ7, CRGB(180,0,0));
-    // Nothing after J7 — clear boundary
-    // J4 blinks bright red to stand out as hazard node
-    bool on = (millis() / 400) % 2;
-    if (hJ4) setPixel(chJ4, idxJ4, on ? CRGB(255,0,0) : CRGB(60,0,0));
+  // Obstruction: use activeBlockedNode from backend if available, else fallback to J4
+  if (obstructionAlert || (systemHazard && activeBlockedNodeCount > 0)) {
+    int count = activeBlockedNodeCount > 0 ? activeBlockedNodeCount : 1;
+    for (int b = 0; b < count; b++) {
+      const char* hazNode = activeBlockedNodeCount > 0
+                            ? activeBlockedNodes[b].c_str() : "J4";
+      int chH, idxH;
+      if (getNodeLED(hazNode, chH, idxH)) {
+        if (strcmp(hazNode, "J4") == 0) {
+          // Exact obstruction area: J3 → J4 → J7. Red stops at J7.
+          int chJ3, idxJ3, chJ7, idxJ7;
+          bool hJ3 = getNodeLED("J3", chJ3, idxJ3, chH);
+          bool hJ7 = getNodeLED("J7", chJ7, idxJ7, chH);
+          if (hJ3 && chJ3 == chH) fillBetween(chH, idxJ3, idxH, CRGB(180,0,0));
+          if (hJ7 && chJ7 == chH) fillBetween(chH, idxH, idxJ7, CRGB(180,0,0));
+        } else {
+          int maxIdx = (chH == CH_LEFT) ? NUM_LEFT_LEDS - 1 : NUM_RIGHT_LEDS - 1;
+          fillBetween(chH, max(0, idxH-6), min(maxIdx, idxH+6), CRGB(180,0,0));
+        }
+        bool on = (millis() / 400) % 2;
+        setPixel(chH, idxH, on ? CRGB(255,0,0) : CRGB(60,0,0));
+      }
+    }
   }
   if (thermalAlert) {
     int chJ20, idxJ20, chJ19, idxJ19, chJ1, idxJ1;
@@ -220,8 +266,9 @@ void updateLEDs() {
     bool hJ1  = getNodeLED("J1",  chJ1,  idxJ1,  CH_RIGHT);
     // Fill J19 → J20 solid red
     if (hJ19 && hJ20) fillBetween(chJ19, idxJ19, idxJ20, CRGB(180,0,0));
-    // J1 solid red (other neighbour — single node, no fill needed)
-    if (hJ1) setPixel(chJ1, idxJ1, CRGB(180,0,0));
+    // Fill J20 → J1 solid red as well, so both adjacent gaps are blocked
+    if (hJ1 && hJ20 && chJ1 == chJ20)
+      fillBetween(chJ20, idxJ20, idxJ1, CRGB(180,0,0));
     // J20 blinks bright red
     bool on = (millis() / 400) % 2;
     if (hJ20) setPixel(chJ20, idxJ20, on ? CRGB(255,0,0) : CRGB(60,0,0));
@@ -233,8 +280,9 @@ void updateLEDs() {
     bool hJ17 = getNodeLED("J17", chJ17, idxJ17);
     // Fill J17 → J15 solid red (neighbour up to hazard)
     if (hJ17 && hJ15) fillBetween(chJ17, idxJ17, idxJ15, CRGB(180,0,0));
-    // J14 solid red (other neighbour)
-    if (hJ14) setPixel(chJ14, idxJ14, CRGB(180,0,0));
+    // Fill J15 → J14 solid red as well, so both adjacent gaps are blocked
+    if (hJ14 && hJ15 && chJ14 == chJ15)
+      fillBetween(chJ15, idxJ15, idxJ14, CRGB(180,0,0));
     // J15 blinks bright red
     bool on = (millis() / 400) % 2;
     if (hJ15) setPixel(chJ15, idxJ15, on ? CRGB(255,0,0) : CRGB(60,0,0));
@@ -255,15 +303,7 @@ void updateLEDs() {
     bool foundS1 = getNodeLED(hr.path[1].c_str(), chS1, idxS1, chH);
     if (foundH && foundS1 && chH == chS1) {
       int startLED = (idxH < idxS1) ? idxH + 1 : idxH - 1;
-      if (startLED != idxS1) {
-        int lo = min(startLED, idxS1), hi = max(startLED, idxS1), len = hi-lo+1;
-        int dir = (startLED <= idxS1) ? 1 : -1;
-        int pos = chaseTick % len;
-        for (int i = 0; i < len; i++) {
-          int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
-          setPixel(chH, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
-        }
-      }
+      if (startLED != idxS1) chaseBetween(chH, startLED, idxS1, chaseTick, head, tail);
       setPixel(chS1, idxS1, head);
     }
 
@@ -277,13 +317,7 @@ void updateLEDs() {
       if (!foundB) continue;
       prevCh = chB;
       if (chA == chB) {
-        int lo = min(idxA,idxB), hi = max(idxA,idxB), len = hi-lo+1;
-        int dir = (idxA <= idxB) ? 1 : -1;
-        int pos = chaseTick % len;
-        for (int i = 0; i < len; i++) {
-          int d = (dir==1) ? (i-pos+len)%len : (pos-i+len)%len;
-          setPixel(chA, lo+i, d==0 ? head : d<=2 ? tail : CRGB::Black);
-        }
+        chaseBetween(chA, idxA, idxB, chaseTick, head, tail);
       } else {
         setPixel(chA, idxA, head);
         setPixel(chB, idxB, head);
@@ -294,14 +328,24 @@ void updateLEDs() {
     if (getNodeLED(hr.path[1].c_str(), chS, idxS, chH)) setPixel(chS, idxS, head);
   }
 
-  // 4. Re-apply hazard node blinks ON TOP of everything — hazard nodes must
+  // 4. Apply corridor Pull Policy overlays. RED/AMBER guidance has
+  // higher priority than a green route so users are never guided through a
+  // stop-line or warning corridor.
+  for (int c = 0; c < 5; c++) paintCorridorOverlay(c);
+
+  // 5. Re-apply hazard node blinks ON TOP of everything — hazard nodes must
   //    always blink red regardless of route overlap. This ensures J4/J20/J15
   //    never get hidden by a green route drawn over them.
   bool blinkOn = (millis() / 400) % 2;
-  if (obstructionAlert) {
-    int ch, idx;
-    if (getNodeLED("J4", ch, idx))
-      setPixel(ch, idx, blinkOn ? CRGB(255,0,0) : CRGB(60,0,0));
+  if (obstructionAlert || (systemHazard && activeBlockedNodeCount > 0)) {
+    int count = activeBlockedNodeCount > 0 ? activeBlockedNodeCount : 1;
+    for (int b = 0; b < count; b++) {
+      int ch, idx;
+      const char* hazNode = activeBlockedNodeCount > 0
+                            ? activeBlockedNodes[b].c_str() : "J4";
+      if (getNodeLED(hazNode, ch, idx))
+        setPixel(ch, idx, blinkOn ? CRGB(255,0,0) : CRGB(60,0,0));
+    }
   }
   if (thermalAlert) {
     int ch, idx;
@@ -324,14 +368,14 @@ void updateLEDs() {
 // ============================================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   lastMqttMessage = millis();
-  char msg[2400];
-  if (length >= sizeof(msg)) return;
+  static char msg[4096];
+  if (length >= sizeof(msg)) { Serial.println("[MQTT] Payload too large"); return; }
   memcpy(msg, payload, length);
   msg[length] = '\0';
 
-  StaticJsonDocument<2048> doc;
+  StaticJsonDocument<4096> doc;
   DeserializationError err = deserializeJson(doc, msg);
-  if (err) return;
+  if (err) { Serial.print("[MQTT] JSON error: "); Serial.println(err.c_str()); return; }
 
   systemState  = doc["system_state"] | "NORMAL";
   systemHazard = (systemState == "HAZARD" || systemState == "CRITICAL");
@@ -343,13 +387,48 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     obstructionAlert = false;
     fallHazard       = false;
     hazardRouteCount = 0;  // clear all stored routes
+    activeBlockedNode = "";
+    activeBlockedNodeCount = 0;
+    for (int i = 0; i < 5; i++) { corridorState[i] = "normal"; corridorDir[i] = 1; }
     for (int i = 0; i < MAX_HAZARD_ROUTES; i++) hazardRoutes[i].active = false;
   }
 
-  // Parse hazard type for local LED overlays
+  // Parse hazard type — drive all three overlay flags from backend
   String hazardType = doc["hazard_type"] | "";
-  fallHazard = systemHazard && hazardType.startsWith("FALL");
+  fallHazard        = systemHazard && hazardType.startsWith("FALL");
+  // Only override local sensor flags from backend if backend confirms hazard type.
+  // Local sensor (DHT11/HC-SR04) still sets these independently for fast response.
+  if (systemHazard) {
+    if (hazardType.startsWith("THERMAL"))     thermalAlert     = true;
+    if (hazardType.startsWith("OBSTRUCTION")) obstructionAlert = true;
+  }
 
+  // Parse blocked node for dynamic hazard overlay
+  if (doc.containsKey("blocked_node")) {
+    activeBlockedNode = doc["blocked_node"].as<String>();
+  }
+  activeBlockedNodeCount = 0;
+  if (doc.containsKey("blocked_nodes")) {
+    JsonArray blocks = doc["blocked_nodes"].as<JsonArray>();
+    for (JsonVariant v : blocks) {
+      if (activeBlockedNodeCount >= MAX_BLOCKED_NODES) break;
+      activeBlockedNodes[activeBlockedNodeCount++] = v.as<String>();
+    }
+  } else if (activeBlockedNode.length() > 0) {
+    activeBlockedNodes[activeBlockedNodeCount++] = activeBlockedNode;
+  }
+
+  // Parse backend Pull Policy / corridor states so AMBER warnings and RED
+  // stop-lines are physically reflected on the LED strips.
+  if (doc.containsKey("corridors")) {
+    JsonObject corridors = doc["corridors"].as<JsonObject>();
+    for (int i = 0; i < 5; i++) {
+      if (corridors.containsKey(CORRIDOR_IDS[i])) {
+        corridorState[i] = corridors[CORRIDOR_IDS[i]]["state"] | "normal";
+        corridorDir[i]   = corridors[CORRIDOR_IDS[i]]["dir"] | 1;
+      }
+    }
+  }
   // Parse per_node_routes — routes are kept until backend explicitly clears them
   // (sends empty array) or system returns to NORMAL.
   // If "per_node_routes" key is absent from payload (e.g. old heartbeat format),
@@ -425,43 +504,43 @@ void checkThermal() {
   }
 }
 
+// Debounce counters for HC-SR04 (500ms per reading)
+static int blockedReadings = 0;
+static int clearReadings   = 0;
+const  int REQUIRED_BLOCKED = 3;  // 1.5s to confirm block
+const  int REQUIRED_CLEAR   = 4;  // 2.0s to confirm clear
+
 void checkObstruction() {
   digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  long duration  = pulseIn(ECHO_PIN, HIGH, 30000);
-  
-  int distanceCm;
-  if (duration == 0) {
-    distanceCm = 999; 
-  } else {
-    distanceCm = (int)(duration * 0.034f / 2);
-  }
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  int distanceCm = (duration == 0) ? 999 : (int)(duration * 0.034f / 2);
 
-  // 【新增】在后台持续打印当前真实的超声波距离，方便你核对准确度
-  Serial.print("[Real-Time HC-SR04] Distance: ");
-  if (distanceCm == 999) {
-    Serial.println("Out of range / No echo");
-  } else {
-    Serial.print(distanceCm);
-    Serial.println(" cm");
-  }
+  Serial.print("[HC-SR04] Distance: ");
+  if (distanceCm == 999) Serial.println("Out of range");
+  else { Serial.print(distanceCm); Serial.println(" cm"); }
 
   bool blocked = (distanceCm > 0 && distanceCm <= OBSTRUCTION_THRESHOLD_CM);
 
-  if (blocked && !obstructionAlert) {
+  if (blocked) { blockedReadings++; clearReadings = 0; }
+  else         { clearReadings++;   blockedReadings = 0; }
+
+  if (!obstructionAlert && blockedReadings >= REQUIRED_BLOCKED) {
     obstructionAlert = true;
+    blockedReadings  = 0;
     StaticJsonDocument<128> doc;
     doc["sensor"]      = "HC-SR04";
     doc["status"]      = "BLOCKED";
-    doc["node"]        = "C-003"; 
+    doc["node"]        = "C-003";
     doc["distance_cm"] = distanceCm;
     char buf[128]; serializeJson(doc, buf);
     mqttClient.publish(SENSOR_TOPIC, buf);
     Serial.println("[HC-SR04 BLOCKED PUBLISHED]");
-  } 
-  else if (!blocked && obstructionAlert) {
+  }
+  else if (obstructionAlert && clearReadings >= REQUIRED_CLEAR) {
     obstructionAlert = false;
+    clearReadings    = 0;
     StaticJsonDocument<128> doc;
     doc["sensor"]      = "HC-SR04";
     doc["status"]      = "CLEAR";
@@ -528,7 +607,7 @@ void setup() {
 
   connectWifi();
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setBufferSize(2048);   
+  mqttClient.setBufferSize(4096);
   mqttClient.setCallback(mqttCallback);
 
   Serial.println("[Lumina] Ready.");
