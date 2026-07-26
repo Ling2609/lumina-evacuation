@@ -1,7 +1,7 @@
 # Lumina Smart Evacuation System
 
 > **1st Runner-Up — Tech 4 Good (T4G) Challenge 2026 Grand Finale**
-> University Category, ViTrox Campus, Penang
+> Category 2, ViTrox Campus, Penang
 > **Team:** Lai Zi Huey (Leader), Low Wei Ling, Woo May Eng
 > **Institution:** Asia Pacific University of Technology & Innovation (APU)
 
